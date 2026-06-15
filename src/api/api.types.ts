@@ -1,0 +1,133 @@
+// Shapes returned by the john-api endpoints the bot consumes.
+
+export interface BotContext {
+  producerId: number;
+  producerName: string;
+  producerSlug: string;
+  systemPrompt: string;
+}
+
+export interface ClientSummary {
+  id: number;
+  firstName: string;
+  lastName: string;
+  dni: string;
+  email: string;
+  phone: string | null;
+  city: string | null;
+}
+
+export interface ConversationMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+export interface BotConversation {
+  conversationId: number;
+  client: ClientSummary | null;
+  messages: ConversationMessage[];
+}
+
+export interface VehiculoSummary {
+  dominio: string | null;
+  marca: string | null;
+  modelo: string | null;
+  anio?: number | null;
+  cobertura?: string | null;
+}
+
+export interface PolizaSummary {
+  id: number;
+  certificado: string;
+  company: string;
+  riskType: string;
+  status: string;
+  vigenciaDesde: string | null;
+  vigenciaHasta: string | null;
+  paymentMethod: string | null;
+  vehiculo: VehiculoSummary | null;
+}
+
+export interface CuotaImpaga {
+  numeroCuota: number;
+  amount: string;
+  dueDate: string | null;
+  status: string; // "pending" | "overdue" | "rejected"
+}
+
+export interface EstadoCuentaPoliza {
+  id: number;
+  certificado: string;
+  riskType: string;
+  status: string;
+  paymentMethod: string | null;
+  vehiculo: VehiculoSummary | null;
+  cuotasPagas: number;
+  cuotasImpagas: CuotaImpaga[];
+  tieneRechazos: boolean;
+}
+
+export interface PolizaDocumento {
+  codigo: string;
+  nombre: string;
+  url: string;
+}
+
+export interface SiniestroSummary {
+  id: number;
+  tipo: string;
+  descripcion: string;
+  fecha: string;
+  estado: string;
+  /** Official Triunfo claim number — set by the admin after filing it manually in Triunfo's web. */
+  nroSiniestroCompania: string | null;
+  createdAt: string;
+  poliza: { id: number; certificado: string; riskType: string };
+}
+
+export interface IdentifyResult {
+  client: ClientSummary;
+  polizasCount: number;
+}
+
+export type VehicleTypeParam = 'auto' | 'moto';
+
+export interface InfoAutoBrand {
+  id: number;
+  name: string;
+}
+
+export interface InfoAutoGroup {
+  id: number;
+  name: string;
+}
+
+export interface InfoAutoModel {
+  codia: number;
+  description: string;
+  prices_from?: number;
+  prices_to?: number;
+}
+
+export interface QuotePaymentOption {
+  code: string;
+  name: string;
+  premium: number;
+  installmentValue: number;
+  installments: number;
+}
+
+export interface QuoteCoverage {
+  code: string;
+  paymentOptions: QuotePaymentOption[];
+}
+
+export interface QuoteResult {
+  quoteNumber: string | null;
+  validUntil: string | null;
+  vehicleValue: string | null;
+  coverages: QuoteCoverage[];
+  messages: string[];
+}

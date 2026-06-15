@@ -34,7 +34,7 @@ export class WebhookController {
   }
 
   @Post()
-  async receiveMessage(@Body() body: WhatsAppWebhookBody) {
+  receiveMessage(@Body() body: WhatsAppWebhookBody) {
     const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     const metadata = body?.entry?.[0]?.changes?.[0]?.value?.metadata;
 
