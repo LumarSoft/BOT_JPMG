@@ -27,7 +27,15 @@ export interface ConversationMessage {
 export interface BotConversation {
   conversationId: number;
   client: ClientSummary | null;
+  /** True when the previous session expired by inactivity and this is a fresh start. */
+  newSession: boolean;
   messages: ConversationMessage[];
+}
+
+export interface PendingWarning {
+  conversationId: number;
+  waId: string;
+  phoneNumberId: string;
 }
 
 export interface VehiculoSummary {

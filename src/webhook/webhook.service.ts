@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import axios from 'axios';
 import { ApiService } from '../api/api.service';
 import type { BotContext, BotConversation } from '../api/api.types';
+import { MetaService } from './meta.service';
 import { buildSystemPrompt } from './constants/prompts';
 import { BOT_TOOLS } from './constants/tools';
 
@@ -11,6 +12,9 @@ type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
 const MODEL = 'gpt-4o-mini';
 const MAX_TOOL_ROUNDS = 6;
+
+/** Secret dev command: wipes the chat history so the next message starts fresh. */
+const RESET_COMMAND = '/reset';
 
 const FALLBACK_REPLY =
   'Disculpá, en este momento tenemos un inconveniente técnico. ' +
@@ -25,6 +29,7 @@ export class WebhookService {
   constructor(
     private readonly config: ConfigService,
     private readonly api: ApiService,
+    private readonly meta: MetaService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.config.get('OPENAI_API_KEY'),
@@ -48,8 +53,8 @@ export class WebhookService {
       this.logger.error(
         `API no disponible (context): ${(error as Error).message}`,
       );
-      await this.sendMessage(
-        this.normalizePhone(from),
+      await this.meta.sendText(
+        this.meta.normalizePhone(from),
         FALLBACK_REPLY,
         phoneNumberId,
       );
@@ -59,13 +64,25 @@ export class WebhookService {
     let conversation: BotConversation;
     try {
       conversation = await this.api.getConversation(phoneNumberId, from);
+
+      // Secret dev command: reset the session and stop here.
+      if (text.trim().toLowerCase() === RESET_COMMAND) {
+        await this.api.resetSession(conversation.conversationId);
+        await this.meta.sendText(
+          this.meta.normalizePhone(from),
+          '🔄 Conversación reiniciada. Escribime de nuevo para empezar.',
+          phoneNumberId,
+        );
+        return;
+      }
+
       await this.api.saveMessage(conversation.conversationId, 'user', text);
     } catch (error) {
       this.logger.error(
         `API no disponible (conversation): ${(error as Error).message}`,
       );
-      await this.sendMessage(
-        this.normalizePhone(from),
+      await this.meta.sendText(
+        this.meta.normalizePhone(from),
         FALLBACK_REPLY,
         phoneNumberId,
       );
@@ -81,7 +98,11 @@ export class WebhookService {
         this.logger.error(`No se pudo guardar la respuesta: ${error.message}`),
       );
 
-    await this.sendMessage(this.normalizePhone(from), reply, phoneNumberId);
+    await this.meta.sendText(
+      this.meta.normalizePhone(from),
+      reply,
+      phoneNumberId,
+    );
   }
 
   /** Runs the OpenAI tool-calling loop until the model produces a final text reply. */
@@ -167,6 +188,12 @@ export class WebhookService {
       prompt +=
         `\n\n## CLIENTE IDENTIFICADO EN ESTA CONVERSACIÓN\n` +
         `${firstName} ${lastName} (DNI ${dni}). Ya está identificado: no vuelvas a pedirle DNI ni patente y podés usar las tools de cliente directamente.`;
+    }
+
+    if (conversation.newSession) {
+      prompt +=
+        `\n\n## SESIÓN NUEVA\n` +
+        `La conversación anterior se cerró por inactividad. Saludá de nuevo brevemente y retomá desde el menú inicial, sin dar por hecho nada de la charla previa.`;
     }
 
     return prompt;
@@ -271,41 +298,5 @@ export class WebhookService {
     }
     this.logger.error(`Tool ${name} falló: ${(error as Error).message}`);
     return JSON.stringify({ error: 'Error interno consultando los datos' });
-  }
-
-  private async sendMessage(to: string, text: string, phoneNumberId: string) {
-    const token = this.config.get<string>('WHATSAPP_TOKEN');
-    const url = `https://graph.facebook.com/v25.0/${phoneNumberId}/messages`;
-
-    try {
-      await axios.post(
-        url,
-        {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'text',
-          text: { body: text },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-      this.logger.log(`✅ Respuesta enviada a ${to}`);
-    } catch (error) {
-      this.logger.error(
-        `❌ Error Meta: ${JSON.stringify(axios.isAxiosError(error) ? error.response?.data : error)}`,
-      );
-    }
-  }
-
-  private normalizePhone(phone: string): string {
-    // WhatsApp Argentina: remueve el '9' extra que agrega el móvil (549 → 54)
-    if (phone.startsWith('549')) {
-      return '54' + phone.slice(3);
-    }
-    return phone;
   }
 }

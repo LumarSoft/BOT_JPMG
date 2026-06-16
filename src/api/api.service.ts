@@ -10,6 +10,7 @@ import type {
   InfoAutoBrand,
   InfoAutoGroup,
   InfoAutoModel,
+  PendingWarning,
   PolizaDocumento,
   PolizaSummary,
   QuoteResult,
@@ -61,6 +62,19 @@ export class ApiService {
     const { data } = await this.http.post<ConversationMessage>(
       `/bot/conversation/${conversationId}/message`,
       { role, content },
+    );
+    return data;
+  }
+
+  /** Resets the conversation session (secret /reset dev command): drops history, keeps the client. */
+  async resetSession(conversationId: number): Promise<void> {
+    await this.http.post(`/bot/conversation/${conversationId}/reset`);
+  }
+
+  /** Claims (and marks warned) the conversations idle past the inactivity window. */
+  async claimPendingWarnings(): Promise<PendingWarning[]> {
+    const { data } = await this.http.post<PendingWarning[]>(
+      '/bot/conversations/pending-warnings',
     );
     return data;
   }
