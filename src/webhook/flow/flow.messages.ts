@@ -29,6 +29,15 @@ export const OPT = {
   leadCotizar: 'l_cotizar',
   leadVendedor: 'l_vendedor',
   leadConsultas: 'l_consultas',
+  // cotización categories
+  cotAuto: 'cot_auto',
+  cotMoto: 'cot_moto',
+  cotBici: 'cot_bici',
+  cotBolso: 'cot_bolso',
+  cotComercio: 'cot_comercio',
+  cotHogar: 'cot_hogar',
+  cotPersonas: 'cot_personas',
+  cotPraxis: 'cot_praxis',
   // siniestro
   sinNueva: 'sin_nueva',
   sinConsultar: 'sin_consultar',
@@ -133,6 +142,75 @@ export function leadMenu(): OutgoingMessage {
       { id: OPT.leadCotizar, title: 'Cotizar un seguro' },
       { id: OPT.leadVendedor, title: 'Que me llamen' },
       { id: OPT.leadConsultas, title: 'Otras consultas' },
+    ],
+  };
+}
+
+/**
+ * Quote categories. Auto and moto are quoted online (Triunfo + InfoAuto); the
+ * rest are quoted by an advisor — same split as the web (only auto/moto have an
+ * instant quote; the other risks are a contact form there too).
+ */
+export const COTIZAR_ONLINE = new Set<string>([OPT.cotAuto, OPT.cotMoto]);
+
+/** Human label per quote category, used in the advisor hand-off copy. */
+export const COTIZAR_LABEL: Record<string, string> = {
+  [OPT.cotAuto]: 'Auto',
+  [OPT.cotMoto]: 'Moto',
+  [OPT.cotBici]: 'Bicicleta',
+  [OPT.cotBolso]: 'Bolso protegido',
+  [OPT.cotComercio]: 'Comercio e Industria',
+  [OPT.cotHogar]: 'Hogar',
+  [OPT.cotPersonas]: 'Personas (vida/accidentes/salud)',
+  [OPT.cotPraxis]: 'Praxis profesional',
+};
+
+export function cotizarMenu(): OutgoingMessage {
+  return {
+    kind: 'list',
+    body: '💰 *Cotización*\n¿Qué querés cotizar?',
+    button: 'Ver coberturas',
+    rows: [
+      {
+        id: OPT.cotAuto,
+        title: '🚗 Auto',
+        description: 'Cotización online al instante',
+      },
+      {
+        id: OPT.cotMoto,
+        title: '🏍️ Moto',
+        description: 'Cotización online al instante',
+      },
+      {
+        id: OPT.cotBici,
+        title: '🚲 Bicicleta',
+        description: 'Urbanas, MTB y eléctricas',
+      },
+      {
+        id: OPT.cotBolso,
+        title: '👜 Bolso protegido',
+        description: 'Robo, hurto y contenido',
+      },
+      {
+        id: OPT.cotComercio,
+        title: '🏪 Comercio',
+        description: 'Locales, depósitos y plantas',
+      },
+      {
+        id: OPT.cotHogar,
+        title: '🏠 Hogar',
+        description: 'Edificio y contenido',
+      },
+      {
+        id: OPT.cotPersonas,
+        title: '🧑 Personas',
+        description: 'Vida, accidentes y salud',
+      },
+      {
+        id: OPT.cotPraxis,
+        title: '⚕️ Praxis profesional',
+        description: 'RC profesional',
+      },
     ],
   };
 }

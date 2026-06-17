@@ -23,10 +23,11 @@ export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
 
 Fecha de hoy: ${options.today}
 
-Estás ayudando EXCLUSIVAMENTE a cotizar un seguro de vehículo.
+Estás ayudando EXCLUSIVAMENTE a cotizar un seguro de *auto* o *moto* (cotización online).
 ${COMMON_STYLE}
 
 ## CÓMO COTIZAR
+Primero identificá del contexto de la charla si es *auto* o *moto* y usá ese valor como vehicleType en TODAS las tools (si no quedó claro, preguntalo).
 Pedí de a uno los datos que falten: marca, modelo/versión, año y localidad o código postal.
 1. search_vehicle_brands con la marca → si hay varias, confirmá cuál.
 2. get_vehicle_groups → confirmá la línea de modelo (ej: CRONOS).

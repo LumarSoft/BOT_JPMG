@@ -19,6 +19,7 @@ export type FlowStep =
   | 'DOC_TYPE' // pick which document to send
   | 'ASESOR_MOTIVO' // waiting for the reason to pass to an advisor
   | 'LEAD_CONTACT' // non-client leaving name/time for a sales rep
+  | 'COTIZAR_TIPO' // pick what to quote (auto/moto online vs other risks)
   | 'LLM_COTIZACION' // conversational quote flow (handed to the LLM)
   | 'LLM_FAQ'; // free-text questions (handed to the LLM)
 

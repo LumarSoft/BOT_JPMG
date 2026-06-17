@@ -12,6 +12,9 @@ import type {
 } from './flow.types';
 import {
   clientMenu,
+  cotizarMenu,
+  COTIZAR_LABEL,
+  COTIZAR_ONLINE,
   docPicker,
   DOC_PREFIX,
   formatDocumento,
@@ -214,6 +217,8 @@ export class FlowService {
         return this.handleAsesorMotivo(input, key);
       case 'LEAD_CONTACT':
         return this.handleLeadContact(input, key);
+      case 'COTIZAR_TIPO':
+        return this.handleCotizarTipo(input, ctx, key);
       case 'LLM_COTIZACION':
         return this.handleLlm(input, key, 'cotizacion');
       case 'LLM_FAQ':
@@ -262,7 +267,7 @@ export class FlowService {
         this.setState(key, 'SINIESTRO_TYPE');
         return { messages: [siniestroTypeMenu()] };
       case OPT.cotizacion:
-        return this.startCotizacion(key);
+        return this.showCotizarMenu(key);
       case OPT.pagos:
         return this.guard(ctx, key, 'pagos');
       case OPT.documentos:
@@ -294,7 +299,7 @@ export class FlowService {
   private handleLeadMenu(input: UserInput, key: string): FlowResult {
     switch (input.selectionId) {
       case OPT.leadCotizar:
-        return this.startCotizacion(key);
+        return this.showCotizarMenu(key);
       case OPT.leadVendedor:
         this.setState(key, 'LEAD_CONTACT');
         return {
@@ -590,7 +595,7 @@ export class FlowService {
           body:
             `✅ Registré tu denuncia (N° interno *${siniestro.id}*).\n` +
             `La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.\n\n` +
-            `📸 Si tenés *fotos del daño*, mandámelas por este chat y las adjunto automáticamente a la denuncia.`,
+            `📸 *Importante:* si tenés *fotos del daño*, mandámelas *ahora* por este chat (podés enviar varias) y las sumo automáticamente a la denuncia.`,
         },
         clientMenu(),
       ],
@@ -685,18 +690,71 @@ export class FlowService {
 
   // ─── LLM hand-off (cotización / FAQ) ──────────────────────
 
-  private startCotizacion(key: string): FlowResult {
-    this.setState(key, 'LLM_COTIZACION');
+  private showCotizarMenu(key: string): FlowResult {
+    this.setState(key, 'COTIZAR_TIPO');
+    return { messages: [cotizarMenu()] };
+  }
+
+  /**
+   * Routes a quote category. Auto/moto go to the online quote sub-flow (LLM +
+   * Triunfo); the other risks are quoted by an advisor — same split as the web,
+   * where only auto/moto have an instant quote.
+   */
+  private handleCotizarTipo(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
+    const opt = input.selectionId ?? this.matchCotizarCategory(input.text);
+    if (!opt || !COTIZAR_LABEL[opt]) {
+      return { messages: [cotizarMenu()] };
+    }
+
+    if (COTIZAR_ONLINE.has(opt)) {
+      return this.startCotizacion(key, opt === OPT.cotMoto ? 'moto' : 'auto');
+    }
+
+    // Other risks: no online quote — take note and hand off to an advisor.
+    // TODO: persist this as a quote lead via the API once an endpoint exists.
+    const result = this.toMainMenu(key, ctx);
+    return this.prepend(
+      `📝 Tomé tu interés en cotizar *${COTIZAR_LABEL[opt]}*. ` +
+        'Esta cobertura la cotiza un asesor: te va a contactar con la propuesta el mismo día hábil (Lun a Vie de 8 a 16 hs).',
+      result,
+    );
+  }
+
+  private startCotizacion(key: string, vehiculo: 'auto' | 'moto'): FlowResult {
+    this.setState(key, 'LLM_COTIZACION', { vehiculo });
+    const noun = vehiculo === 'moto' ? 'tu moto' : 'tu auto';
     return {
       messages: [
         {
           kind: 'text',
           body:
-            '💰 Te ayudo a cotizar. Decime *marca, modelo, año* y *localidad o código postal* del vehículo.\n' +
+            `💰 Te ayudo a cotizar el seguro de ${noun}. ` +
+            `Decime *marca, modelo, año* y *localidad o código postal*.\n` +
             'Escribí *menú* para volver al inicio.',
         },
       ],
     };
+  }
+
+  /** Keyword routing so typed text (not just taps) reaches a quote category. */
+  private matchCotizarCategory(text: string): string | null {
+    const t = text.toLowerCase();
+    if (/auto|coche|veh[ií]culo|camioneta|pick/.test(t)) return OPT.cotAuto;
+    if (/moto|scooter|ciclomotor/.test(t)) return OPT.cotMoto;
+    if (/bici|bicicleta|mtb|rodado/.test(t)) return OPT.cotBici;
+    if (/bolso|cartera|mochila|notebook|celular/.test(t)) return OPT.cotBolso;
+    if (/comercio|local|negocio|industria|dep[oó]sito/.test(t))
+      return OPT.cotComercio;
+    if (/hogar|casa|departamento|vivienda|inmueble/.test(t))
+      return OPT.cotHogar;
+    if (/persona|vida|accidente|salud|sepelio/.test(t)) return OPT.cotPersonas;
+    if (/praxis|profesional|matr[ií]cula|mala praxis/.test(t))
+      return OPT.cotPraxis;
+    return null;
   }
 
   private handleLlm(

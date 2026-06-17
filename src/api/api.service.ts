@@ -165,24 +165,24 @@ export class ApiService {
     vehicleType: VehicleTypeParam,
     query?: string,
   ): Promise<InfoAutoBrand[]> {
-    const { data } = await this.http.get<InfoAutoBrand[]>(
+    const { data } = await this.http.get<{ data: InfoAutoBrand[] }>(
       `/infoauto/${vehicleType}/brands`,
       {
         params: { query_string: query || undefined, page_size: 20 },
       },
     );
-    return data;
+    return data.data;
   }
 
   async getGroups(
     vehicleType: VehicleTypeParam,
     brandId: number,
   ): Promise<InfoAutoGroup[]> {
-    const { data } = await this.http.get<InfoAutoGroup[]>(
+    const { data } = await this.http.get<{ data: InfoAutoGroup[] }>(
       `/infoauto/${vehicleType}/brands/${brandId}/groups`,
       { params: { page_size: 50 } },
     );
-    return data;
+    return data.data;
   }
 
   async getModels(
@@ -191,11 +191,11 @@ export class ApiService {
     groupId: number,
     query?: string,
   ): Promise<InfoAutoModel[]> {
-    const { data } = await this.http.get<InfoAutoModel[]>(
+    const { data } = await this.http.get<{ data: InfoAutoModel[] }>(
       `/infoauto/${vehicleType}/brands/${brandId}/groups/${groupId}/models`,
       { params: { query_string: query || undefined, page_size: 30 } },
     );
-    return data;
+    return data.data;
   }
 
   async quoteVehicle(
