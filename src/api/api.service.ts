@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import type {
+  AttachAdjuntosResult,
   BotContext,
   BotConversation,
   ConversationMessage,
@@ -133,6 +134,27 @@ export class ApiService {
     const { data } = await this.http.post<SiniestroSummary>(
       `/bot/conversation/${conversationId}/siniestros`,
       payload,
+    );
+    return data;
+  }
+
+  /** Uploads a WhatsApp photo, attaching it to the conversation's latest open claim. */
+  async attachAdjunto(
+    conversationId: number,
+    file: { buffer: Buffer; filename: string; mimeType: string },
+  ): Promise<AttachAdjuntosResult> {
+    const form = new FormData();
+    form.append(
+      'adjuntos',
+      // Uint8Array.from yields a standard ArrayBuffer-backed view (Buffer's
+      // ArrayBufferLike type is not assignable to BlobPart directly).
+      new Blob([Uint8Array.from(file.buffer)], { type: file.mimeType }),
+      file.filename,
+    );
+
+    const { data } = await this.http.post<AttachAdjuntosResult>(
+      `/bot/conversation/${conversationId}/adjuntos`,
+      form,
     );
     return data;
   }

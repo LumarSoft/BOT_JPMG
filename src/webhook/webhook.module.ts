@@ -4,10 +4,16 @@ import { WebhookController } from './webhook.controller';
 import { WebhookService } from './webhook.service';
 import { MetaService } from './meta.service';
 import { InactivityWarningService } from './inactivity-warning.service';
+import { FlowService } from './flow/flow.service';
 
 @Module({
   imports: [ApiModule],
   controllers: [WebhookController],
-  providers: [WebhookService, MetaService, InactivityWarningService],
+  providers: [
+    WebhookService,
+    MetaService,
+    InactivityWarningService,
+    FlowService,
+  ],
 })
 export class WebhookModule {}

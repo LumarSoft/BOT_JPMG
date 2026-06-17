@@ -139,3 +139,8 @@ export interface QuoteResult {
   coverages: QuoteCoverage[];
   messages: string[];
 }
+
+export interface AttachAdjuntosResult {
+  siniestroId: number;
+  adjuntosCount: number;
+}

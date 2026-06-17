@@ -197,3 +197,23 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     },
   },
 ];
+
+/** Tool names safe to expose during the conversational quote sub-flow. */
+const COTIZADOR_TOOL_NAMES = [
+  'search_vehicle_brands',
+  'get_vehicle_groups',
+  'get_vehicle_models',
+  'quote_vehicle',
+];
+
+/**
+ * Subset of tools handed to the LLM during cotización. Client-scoped tools
+ * (pólizas, siniestros, documentos, pagos) are intentionally excluded — those
+ * flows are driven by the deterministic state machine, never by the model.
+ */
+export const COTIZADOR_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] =
+  BOT_TOOLS.filter(
+    (tool) =>
+      tool.type === 'function' &&
+      COTIZADOR_TOOL_NAMES.includes(tool.function.name),
+  );
