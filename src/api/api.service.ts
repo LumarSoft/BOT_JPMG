@@ -72,6 +72,11 @@ export class ApiService {
     await this.http.post(`/bot/conversation/${conversationId}/reset`);
   }
 
+  /** Marks the conversation as pending human attention (user requested an advisor). */
+  async requestHandoff(conversationId: number): Promise<void> {
+    await this.http.post(`/bot/conversation/${conversationId}/request-handoff`);
+  }
+
   /** Claims (and marks warned) the conversations idle past the inactivity window. */
   async claimPendingWarnings(): Promise<PendingWarning[]> {
     const { data } = await this.http.post<PendingWarning[]>(

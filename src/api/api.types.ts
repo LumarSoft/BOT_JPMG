@@ -30,6 +30,8 @@ export interface BotConversation {
   /** True when the previous session expired by inactivity and this is a fresh start. */
   newSession: boolean;
   messages: ConversationMessage[];
+  /** When true a human agent has taken over — the bot must only store inbound messages and not reply. */
+  botPaused: boolean;
 }
 
 export interface PendingWarning {

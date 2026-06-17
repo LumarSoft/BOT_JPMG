@@ -214,7 +214,7 @@ export class FlowService {
       case 'DOC_TYPE':
         return this.handleDocType(state, input, key);
       case 'ASESOR_MOTIVO':
-        return this.handleAsesorMotivo(input, key);
+        return this.handleAsesorMotivo(input, ctx, key);
       case 'LEAD_CONTACT':
         return this.handleLeadContact(input, key);
       case 'COTIZAR_TIPO':
@@ -659,9 +659,15 @@ export class FlowService {
 
   // ─── Asesor / leads ───────────────────────────────────────
 
-  private handleAsesorMotivo(input: UserInput, key: string): FlowResult {
-    // TODO: persist this as an advisor lead via the API (no endpoint yet) so the
-    // panel admin shows a queue of pending contact requests.
+  private async handleAsesorMotivo(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    // Mark the conversation as pending in the API so it surfaces in the admin
+    // inbox. Best-effort: a failed call should not block the bot reply.
+    await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+    void input;
     this.setState(key, 'CLIENT_MENU');
     return {
       messages: [

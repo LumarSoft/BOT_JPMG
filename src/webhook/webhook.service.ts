@@ -194,6 +194,15 @@ export class WebhookService {
           `sesión nueva: ${conversation.newSession ?? false}`,
       );
 
+      // A human agent has taken over this conversation — store the message so
+      // the agent can see it in the inbox, but do not run the bot for this turn.
+      if (conversation.botPaused) {
+        await this.api
+          .saveMessage(conversation.conversationId, 'user', text)
+          .catch(() => undefined);
+        return;
+      }
+
       // Secret dev command: reset the session and stop here.
       if (text.trim().toLowerCase() === RESET_COMMAND) {
         await this.api.resetSession(conversation.conversationId);
