@@ -67,4 +67,6 @@ export interface FlowContext {
   client: ClientSummary | null;
   /** True when the previous session expired and this is a fresh start. */
   newSession: boolean;
+  /** Configurable bot display name (Producer.botName); null → generic fallback. */
+  botName: string | null;
 }

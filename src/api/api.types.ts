@@ -4,6 +4,8 @@ export interface BotContext {
   producerId: number;
   producerName: string;
   producerSlug: string;
+  /** Configurable bot display name (Producer.botName); null → generic fallback. */
+  botName: string | null;
   systemPrompt: string;
 }
 

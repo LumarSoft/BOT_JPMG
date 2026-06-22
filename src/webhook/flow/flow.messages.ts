@@ -45,6 +45,7 @@ export const OPT = {
   cancelar: 'cancelar',
   // global
   menu: 'menu',
+  finalizar: 'finalizar',
 } as const;
 
 export const POLIZA_PREFIX = 'pol_';
@@ -80,24 +81,44 @@ function polizaLabel(p: PolizaSummary): string {
 
 // ─── Menus ──────────────────────────────────────────────────
 
-export function welcomeMenu(firstName?: string): OutgoingMessage {
+/**
+ * How the bot introduces itself. Uses the per-producer configured name
+ * (Producer.botName) and falls back to a generic identity when none is set.
+ */
+export function botIntro(botName?: string | null): string {
+  const name = botName?.trim();
+  return name
+    ? `Soy *${name}*, el asistente de *John Pellegrini Management Group*`
+    : `Soy *el asistente de John Pellegrini Management Group* (JPMG)`;
+}
+
+export function welcomeMenu(
+  firstName?: string,
+  botName?: string | null,
+): OutgoingMessage {
   const hi = firstName ? `¡Hola, ${firstName}! ` : '¡Hola! ';
   return {
     kind: 'buttons',
     body:
-      `${hi}Bienvenido/a a *John Pellegrini Management Group SRL*. ` +
-      `Para asistirte mejor, contanos: ¿sos cliente de la organización?`,
+      `${hi}${botIntro(botName)} 👋 ` +
+      `Estoy para darte una mano. Para arrancar, decime: ¿ya sos cliente nuestro?`,
     buttons: [
       { id: OPT.cliente, title: 'Sí, soy cliente' },
       { id: OPT.noCliente, title: 'Todavía no' },
+      { id: OPT.finalizar, title: 'Finalizar' },
     ],
   };
+}
+
+/** Goodbye sent when the user ends the chat (global "finalizar" command). */
+export function goodbyeText(): string {
+  return '¡Gracias por escribirnos! 🙌 Cerramos la conversación por acá. Cuando necesites algo, escribime de nuevo y arrancamos al toque.';
 }
 
 export function clientMenu(): OutgoingMessage {
   return {
     kind: 'list',
-    body: '¿En qué te puedo ayudar?',
+    body: 'Contame, ¿en qué te doy una mano hoy?',
     button: 'Ver opciones',
     rows: [
       {
@@ -134,10 +155,10 @@ export function clientMenu(): OutgoingMessage {
   };
 }
 
-export function leadMenu(): OutgoingMessage {
+export function leadMenu(botName?: string | null): OutgoingMessage {
   return {
     kind: 'buttons',
-    body: '¡Gracias por comunicarte! ¿En qué podemos ayudarte hoy?',
+    body: `¡Gracias por escribirnos! ${botIntro(botName)} 👋 ¿Con qué te puedo ayudar?`,
     buttons: [
       { id: OPT.leadCotizar, title: 'Cotizar un seguro' },
       { id: OPT.leadVendedor, title: 'Que me llamen' },

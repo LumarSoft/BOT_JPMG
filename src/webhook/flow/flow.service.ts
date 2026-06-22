@@ -18,6 +18,7 @@ import {
   docPicker,
   DOC_PREFIX,
   formatDocumento,
+  goodbyeText,
   formatEstadoCuenta,
   formatSiniestros,
   leadMenu,
@@ -153,7 +154,7 @@ export class FlowService {
         };
       }
       this.setState(key, 'ROOT');
-      return { messages: [welcomeMenu()] };
+      return { messages: [welcomeMenu(undefined, ctx.botName)] };
     }
 
     const sel = input.selectionId;
@@ -161,6 +162,18 @@ export class FlowService {
     // Global escape hatch: "menú" / the back option returns to the main menu.
     if (sel === OPT.menu || /^men[uú]$/i.test(input.text.trim())) {
       return this.toMainMenu(key, ctx);
+    }
+
+    // Global "finalizar" command: end the chat from anywhere (button tap sends
+    // the title "Finalizar", caught by the same text check). Clears the flow
+    // state and resets the API session so the next message starts fresh.
+    if (
+      sel === OPT.finalizar ||
+      /^(finalizar|terminar|salir|chau|chao|adi[oó]s)$/i.test(input.text.trim())
+    ) {
+      this.states.delete(key);
+      await this.api.resetSession(ctx.conversationId).catch(() => undefined);
+      return { messages: [{ kind: 'text', body: goodbyeText() }] };
     }
 
     try {
@@ -196,7 +209,7 @@ export class FlowService {
       case 'CLIENT_MENU':
         return this.handleClientMenu(input, ctx, key);
       case 'LEAD_MENU':
-        return this.handleLeadMenu(input, key);
+        return this.handleLeadMenu(input, ctx, key);
       case 'IDENTIFY':
         return this.handleIdentify(state, input, ctx, key);
       case 'SINIESTRO_TYPE':
@@ -216,7 +229,7 @@ export class FlowService {
       case 'ASESOR_MOTIVO':
         return this.handleAsesorMotivo(input, ctx, key);
       case 'LEAD_CONTACT':
-        return this.handleLeadContact(input, key);
+        return this.handleLeadContact(input, ctx, key);
       case 'COTIZAR_TIPO':
         return this.handleCotizarTipo(input, ctx, key);
       case 'LLM_COTIZACION':
@@ -250,9 +263,9 @@ export class FlowService {
     }
     if (isLead) {
       this.setState(key, 'LEAD_MENU');
-      return { messages: [leadMenu()] };
+      return { messages: [leadMenu(ctx.botName)] };
     }
-    return { messages: [welcomeMenu(ctx.client?.firstName)] };
+    return { messages: [welcomeMenu(ctx.client?.firstName, ctx.botName)] };
   }
 
   private async handleClientMenu(
@@ -287,16 +300,21 @@ export class FlowService {
           ],
         };
       default:
-        return {
-          messages: [
-            { kind: 'text', body: 'No te entendí. Elegí una opción 👇' },
-            clientMenu(),
-          ],
-        };
+        // Hybrid router: the keyword matcher didn't catch a transactional
+        // intent, so instead of a dead-end "no te entendí" we hand this single
+        // turn to NICO (the FAQ LLM) for a natural reply. We deliberately do NOT
+        // switch to LLM_FAQ state — the user stays in CLIENT_MENU, so the next
+        // message is routed deterministically again and there's no LLM lock-in
+        // (one model call per unmatched message, which keeps cost bounded).
+        return { messages: [], handoff: 'faq' };
     }
   }
 
-  private handleLeadMenu(input: UserInput, key: string): FlowResult {
+  private handleLeadMenu(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
     switch (input.selectionId) {
       case OPT.leadCotizar:
         return this.showCotizarMenu(key);
@@ -321,7 +339,7 @@ export class FlowService {
           ],
         };
       default:
-        return { messages: [leadMenu()] };
+        return { messages: [leadMenu(ctx.botName)] };
     }
   }
 
@@ -339,7 +357,7 @@ export class FlowService {
         messages: [
           {
             kind: 'text',
-            body: 'Para acceder a tus datos necesito identificarte. Pasame el *DNI del titular* o la *patente* del vehículo asegurado.',
+            body: 'Para acceder a tus datos necesito identificarte. Pasame el *DNI del titular* o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
           },
         ],
       };
@@ -680,8 +698,13 @@ export class FlowService {
     };
   }
 
-  private handleLeadContact(input: UserInput, key: string): FlowResult {
+  private handleLeadContact(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
     // TODO: persist this sales lead via the API once an endpoint exists.
+    void input;
     this.setState(key, 'LEAD_MENU');
     return {
       messages: [
@@ -689,7 +712,7 @@ export class FlowService {
           kind: 'text',
           body: '¡Gracias! Un representante de ventas te va a contactar a la brevedad.',
         },
-        leadMenu(),
+        leadMenu(ctx.botName),
       ],
     };
   }
@@ -783,7 +806,7 @@ export class FlowService {
       return { messages: [clientMenu()] };
     }
     this.setState(key, 'ROOT');
-    return { messages: [welcomeMenu()] };
+    return { messages: [welcomeMenu(undefined, ctx.botName)] };
   }
 
   private noPolizas(key: string): FlowResult {

@@ -15,6 +15,28 @@ type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 const MODEL = 'gpt-4o-mini';
 const MAX_TOOL_ROUNDS = 6;
 
+/** Output token caps per sub-flow. Cotización needs room to list coverages;
+ * FAQ replies are short by design. Lower caps = lower cost and tighter answers. */
+const MAX_TOKENS: Record<'cotizacion' | 'faq', number> = {
+  cotizacion: 800,
+  faq: 350,
+};
+
+/** gpt-4o-mini list price (USD per 1M tokens), for cost logging only.
+ * Update if the model or pricing changes. */
+const PRICE_IN_PER_1M = 0.15;
+const PRICE_OUT_PER_1M = 0.6;
+
+/** Soft backstop against runaway OpenAI cost: max LLM hand-offs per sender per
+ * rolling hour. A normal user never reaches this; it caps a single number from
+ * spamming free text and blowing the monthly budget (USD 20 / number). */
+const LLM_CALLS_PER_HOUR = 30;
+const LLM_WINDOW_MS = 60 * 60 * 1000;
+
+const RATE_LIMIT_REPLY =
+  'Estoy recibiendo muchas consultas seguidas tuyas y necesito un respiro 🙏. ' +
+  'Escribí *menú* para usar las opciones, o *asesor* y te contacta una persona del equipo.';
+
 /** How long a seen message id is remembered for deduplication. Meta re-delivers
  * webhooks on any timeout/hiccup, always within a few minutes. */
 const DEDUP_TTL_MS = 10 * 60 * 1000;
@@ -60,6 +82,15 @@ export class WebhookService {
    * expire after DEDUP_TTL_MS so the map stays bounded.
    */
   private readonly seenMessages = new Map<string, number>();
+
+  /**
+   * LLM hand-off timestamps per sender (`phoneNumberId:waId`), for the rolling
+   * per-hour rate cap. Pruned on each check so the map stays bounded.
+   */
+  private readonly llmCalls = new Map<string, number[]>();
+
+  /** Running OpenAI cost estimate for this process (USD), for observability. */
+  private llmCostUsd = 0;
 
   constructor(
     private readonly config: ConfigService,
@@ -239,6 +270,7 @@ export class WebhookService {
         conversationId: conversation.conversationId,
         client: conversation.client,
         newSession: conversation.newSession ?? false,
+        botName: context.botName,
       },
     );
 
@@ -254,6 +286,23 @@ export class WebhookService {
     }
 
     if (result.handoff) {
+      // Cost backstop: if this sender has exceeded the hourly LLM budget, skip
+      // the model entirely and nudge them to the menu / a human.
+      if (!this.allowLlmCall(`${phoneNumberId}:${from}`)) {
+        this.logger.warn(
+          `[5/5] Rate limit LLM alcanzado para ${phoneNumberId}:${from} — respondo sin modelo`,
+        );
+        await this.api
+          .saveMessage(
+            conversation.conversationId,
+            'assistant',
+            RATE_LIMIT_REPLY,
+          )
+          .catch(() => undefined);
+        await this.meta.sendText(to, RATE_LIMIT_REPLY, phoneNumberId);
+        return;
+      }
+
       this.logger.log(`[5/5] Handoff al LLM (${result.handoff})`);
       const reply = await this.generateReply(
         context,
@@ -412,8 +461,16 @@ export class WebhookService {
     });
     const system =
       handoff === 'cotizacion'
-        ? buildCotizacionPrompt({ producerPrompt: context.systemPrompt, today })
-        : buildFaqPrompt({ producerPrompt: context.systemPrompt, today });
+        ? buildCotizacionPrompt({
+            botName: context.botName,
+            producerPrompt: context.systemPrompt,
+            today,
+          })
+        : buildFaqPrompt({
+            botName: context.botName,
+            producerPrompt: context.systemPrompt,
+            today,
+          });
     const tools = handoff === 'cotizacion' ? COTIZADOR_TOOLS : undefined;
 
     const messages: ChatMessageParam[] = [
@@ -424,6 +481,9 @@ export class WebhookService {
       { role: 'user', content: text },
     ];
 
+    let promptTokens = 0;
+    let completionTokens = 0;
+
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         this.logger.log(
@@ -431,10 +491,13 @@ export class WebhookService {
         );
         const completion = await this.openai.chat.completions.create({
           model: MODEL,
-          max_tokens: 800,
+          max_tokens: MAX_TOKENS[handoff],
           messages,
           ...(tools ? { tools } : {}),
         });
+
+        promptTokens += completion.usage?.prompt_tokens ?? 0;
+        completionTokens += completion.usage?.completion_tokens ?? 0;
 
         const message = completion.choices[0]?.message;
         if (!message) break;
@@ -480,9 +543,47 @@ export class WebhookService {
       this.logger.error(
         `Error generando respuesta: ${(error as Error).message}`,
       );
+    } finally {
+      this.logCost(handoff, promptTokens, completionTokens);
     }
 
     return FALLBACK_REPLY;
+  }
+
+  /**
+   * Rolling per-hour rate cap on LLM hand-offs for a single sender. Records the
+   * call and returns false once the sender exceeds LLM_CALLS_PER_HOUR within the
+   * window. Keeps the OpenAI spend per number bounded as a last-resort backstop.
+   */
+  private allowLlmCall(key: string): boolean {
+    const now = Date.now();
+    const recent = (this.llmCalls.get(key) ?? []).filter(
+      (t) => now - t < LLM_WINDOW_MS,
+    );
+    if (recent.length >= LLM_CALLS_PER_HOUR) {
+      this.llmCalls.set(key, recent);
+      return false;
+    }
+    recent.push(now);
+    this.llmCalls.set(key, recent);
+    return true;
+  }
+
+  /** Logs token usage and a running USD estimate for OpenAI cost visibility. */
+  private logCost(
+    handoff: 'cotizacion' | 'faq',
+    promptTokens: number,
+    completionTokens: number,
+  ): void {
+    if (promptTokens === 0 && completionTokens === 0) return;
+    const cost =
+      (promptTokens / 1_000_000) * PRICE_IN_PER_1M +
+      (completionTokens / 1_000_000) * PRICE_OUT_PER_1M;
+    this.llmCostUsd += cost;
+    this.logger.log(
+      `💸 OpenAI ${handoff}: ${promptTokens} in + ${completionTokens} out tokens ` +
+        `≈ USD ${cost.toFixed(5)} — acumulado proceso: USD ${this.llmCostUsd.toFixed(4)}`,
+    );
   }
 
   /** Maps a tool call to its ApiService method. Always returns a JSON string for the model. */
