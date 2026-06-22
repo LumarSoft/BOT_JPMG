@@ -34,6 +34,10 @@ export interface BotConversation {
   messages: ConversationMessage[];
   /** When true a human agent has taken over — the bot must only store inbound messages and not reply. */
   botPaused: boolean;
+  /** Serialized deterministic flow state ({ step, data } JSON), or null to start
+   * fresh. Lets the bot resume the exact step after a restart instead of greeting
+   * from scratch. Cleared by the API when a new session starts. */
+  flowState: string | null;
 }
 
 export interface PendingWarning {

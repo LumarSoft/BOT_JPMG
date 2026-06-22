@@ -27,6 +27,11 @@ export interface FlowState {
   step: FlowStep;
   /** Slots collected during the current flow (polizaId, fecha, descripcion, …). */
   data: Record<string, unknown>;
+  /** Which branch the user declared themselves into ('client' after "Sí, soy
+   * cliente", 'lead' after "Todavía no"). Persisted and carried across steps so
+   * the bot never re-asks "¿sos cliente?" on a menu return or a flow switch once
+   * the user already answered. Independent of DB identification (clientId). */
+  audience?: 'client' | 'lead';
 }
 
 export interface UserInput {
@@ -61,12 +66,24 @@ export interface FlowResult {
   handoff?: LLMHandoff;
 }
 
+/**
+ * What `FlowService.handle` returns: the messages/handoff plus the resulting
+ * state to persist. `state` is null when the flow ended (finalizar) or was
+ * cleared, telling the caller to wipe the stored snapshot.
+ */
+export interface FlowHandleResult extends FlowResult {
+  state: FlowState | null;
+}
+
 export interface FlowContext {
   conversationId: number;
   /** Identified client, if the conversation already has one. */
   client: ClientSummary | null;
   /** True when the previous session expired and this is a fresh start. */
   newSession: boolean;
+  /** Durable flow snapshot loaded from the API, used to rehydrate the state
+   * machine so a restart doesn't lose the user's place. Null/undefined → cold start. */
+  flowState?: FlowState | null;
   /** Configurable bot display name (Producer.botName); null → generic fallback. */
   botName: string | null;
 }

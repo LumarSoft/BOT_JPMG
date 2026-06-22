@@ -12,6 +12,7 @@ describe('WebhookService', () => {
     getConversation: jest.Mock;
     saveMessage: jest.Mock;
     resetSession: jest.Mock;
+    saveFlowState: jest.Mock;
     attachAdjunto: jest.Mock;
   };
   let meta: {
@@ -29,6 +30,7 @@ describe('WebhookService', () => {
       getConversation: jest.fn(),
       saveMessage: jest.fn(),
       resetSession: jest.fn().mockResolvedValue(undefined),
+      saveFlowState: jest.fn().mockResolvedValue(undefined),
       attachAdjunto: jest.fn(),
     };
     meta = {

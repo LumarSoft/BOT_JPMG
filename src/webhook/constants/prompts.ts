@@ -6,6 +6,19 @@ export interface FocusedPromptOptions {
   producerPrompt?: string;
   /** Today's date, already formatted (es-AR). */
   today: string;
+  /** Identified client on the conversation, if any — used so the model greets
+   * them by name and doesn't re-ask for data we already have. */
+  client?: { firstName: string; lastName: string } | null;
+}
+
+/** A line telling the model who the (already identified) client is, when known. */
+function clientContext(
+  client?: { firstName: string; lastName: string } | null,
+): string {
+  const name = client ? `${client.firstName} ${client.lastName}`.trim() : '';
+  return name
+    ? `\nEl cliente ya está identificado: *${name}*. Tratalo por su nombre cuando sea natural y no le pidas datos personales que ya tenemos.`
+    : '';
 }
 
 /** Builds the bot's identity line from the configured name, with a generic
@@ -39,7 +52,10 @@ function extraPersona(producerPrompt?: string): string {
  * handled by the menu, so we tell the model to bounce the user back to *menú*.
  */
 export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
-  const identity = buildIdentity(options.botName) + extraPersona(options.producerPrompt);
+  const identity =
+    buildIdentity(options.botName) +
+    extraPersona(options.producerPrompt) +
+    clientContext(options.client);
   return `${identity}
 
 Fecha de hoy: ${options.today}
@@ -69,7 +85,10 @@ GNC: anotalo para el asesor (no afecta la cotización online). Si no sabe el có
  * back to the menu.
  */
 export function buildFaqPrompt(options: FocusedPromptOptions): string {
-  const identity = buildIdentity(options.botName) + extraPersona(options.producerPrompt);
+  const identity =
+    buildIdentity(options.botName) +
+    extraPersona(options.producerPrompt) +
+    clientContext(options.client);
   return `${identity}
 
 Fecha de hoy: ${options.today}

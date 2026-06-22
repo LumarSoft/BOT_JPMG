@@ -6,7 +6,7 @@ import { ApiService } from '../api/api.service';
 import type { BotContext, BotConversation } from '../api/api.types';
 import { MetaService } from './meta.service';
 import { FlowService } from './flow/flow.service';
-import type { OutgoingMessage } from './flow/flow.types';
+import type { FlowState, OutgoingMessage } from './flow/flow.types';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS } from './constants/tools';
 
@@ -271,8 +271,20 @@ export class WebhookService {
         client: conversation.client,
         newSession: conversation.newSession ?? false,
         botName: context.botName,
+        flowState: this.parseFlowState(conversation.flowState),
       },
     );
+
+    // Persist the new flow snapshot so a restart resumes the exact step. The LLM
+    // handoff below never changes flow state, so it's safe to save it now.
+    await this.api
+      .saveFlowState(
+        conversation.conversationId,
+        result.state ? JSON.stringify(result.state) : null,
+      )
+      .catch((error: Error) =>
+        this.logger.error(`No se pudo guardar el flowState: ${error.message}`),
+      );
 
     for (const message of result.messages) {
       await this.dispatch(to, message, phoneNumberId);
@@ -350,6 +362,20 @@ export class WebhookService {
           phoneNumberId,
         );
         break;
+    }
+  }
+
+  /**
+   * Parses the persisted flow snapshot. A corrupt/legacy value must never crash
+   * the turn — we log it and start the user fresh (null) instead.
+   */
+  private parseFlowState(raw: string | null): FlowState | null {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as FlowState;
+    } catch {
+      this.logger.warn('flowState ilegible — reinicio el flujo desde cero');
+      return null;
     }
   }
 
@@ -465,11 +491,13 @@ export class WebhookService {
             botName: context.botName,
             producerPrompt: context.systemPrompt,
             today,
+            client: conversation.client,
           })
         : buildFaqPrompt({
             botName: context.botName,
             producerPrompt: context.systemPrompt,
             today,
+            client: conversation.client,
           });
     const tools = handoff === 'cotizacion' ? COTIZADOR_TOOLS : undefined;
 
@@ -654,15 +682,21 @@ export class WebhookService {
             models.map(({ codia, description }) => ({ codia, description })),
           );
         }
-        case 'quote_vehicle':
+        case 'quote_vehicle': {
+          // The InfoAuto codia encodes the Triunfo brand: codia = brand * 10000 + model.
+          // Extract brand from the codia directly — never trust the LLM's brandId, which
+          // can be wrong if it browsed models across mismatched brand/group combinations.
+          const codiaNum = Number(args.codia);
+          const brandFromCodia = Math.floor(codiaNum / 10000);
           return JSON.stringify(
             await this.api.quoteVehicle(vehicleType, {
-              brand: String(args.brandId),
-              model: String(args.codia),
+              brand: String(brandFromCodia),
+              model: String(codiaNum),
               manufactureYear: Number(args.manufactureYear),
               postalCode: Number(args.postalCode),
             }),
           );
+        }
         default:
           return JSON.stringify({ error: `Tool desconocida: ${name}` });
       }

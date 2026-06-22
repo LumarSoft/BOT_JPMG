@@ -72,6 +72,16 @@ export class ApiService {
     await this.http.post(`/bot/conversation/${conversationId}/reset`);
   }
 
+  /** Persists the bot's serialized flow state (or null to clear it) so it survives a restart. */
+  async saveFlowState(
+    conversationId: number,
+    flowState: string | null,
+  ): Promise<void> {
+    await this.http.post(`/bot/conversation/${conversationId}/flow-state`, {
+      flowState,
+    });
+  }
+
   /** Marks the conversation as pending human attention (user requested an advisor). */
   async requestHandoff(conversationId: number): Promise<void> {
     await this.http.post(`/bot/conversation/${conversationId}/request-handoff`);

@@ -5,6 +5,7 @@ import { ApiService } from '../../api/api.service';
 import type { PolizaSummary } from '../../api/api.types';
 import type {
   FlowContext,
+  FlowHandleResult,
   FlowResult,
   FlowState,
   FlowStep,
@@ -30,8 +31,14 @@ import {
   welcomeMenu,
 } from './flow.messages';
 
-/** How long an idle flow state is kept in memory before it's pruned. */
-const STATE_TTL_MS = 60 * 60 * 1000;
+/**
+ * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
+ * used to send the user back to the menu mid-session. Anchored so a greeting
+ * with an actual request ("hola, quiero una denuncia") is NOT caught here and
+ * still routes to its intent.
+ */
+const GREETING_RE =
+  /^(?:hola+s?|holis|buenas|buen(?:os|as)?\s*(?:d[ií]as?|tardes?|noches?)?|buen\s*d[ií]a|hey+|qu[eé]\s+tal|saludos)[\s!.,¡?]*$/i;
 
 /** Formats a Date as YYYY-MM-DD in local time (what the API expects). */
 function localISODate(d: Date): string {
@@ -57,24 +64,33 @@ function parseFecha(text: string): { iso: string; display: string } | null {
     }),
   });
 
-  if (t === 'hoy') return fromDate(new Date());
-  if (t === 'ayer') {
+  // Accept the keywords anywhere in a longer sentence ("me choqué hoy a la
+  // mañana"), not only as the entire message — users rarely send just "hoy".
+  if (/\bhoy\b/.test(t)) return fromDate(new Date());
+  if (/\bayer\b/.test(t)) {
     const d = new Date();
     d.setDate(d.getDate() - 1);
     return fromDate(d);
   }
+  if (/\b(anteayer|antes de ayer)\b/.test(t)) {
+    const d = new Date();
+    d.setDate(d.getDate() - 2);
+    return fromDate(d);
+  }
 
+  // Find a date embedded anywhere in the text. ISO (YYYY-MM-DD) is checked first
+  // so it isn't mis-read as DD-MM-YY by the looser day-first pattern.
   let y: number, mo: number, day: number;
-  const dmy = t.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
-  const ymd = t.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$/);
-  if (dmy) {
-    day = Number(dmy[1]);
-    mo = Number(dmy[2]);
-    y = Number(dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3]);
-  } else if (ymd) {
+  const ymd = t.match(/(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})/);
+  const dmy = t.match(/(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
+  if (ymd) {
     y = Number(ymd[1]);
     mo = Number(ymd[2]);
     day = Number(ymd[3]);
+  } else if (dmy) {
+    day = Number(dmy[1]);
+    mo = Number(dmy[2]);
+    y = Number(dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3]);
   } else {
     return null;
   }
@@ -106,17 +122,17 @@ type ClientAction =
  * reached through the LLM_* steps (cotización and free-text questions), where
  * natural language actually adds value.
  *
- * State lives in memory keyed by `${phoneNumberId}:${waId}`, mirroring the
- * dedup/queue maps already in webhook.service. It survives between messages but
- * not a process restart; a returning user simply gets the menu again.
+ * State is durable: the API persists the `{ step, data }` snapshot per
+ * conversation and hands it back on the next message. `handle` rehydrates from
+ * it and returns the new snapshot to persist, so the bot is effectively
+ * stateless and resumes the exact step after a restart or deploy. Session expiry
+ * is owned solely by the API (SESSION_TIMEOUT_MINUTES); the in-memory `states`
+ * map is just a per-turn scratchpad (filled on hydrate, cleared after handle).
  */
 @Injectable()
 export class FlowService {
   private readonly logger = new Logger(FlowService.name);
-  private readonly states = new Map<
-    string,
-    { state: FlowState; touchedAt: number }
-  >();
+  private readonly states = new Map<string, { state: FlowState }>();
 
   private readonly towTruckPhone?: string;
 
@@ -136,16 +152,38 @@ export class FlowService {
     key: string,
     input: UserInput,
     ctx: FlowContext,
-  ): Promise<FlowResult> {
-    // A fresh session always restarts the flow.
-    if (ctx.newSession) this.states.delete(key);
+  ): Promise<FlowHandleResult> {
+    // Rehydrate the scratchpad from the durable snapshot the API loaded (the
+    // source of truth), then run the turn and return the new snapshot to persist.
+    this.hydrate(key, ctx);
+    const result = await this.compute(key, input, ctx);
+    const entry = this.states.get(key);
+    const state = entry ? entry.state : null;
+    // The map is per-turn only; the next message rehydrates from the API.
+    this.states.delete(key);
+    return { ...result, state };
+  }
 
+  /** Loads the persisted snapshot into the scratchpad, or clears it on a fresh start. */
+  private hydrate(key: string, ctx: FlowContext): void {
+    if (ctx.newSession || !ctx.flowState) {
+      this.states.delete(key);
+      return;
+    }
+    this.states.set(key, { state: ctx.flowState });
+  }
+
+  private async compute(
+    key: string,
+    input: UserInput,
+    ctx: FlowContext,
+  ): Promise<FlowResult> {
     const existing = this.load(key);
 
     // First contact (no state): greet and branch on whether they're a client.
     if (!existing) {
       if (ctx.client) {
-        this.setState(key, 'CLIENT_MENU');
+        this.setState(key, 'CLIENT_MENU', {}, 'client');
         return {
           messages: [
             { kind: 'text', body: `¡Hola de nuevo, ${ctx.client.firstName}!` },
@@ -164,6 +202,13 @@ export class FlowService {
       return this.toMainMenu(key, ctx);
     }
 
+    // A standalone greeting mid-session means "take me back to the menu", not a
+    // FAQ chat — deterministic and free, and honoring the declared audience.
+    // Skipped for taps (selectionId) since those are never typed greetings.
+    if (!sel && GREETING_RE.test(input.text.trim())) {
+      return this.toMainMenu(key, ctx);
+    }
+
     // Global "finalizar" command: end the chat from anywhere (button tap sends
     // the title "Finalizar", caught by the same text check). Clears the flow
     // state and resets the API session so the next message starts fresh.
@@ -177,6 +222,19 @@ export class FlowService {
     }
 
     try {
+      // Sticky LLM sub-flows (cotización / FAQ free-text) keep routing every
+      // message to the model until the user changes topic. A message that
+      // clearly names a *different* flow must break out and re-enter the
+      // deterministic menu instead of being answered by the wrong prompt
+      // (e.g. asking for the grúa once the cotización is done).
+      const switched = this.detectFlowSwitch(
+        existing.state.step,
+        input,
+        ctx,
+        key,
+      );
+      if (switched) return await switched;
+
       return await this.route(existing.state, input, ctx, key);
     } catch (error) {
       this.logger.error(
@@ -249,23 +307,55 @@ export class FlowService {
     key: string,
   ): FlowResult {
     const t = input.text.toLowerCase();
+    const sel = input.selectionId;
+
+    // ── 1. Client / non-client identification ────────────────
     const isClient =
-      input.selectionId === OPT.cliente ||
-      (/cliente/.test(t) && !/no\b/.test(t));
+      sel === OPT.cliente ||
+      ((/\b(soy|ya soy|s[ií] soy)\b/.test(t) ||
+        /\b(tengo|tenemos)\b.*\b(p[oó]liza|seguro|cobertura)\b/.test(t)) &&
+        !/\bno\b/.test(t)) ||
+      (/\bcliente\b/.test(t) && !/\bno\b/.test(t));
+
     const isLead =
-      input.selectionId === OPT.noCliente ||
-      /^no\b/.test(t) ||
-      /no.*cliente/.test(t);
+      sel === OPT.noCliente ||
+      /^(no|todav[ií]a no|a[uú]n no|recién|recien)\b/.test(t) ||
+      /\bno\b.*\bcliente\b/.test(t);
 
     if (isClient) {
-      this.setState(key, 'CLIENT_MENU');
+      this.setState(key, 'CLIENT_MENU', {}, 'client');
       return { messages: [clientMenu()] };
     }
     if (isLead) {
-      this.setState(key, 'LEAD_MENU');
+      this.setState(key, 'LEAD_MENU', {}, 'lead');
       return { messages: [leadMenu(ctx.botName)] };
     }
-    return { messages: [welcomeMenu(ctx.client?.firstName, ctx.botName)] };
+
+    // ── 2. Direct intent routing (before asking client/non-client) ──
+    // Cotizar doesn't need identification → go straight to the quote menu.
+    if (/\bcotiz|\bpresupuest|\bcu[aá]nto.*seguro|\bprecio.*seguro/.test(t)) {
+      return this.showCotizarMenu(key);
+    }
+
+    // Client-scoped intents → acknowledge + re-ask with the welcome menu buttons.
+    if (
+      /\bsiniestro|\bdenuncia|\baccidente|\bchoque|\brob|\bp[oó]liza|\bpago|\bcuota|\bdocument|\btarjeta|\bgr[uú]a|\bauxilio|\bcobertura/.test(
+        t,
+      )
+    ) {
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Claro, con gusto te ayudo. Para eso primero necesito saber si ya sos cliente nuestro:',
+          },
+          welcomeMenu(ctx.client?.firstName, ctx.botName),
+        ],
+      };
+    }
+
+    // ── 3. Last resort: LLM responds naturally (state stays ROOT) ──
+    return { messages: [], handoff: 'faq' };
   }
 
   private async handleClientMenu(
@@ -315,7 +405,10 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): FlowResult {
-    switch (input.selectionId) {
+    void ctx;
+    const opt = input.selectionId ?? this.matchLeadIntent(input.text);
+
+    switch (opt) {
       case OPT.leadCotizar:
         return this.showCotizarMenu(key);
       case OPT.leadVendedor:
@@ -339,7 +432,9 @@ export class FlowService {
           ],
         };
       default:
-        return { messages: [leadMenu(ctx.botName)] };
+        // Keyword match didn't find intent — LLM responds naturally.
+        // State stays LEAD_MENU so the next message tries matching again.
+        return { messages: [], handoff: 'faq' };
     }
   }
 
@@ -470,13 +565,11 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    if (input.selectionId === OPT.sinNueva) {
-      return this.guard(ctx, key, 'siniestro_nueva');
-    }
-    if (input.selectionId === OPT.sinConsultar) {
+    const opt = input.selectionId ?? this.matchSiniestroIntent(input.text);
+    if (opt === OPT.sinNueva) return this.guard(ctx, key, 'siniestro_nueva');
+    if (opt === OPT.sinConsultar)
       return this.guard(ctx, key, 'siniestro_consultar');
-    }
-    return { messages: [siniestroTypeMenu()] };
+    return { messages: [], handoff: 'faq' };
   }
 
   private handleSiniestroPoliza(
@@ -485,11 +578,26 @@ export class FlowService {
     key: string,
   ): FlowResult {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
-    const polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+    let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+
+    if (
+      (polizaId === null || !polizas.some((p) => p.id === polizaId)) &&
+      input.text.trim()
+    ) {
+      const match = this.matchPolizaByText(input.text, polizas);
+      if (match) polizaId = match.id;
+    }
 
     if (polizaId === null || !polizas.some((p) => p.id === polizaId)) {
+      // Can't resolve the policy. Re-show the picker instead of leaking to the
+      // FAQ model, which doesn't know we're mid-denuncia and would strand the claim.
       return {
-        messages: [polizaPicker(polizas, 'Elegí una póliza de la lista 👇')],
+        messages: [
+          polizaPicker(
+            polizas,
+            'No reconocí esa póliza. Elegí una de la lista, por favor:',
+          ),
+        ],
       };
     }
 
@@ -511,11 +619,13 @@ export class FlowService {
   ): FlowResult {
     const fecha = parseFecha(input.text);
     if (!fecha) {
+      // Couldn't read a date. Re-ask deterministically (staying in this step)
+      // instead of handing to the FAQ model, which would derail the denuncia.
       return {
         messages: [
           {
             kind: 'text',
-            body: 'No entendí la fecha. Escribila como *DD/MM/AAAA*, por ejemplo 17/06/2026.',
+            body: 'No pude leer la fecha 🗓️. Decime *hoy* o *ayer*, o escribila como *DD/MM/AAAA* (por ejemplo 05/06/2026).',
           },
         ],
       };
@@ -542,11 +652,13 @@ export class FlowService {
   ): FlowResult {
     const descripcion = input.text.trim();
     if (descripcion.length < 5) {
+      // Too short. Re-ask in-flow rather than leaking to the FAQ model, so the
+      // denuncia keeps moving toward confirmation.
       return {
         messages: [
           {
             kind: 'text',
-            body: 'Necesito un poco más de detalle sobre lo ocurrido.',
+            body: 'Contame un poco más de qué pasó (cómo fue, y la hora y el lugar si los tenés).',
           },
         ],
       };
@@ -572,7 +684,9 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    if (input.selectionId === OPT.cancelar) {
+    const sel = input.selectionId ?? this.matchConfirmIntent(input.text);
+
+    if (sel === OPT.cancelar) {
       this.setState(key, 'CLIENT_MENU');
       return {
         messages: [
@@ -581,7 +695,9 @@ export class FlowService {
         ],
       };
     }
-    if (input.selectionId !== OPT.confirmar) {
+    if (sel !== OPT.confirmar) {
+      // Anything that isn't a clear yes/no (free text or a stray tap): re-show
+      // the confirmation card so the final step never slips into the FAQ model.
       const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
       const poliza = polizas.find((p) => p.id === state.data.polizaId);
       return {
@@ -629,12 +745,19 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
-    const polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+    let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+
+    if (
+      (polizaId === null || !polizas.some((p) => p.id === polizaId)) &&
+      input.text.trim()
+    ) {
+      const match = this.matchPolizaByText(input.text, polizas);
+      if (match) polizaId = match.id;
+    }
 
     if (polizaId === null || !polizas.some((p) => p.id === polizaId)) {
-      return {
-        messages: [polizaPicker(polizas, 'Elegí una póliza de la lista 👇')],
-      };
+      // Can't resolve policy — LLM asks naturally; state stays DOC_POLIZA.
+      return { messages: [], handoff: 'faq' };
     }
 
     const docs = await this.api.getDocumentos(ctx.conversationId, polizaId);
@@ -664,10 +787,18 @@ export class FlowService {
       (state.data.docs as
         | { codigo: string; nombre: string; url: string }[]
         | undefined) ?? [];
-    const codigo = this.parseStringRef(input.selectionId, DOC_PREFIX);
+    let codigo = this.parseStringRef(input.selectionId, DOC_PREFIX);
+
+    if (!codigo && input.text.trim()) {
+      codigo = this.matchDocByText(input.text, docs);
+    }
+
     const doc = docs.find((d) => d.codigo === codigo);
 
-    if (!doc) return { messages: [docPicker(docs)] };
+    if (!doc) {
+      // Can't identify document — LLM asks naturally; state stays DOC_TYPE.
+      return { messages: [], handoff: 'faq' };
+    }
 
     this.setState(key, 'CLIENT_MENU');
     return {
@@ -736,7 +867,8 @@ export class FlowService {
   ): FlowResult {
     const opt = input.selectionId ?? this.matchCotizarCategory(input.text);
     if (!opt || !COTIZAR_LABEL[opt]) {
-      return { messages: [cotizarMenu()] };
+      // Category not recognised — LLM helps clarify; state stays COTIZAR_TIPO.
+      return { messages: [], handoff: 'faq' };
     }
 
     if (COTIZAR_ONLINE.has(opt)) {
@@ -792,18 +924,109 @@ export class FlowService {
     handoff: 'cotizacion' | 'faq',
   ): FlowResult {
     // Keep the user in the LLM sub-flow; webhook.service runs the model for this
-    // turn. "menú" already exited earlier in handle().
+    // turn. "menú" / a topic change already exited earlier in handle().
     void key;
     void input;
     return { messages: [], handoff };
   }
 
+  /**
+   * Breaks the user out of a sticky LLM sub-flow when their message clearly
+   * names a *different* flow. Without this the LLM_* states only release on the
+   * literal words "menú"/"finalizar", so a user who finishes a cotización and
+   * then asks for the grúa keeps getting answered by the quote model. Returns
+   * the re-routed result, or null when the message is not a topic change (so
+   * genuine quote data / FAQ questions stay with the model).
+   */
+  private detectFlowSwitch(
+    step: FlowStep,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult | Promise<FlowResult> | null {
+    if (step !== 'LLM_COTIZACION' && step !== 'LLM_FAQ') return null;
+
+    const intent = this.matchGlobalIntent(input.text);
+    if (!intent) return null;
+    // "cotizar" is the cotización flow itself — not a topic change when we're
+    // already in it (e.g. "quiero cotizar otro auto" stays with the model).
+    if (step === 'LLM_COTIZACION' && intent === 'cotizar') return null;
+
+    this.logger.log(
+      `Cambio de flujo en ${step} → "${intent}"; vuelvo al menú determinístico`,
+    );
+
+    // Re-enter the menu for the branch the user already declared, so the matched
+    // intent runs without bouncing a known client/lead back to "¿sos cliente?".
+    const audience = this.audienceOf(key, ctx);
+    if (audience === 'client') {
+      this.setState(key, 'CLIENT_MENU', {}, 'client');
+      return this.handleClientMenu(input, ctx, key);
+    }
+    if (audience === 'lead') {
+      this.setState(key, 'LEAD_MENU', {}, 'lead');
+      return this.handleLeadMenu(input, ctx, key);
+    }
+    // Audience still unknown (user never declared): the welcome menu asks.
+    this.setState(key, 'ROOT');
+    return this.handleRoot(input, ctx, key);
+  }
+
+  /**
+   * Detects a clear top-level flow intent in free text, used only to break out
+   * of a sticky LLM sub-flow on a topic change. Patterns are deliberately strong
+   * (whole words, action verbs) so ordinary quote data and FAQ phrasing keep
+   * being handled by the model; returns null when nothing transactional is named.
+   */
+  private matchGlobalIntent(
+    text: string,
+  ):
+    | 'grua'
+    | 'siniestro'
+    | 'pago'
+    | 'documentos'
+    | 'asesor'
+    | 'cotizar'
+    | null {
+    const t = text.toLowerCase();
+    if (/\bgr[uú]a\b|\bauxilio\b|\bremolque\b/.test(t)) return 'grua';
+    if (
+      /\bsiniestro\b|\bdenuncia\b|\bdenunciar\b|\bme chocaron\b|\bme robaron\b/.test(
+        t,
+      )
+    )
+      return 'siniestro';
+    if (/\bpagar\b|\bpagos?\b|\bcuota\b|\bdeuda\b|\bvencimiento\b/.test(t))
+      return 'pago';
+    if (
+      /\btarjeta\b|\bcertificad|\bcup[oó]n\b|\bdocumentaci[oó]n\b|\bdocumentos?\b/.test(
+        t,
+      )
+    )
+      return 'documentos';
+    if (
+      /\basesor\b|\brepresentante\b|\bhablar con (alguien|una persona|un asesor)\b/.test(
+        t,
+      )
+    )
+      return 'asesor';
+    if (/\bcotizar\b|\bcotizaci[oó]n\b|\bpresupuest/.test(t)) return 'cotizar';
+    return null;
+  }
+
   // ─── Shared helpers ───────────────────────────────────────
 
   private toMainMenu(key: string, ctx: FlowContext): FlowResult {
-    if (ctx.client) {
-      this.setState(key, 'CLIENT_MENU');
+    // Respect the branch the user already declared so "menú" doesn't bounce a
+    // known client/lead back to the "¿sos cliente?" question.
+    const audience = this.audienceOf(key, ctx);
+    if (audience === 'client') {
+      this.setState(key, 'CLIENT_MENU', {}, 'client');
       return { messages: [clientMenu()] };
+    }
+    if (audience === 'lead') {
+      this.setState(key, 'LEAD_MENU', {}, 'lead');
+      return { messages: [leadMenu(ctx.botName)] };
     }
     this.setState(key, 'ROOT');
     return { messages: [welcomeMenu(undefined, ctx.botName)] };
@@ -849,6 +1072,8 @@ export class FlowService {
     }
   }
 
+  // ─── Intent / keyword helpers ─────────────────────────────
+
   /** Keyword routing so typed text (not just taps) reaches the right flow. */
   private matchClientIntent(text: string): string | null {
     const t = text.toLowerCase();
@@ -860,6 +1085,111 @@ export class FlowService {
       return OPT.documentos;
     if (/gr[uú]a|auxilio|remolque|asistencia/.test(t)) return OPT.grua;
     if (/asesor|humano|persona|hablar|representante/.test(t)) return OPT.asesor;
+    return null;
+  }
+
+  private matchLeadIntent(text: string): string | null {
+    const t = text.toLowerCase();
+    if (/\bcotiz|\bpresupuest|\bseguro|\bp[oó]liza|\bcobertura/.test(t))
+      return OPT.leadCotizar;
+    if (
+      /\bvendedor|\brepresentante|\bllam[ae]r?\b|\bcontactar|\bcomunic/.test(t)
+    )
+      return OPT.leadVendedor;
+    if (/\bconsult|\bpregunt|\bduda|\binformaci[oó]n|\bsaber|\bayuda/.test(t))
+      return OPT.leadConsultas;
+    return null;
+  }
+
+  private matchSiniestroIntent(text: string): string | null {
+    const t = text.toLowerCase();
+    if (
+      /\bnuev[ao]|\bdenunci|\breportar|\bregistr|\bquiero hacer|\bocurri|\btuve|\bchoque|\baccidente/.test(
+        t,
+      )
+    )
+      return OPT.sinNueva;
+    if (/\bconsultar|\bver\b|\bestado|\bmis\b|\btengo\b|\bya ten[ií]a/.test(t))
+      return OPT.sinConsultar;
+    return null;
+  }
+
+  /**
+   * Tries to identify a policy from free text by plate, vehicle brand/model
+   * name, or risk-type keyword. Only returns a single unambiguous match.
+   */
+  private matchPolizaByText(
+    text: string,
+    polizas: PolizaSummary[],
+  ): PolizaSummary | null {
+    const t = text.toLowerCase();
+
+    for (const p of polizas) {
+      const dom = p.vehiculo?.dominio;
+      if (dom && t.includes(dom.toLowerCase())) return p;
+    }
+
+    for (const p of polizas) {
+      const v = p.vehiculo;
+      if (!v) continue;
+      const terms = [v.marca, v.modelo]
+        .filter(Boolean)
+        .map((s) => s!.toLowerCase());
+      if (terms.some((term) => term.length > 2 && t.includes(term))) return p;
+    }
+
+    let riskKeyword: string | null = null;
+    if (/\bauto\b|\bcoche\b|\bveh[ií]culo\b/.test(t)) riskKeyword = 'auto';
+    else if (/\bmoto\b|\bscooter\b/.test(t)) riskKeyword = 'moto';
+    else if (/\bhogar\b|\bcasa\b|\bdepartamento\b|\bvivienda\b/.test(t))
+      riskKeyword = 'home';
+    else if (/\bcomercio\b|\blocal\b|\bnegocio\b/.test(t))
+      riskKeyword = 'comercio';
+    else if (/\bbici\b/.test(t)) riskKeyword = 'bici';
+
+    if (riskKeyword) {
+      const matches = polizas.filter((p) => p.riskType === riskKeyword);
+      if (matches.length === 1) return matches[0];
+    }
+
+    return null;
+  }
+
+  /**
+   * Tries to identify a document from free text using significant words from
+   * its name (e.g. "tarjeta" matches "Tarjeta de circulación").
+   */
+  private matchDocByText(
+    text: string,
+    docs: { codigo: string; nombre: string; url: string }[],
+  ): string | null {
+    const t = text.toLowerCase();
+    for (const doc of docs) {
+      const words = doc.nombre
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 4);
+      if (words.length > 0 && words.some((w) => t.includes(w)))
+        return doc.codigo;
+    }
+    return null;
+  }
+
+  /** Detects yes/no intent for button-only confirmation screens. */
+  private matchConfirmIntent(text: string): string | null {
+    const t = text.toLowerCase().trim();
+    if (
+      /^(s[ií]|dale|ok|listo|confirm[ao]|adelante|correcto|exacto|v[aá]|bueno)$/.test(
+        t,
+      ) ||
+      /^s[ií][,\s]|^dale[,\s]/.test(t)
+    )
+      return OPT.confirmar;
+    if (
+      /^(no|cancel[ao]|salir|olvid[aá]|para|paro)$/.test(t) ||
+      /^no[,\s]|^cancel/.test(t)
+    )
+      return OPT.cancelar;
     return null;
   }
 
@@ -895,23 +1225,32 @@ export class FlowService {
 
   // ─── State store ──────────────────────────────────────────
 
-  private load(
-    key: string,
-  ): { state: FlowState; touchedAt: number } | undefined {
-    const entry = this.states.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.touchedAt > STATE_TTL_MS) {
-      this.states.delete(key);
-      return undefined;
-    }
-    return entry;
+  private load(key: string): { state: FlowState } | undefined {
+    return this.states.get(key);
   }
 
   private setState(
     key: string,
     step: FlowStep,
     data: Record<string, unknown> = {},
+    audience?: 'client' | 'lead',
   ): void {
-    this.states.set(key, { state: { step, data }, touchedAt: Date.now() });
+    // Carry the declared audience forward unless this call sets a new one, so it
+    // survives every step transition without having to be threaded explicitly.
+    const prev = this.states.get(key)?.state.audience;
+    this.states.set(key, { state: { step, data, audience: audience ?? prev } });
+  }
+
+  /**
+   * Whether the user should be treated as a client or a lead: a DB-identified
+   * client always counts as 'client'; otherwise we use the branch they declared
+   * earlier ("Sí, soy cliente" / "Todavía no"), persisted in the flow state.
+   */
+  private audienceOf(
+    key: string,
+    ctx: FlowContext,
+  ): 'client' | 'lead' | undefined {
+    if (ctx.client) return 'client';
+    return this.load(key)?.state.audience;
   }
 }
