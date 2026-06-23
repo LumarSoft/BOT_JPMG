@@ -9,6 +9,7 @@ import type {
   FlowResult,
   FlowState,
   FlowStep,
+  OutgoingMessage,
   UserInput,
 } from './flow.types';
 import {
@@ -36,6 +37,7 @@ import {
   welcomeMenu,
 } from './flow.messages';
 import type { ProductPlanSummary } from '../../api/api.types';
+import { attentionHoursOf } from '../constants/business';
 
 /**
  * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
@@ -227,6 +229,17 @@ export class FlowService {
       return { messages: [{ kind: 'text', body: goodbyeText() }] };
     }
 
+    // Hours questions are answered deterministically from the configured schedule
+    // (no LLM, no cost), at any step — except while we're capturing typed data,
+    // where the words could be part of the user's answer.
+    if (
+      !sel &&
+      this.isHoursQuestion(input.text) &&
+      !this.isCapturingData(existing.state.step)
+    ) {
+      return this.answerHours();
+    }
+
     try {
       // Sticky LLM sub-flows (cotización / FAQ free-text) keep routing every
       // message to the model until the user changes topic. A message that
@@ -398,7 +411,7 @@ export class FlowService {
           messages: [
             {
               kind: 'text',
-              body: 'Contame brevemente el motivo y un asesor te contacta a la brevedad (Lun a Vie de 8 a 16 hs).',
+              body: `Contame brevemente el motivo y un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).`,
             },
           ],
         };
@@ -834,7 +847,9 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: 'Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (Lun a Vie de 8 a 16 hs).',
+          body:
+            `Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
         },
         clientMenu(),
       ],
@@ -857,7 +872,9 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: '¡Gracias! Tomé nota ✍️. Un representante de ventas te va a contactar a la brevedad (Lun a Vie de 8 a 16 hs).',
+          body:
+            `¡Gracias! Tomé nota ✍️. Un representante de ventas te va a contactar a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
         },
         leadMenu(ctx.botName),
       ],
@@ -984,24 +1001,47 @@ export class FlowService {
     };
   }
 
-  /** Starts the advisor-contact capture for a lead product. */
-  private startLeadCapture(
+  /**
+   * Starts the advisor-contact capture for a lead product. Leads off with a
+   * price-free "qué cubre" description from the shared catalog (same wording as
+   * the web) so the user knows what they're asking about, then offers the advisor
+   * by capturing their contact — the explicit "describe, then hand to an advisor"
+   * path.
+   */
+  private async startLeadCapture(
     key: string,
     productType: string,
     productLabel: string,
-  ): FlowResult {
+  ): Promise<FlowResult> {
     this.setState(key, 'COT_LEAD_NOMBRE', { productType });
-    return {
-      messages: [
-        {
-          kind: 'text',
-          body:
-            `📝 Genial, te ayudo a cotizar *${productLabel}*. ` +
-            'Un asesor te contacta con la propuesta. Para empezar, decime tu *nombre y apellido*.\n' +
-            '_Escribí *menú* para volver._',
-        },
-      ],
-    };
+    const messages: OutgoingMessage[] = [];
+    const coverage = await this.productCoverage(productType);
+    if (coverage) messages.push({ kind: 'text', body: coverage });
+    messages.push({
+      kind: 'text',
+      body:
+        `📝 Genial, te ayudo a cotizar *${productLabel}*. ` +
+        'Un asesor te contacta con la propuesta. Para empezar, decime tu *nombre y apellido*.\n' +
+        '_Escribí *menú* para volver._',
+    });
+    return { messages };
+  }
+
+  /**
+   * Price-free "qué cubre" line for a product, from the shared catalog (the same
+   * source the web uses). Returns null when the catalog is unavailable so the
+   * lead capture still proceeds without it.
+   */
+  private async productCoverage(productType: string): Promise<string | null> {
+    try {
+      const item = (await this.api.getProducts()).find(
+        (p) => p.id === productType,
+      );
+      if (!item || item.includes.length === 0) return null;
+      return `🛡️ *${item.label}* — ${item.sub}.\nIncluye: ${item.includes.join(', ')}.`;
+    } catch {
+      return null;
+    }
   }
 
   private handleCotLeadNombre(
@@ -1067,7 +1107,8 @@ export class FlowService {
     const planLine = planName ? ` con el plan *${planName}*` : '';
     return this.prepend(
       `✅ ¡Listo! Registré tu pedido de cotización${planLine}. ` +
-        'Un asesor te contacta a la brevedad (Lun a Vie de 8 a 16 hs).',
+        `Un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
+        (await this.closedNote()),
       this.toMainMenu(key, ctx),
     );
   }
@@ -1260,6 +1301,68 @@ export class FlowService {
   }
 
   // ─── Intent / keyword helpers ─────────────────────────────
+
+  /**
+   * Detects a question about opening hours ("¿qué horario tienen?", "¿están
+   * abiertos?", "¿a qué hora abren?"). Deliberately specific so it doesn't fire
+   * on ordinary text — note "ahora" is not matched (no word boundary before
+   * "hora").
+   */
+  private isHoursQuestion(text: string): boolean {
+    const t = text.toLowerCase();
+    return (
+      /\bhorarios?\b/.test(t) ||
+      /\b(a|hasta)\s+qu[eé]\s+hora\b/.test(t) ||
+      /\bqu[eé]\s+hora\b/.test(t) ||
+      /\best[aá]n?\s+abiert/.test(t) ||
+      /\babren\b|\bcierran\b|\batienden\b/.test(t) ||
+      /\bqu[eé]\s+d[ií]as?\s+(abren|atienden|trabajan)/.test(t)
+    );
+  }
+
+  /** Steps where free text is the user's data — never hijack those for hours. */
+  private isCapturingData(step: FlowStep): boolean {
+    return (
+      step === 'IDENTIFY' ||
+      step === 'SINIESTRO_FECHA' ||
+      step === 'SINIESTRO_DESC' ||
+      step === 'ASESOR_MOTIVO' ||
+      step === 'LEAD_CONTACT' ||
+      step === 'COT_LEAD_NOMBRE' ||
+      step === 'COT_LEAD_TELEFONO'
+    );
+  }
+
+  /** Deterministic hours answer (no LLM): the ready message from /public/hours. */
+  private async answerHours(): Promise<FlowResult> {
+    try {
+      const status = await this.api.getHours();
+      return { messages: [{ kind: 'text', body: status.message }] };
+    } catch {
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Ahora no puedo consultar el horario. Si es urgente, escribí *asesor* y te ayudamos.',
+          },
+        ],
+      };
+    }
+  }
+
+  /**
+   * Note appended when the bot promises human contact while the office is closed,
+   * so it sets the right expectation ("te respondemos al reabrir"). Empty when
+   * open or when the status can't be fetched.
+   */
+  private async closedNote(): Promise<string> {
+    try {
+      const status = await this.api.getHours();
+      return status.closedNote ? `\n${status.closedNote}` : '';
+    } catch {
+      return '';
+    }
+  }
 
   /** Keyword routing so typed text (not just taps) reaches the right flow. */
   private matchClientIntent(text: string): string | null {

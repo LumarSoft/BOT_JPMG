@@ -2,11 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
+import { attentionHoursOf } from './constants/business';
 
-const WARNING_TEXT =
-  'Por inactividad damos por finalizada esta conversación. 🙂 ' +
-  'Cuando quieras retomar, escribinos y arrancamos de nuevo. ' +
-  'Te atendemos de lunes a viernes de 8 a 16 hs.';
+/** Builds the inactivity notice, quoting the producer's own attention window. */
+function warningText(attentionHours?: string | null): string {
+  return (
+    'Por inactividad damos por finalizada esta conversación. 🙂 ' +
+    'Cuando quieras retomar, escribinos y arrancamos de nuevo. ' +
+    `Te atendemos de ${attentionHoursOf(attentionHours)}.`
+  );
+}
 
 /**
  * Pushes the inactivity warning. Every minute it asks john-api for the
@@ -35,7 +40,7 @@ export class InactivityWarningService {
       for (const c of pending) {
         await this.meta.sendText(
           this.meta.normalizePhone(c.waId),
-          WARNING_TEXT,
+          warningText(c.attentionHours),
           c.phoneNumberId,
         );
       }

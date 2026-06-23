@@ -6,6 +6,8 @@ export interface BotContext {
   producerSlug: string;
   /** Configurable bot display name (Producer.botName); null → generic fallback. */
   botName: string | null;
+  /** General attention window (Producer.attentionHours); null → app default. */
+  attentionHours: string | null;
   systemPrompt: string;
 }
 
@@ -44,6 +46,40 @@ export interface PendingWarning {
   conversationId: number;
   waId: string;
   phoneNumberId: string;
+  /** The producer's attention window, so the notice quotes its own hours. */
+  attentionHours: string | null;
+}
+
+/**
+ * Live business-hours status from GET /public/hours. Computed server-side from
+ * the producer's weekly schedule + active closures, so the bot answers hour
+ * questions deterministically (no LLM).
+ */
+export interface HoursStatus {
+  /** Formatted weekly schedule, e.g. "Lunes a viernes de 9 a 12 y de 17 a 19:30 hs". */
+  formatted: string;
+  isOpenNow: boolean;
+  /** Set when a closure (holiday/vacation) covers today. */
+  todayClosure: { reason: string } | null;
+  /** Ready-to-send answer for "¿qué horario tienen? / ¿están abiertos?". */
+  message: string;
+  /** Note to append when promising human contact while closed; null when open. */
+  closedNote: string | null;
+}
+
+/**
+ * Canonical product description served by GET /public/products. Shared with the
+ * web so the bot describes coverages with the exact same wording. Price-free by
+ * design (quotes come from Triunfo / fixed plans).
+ */
+export interface ProductCatalogItem {
+  id: string;
+  label: string;
+  sub: string;
+  summary: string;
+  includes: string[];
+  excludes: string[];
+  flow: 'instant' | 'fixed' | 'lead';
 }
 
 export interface VehiculoSummary {

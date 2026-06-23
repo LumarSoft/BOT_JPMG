@@ -9,6 +9,7 @@ import type {
   CreateLeadInput,
   CreateLeadResult,
   EstadoCuentaPoliza,
+  HoursStatus,
   IdentifyResult,
   InfoAutoBrand,
   InfoAutoGroup,
@@ -16,11 +17,20 @@ import type {
   PendingWarning,
   PolizaDocumento,
   PolizaSummary,
+  ProductCatalogItem,
   ProductPlanSummary,
   QuoteResult,
   SiniestroSummary,
   VehicleTypeParam,
 } from './api.types';
+
+/** How long the public product catalog is cached in memory. It is static
+ * marketing copy that changes rarely, so one fetch per hour is plenty. */
+const CATALOG_TTL_MS = 60 * 60 * 1000;
+
+/** How long the live hours status is cached. Short, because `isOpenNow` changes
+ * with the clock — but enough to coalesce a burst of messages. */
+const HOURS_TTL_MS = 60 * 1000;
 
 /**
  * Single point of access to john-api. The bot never touches the database:
@@ -30,6 +40,12 @@ import type {
 @Injectable()
 export class ApiService {
   private readonly http: AxiosInstance;
+
+  /** In-memory cache of the public product catalog (static marketing copy). */
+  private catalogCache?: { items: ProductCatalogItem[]; fetchedAt: number };
+
+  /** In-memory cache of the live hours status (short TTL — see HOURS_TTL_MS). */
+  private hoursCache?: { status: HoursStatus; fetchedAt: number };
 
   constructor(config: ConfigService) {
     this.http = axios.create({
@@ -198,6 +214,49 @@ export class ApiService {
       form,
     );
     return data;
+  }
+
+  /**
+   * Canonical product catalog (descriptions, no prices) shared with the web.
+   * Cached in memory so describing a product never costs a round-trip per turn;
+   * on a fetch error we serve the last good copy (or an empty list on cold start)
+   * so a catalog hiccup never breaks a reply.
+   */
+  async getProducts(): Promise<ProductCatalogItem[]> {
+    const now = Date.now();
+    if (this.catalogCache && now - this.catalogCache.fetchedAt < CATALOG_TTL_MS) {
+      return this.catalogCache.items;
+    }
+    try {
+      const { data } = await this.http.get<ProductCatalogItem[]>(
+        '/public/products',
+      );
+      this.catalogCache = { items: data, fetchedAt: now };
+      return data;
+    } catch (error) {
+      if (this.catalogCache) return this.catalogCache.items;
+      throw error;
+    }
+  }
+
+  /**
+   * Live business-hours status (formatted week + open-now + closure), computed by
+   * the API from the configured schedule. Briefly cached so a burst of messages
+   * doesn't refetch; on error we serve the last good copy when we have one.
+   */
+  async getHours(): Promise<HoursStatus> {
+    const now = Date.now();
+    if (this.hoursCache && now - this.hoursCache.fetchedAt < HOURS_TTL_MS) {
+      return this.hoursCache.status;
+    }
+    try {
+      const { data } = await this.http.get<HoursStatus>('/public/hours');
+      this.hoursCache = { status: data, fetchedAt: now };
+      return data;
+    } catch (error) {
+      if (this.hoursCache) return this.hoursCache.status;
+      throw error;
+    }
   }
 
   // ─── Public endpoints (infoauto + cotizador) ───────────

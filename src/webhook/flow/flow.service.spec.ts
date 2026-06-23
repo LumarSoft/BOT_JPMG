@@ -21,6 +21,7 @@ describe('FlowService', () => {
     getPolizas: jest.Mock;
     createSiniestro: jest.Mock;
     getPricing: jest.Mock;
+    getHours: jest.Mock;
   };
 
   const KEY = 'pn:wa';
@@ -29,6 +30,7 @@ describe('FlowService', () => {
     client: null,
     newSession: false,
     botName: 'Nico',
+    attentionHours: 'Lunes a viernes de 8 a 16 hs',
   };
 
   // Mirrors the API: the snapshot returned by one turn is fed into the next.
@@ -62,6 +64,14 @@ describe('FlowService', () => {
       ]),
       createSiniestro: jest.fn().mockResolvedValue({ id: 99 }),
       getPricing: jest.fn().mockResolvedValue([]),
+      getHours: jest.fn().mockResolvedValue({
+        formatted: 'Lunes a viernes de 8 a 16 hs',
+        isOpenNow: true,
+        todayClosure: null,
+        message:
+          'Sí, ahora estamos abiertos 🙂. Nuestro horario es: Lunes a viernes de 8 a 16 hs.',
+        closedNote: null,
+      }),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -352,6 +362,41 @@ describe('FlowService', () => {
 
       expect(res.state?.step).toBe('COTIZAR_TIPO');
       expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
+    });
+  });
+
+  describe('horarios', () => {
+    it('answers hours questions deterministically (no LLM handoff)', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      const res = await send({ text: '¿a qué hora abren?' });
+
+      expect(api.getHours).toHaveBeenCalled();
+      expect(res.handoff).toBeUndefined();
+      expect(res.messages[0].kind).toBe('text');
+      expect((res.messages[0] as { body: string }).body).toContain('horario');
+    });
+
+    it('does not hijack typed data while capturing (asesor motivo)', async () => {
+      const clientCtx: FlowContext = {
+        ...leadCtx,
+        client: {
+          firstName: 'Ana',
+          lastName: 'Gómez',
+          dni: '123',
+        } as FlowContext['client'],
+      };
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.asesor, text: 'Asesor' }, clientCtx);
+      // The motivo mentions "horario" but we're capturing data → it must reach the
+      // asesor handler, not be answered as an hours question.
+      const res = await send(
+        { text: 'consultar el horario de mi póliza' },
+        clientCtx,
+      );
+      // Reached the asesor handler (handoff registered + its confirmation), not
+      // hijacked into the hours answer.
+      expect(api.requestHandoff).toHaveBeenCalled();
+      expect((res.messages[0] as { body: string }).body).toContain('tomé nota');
     });
   });
 });

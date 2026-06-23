@@ -9,6 +9,10 @@ import { FlowService } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS } from './constants/tools';
+import {
+  DEFAULT_ATTENTION_HOURS,
+  renderCatalogForPrompt,
+} from './constants/business';
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -46,7 +50,7 @@ const RESET_COMMAND = '/reset';
 
 const FALLBACK_REPLY =
   'Disculpá, en este momento tenemos un inconveniente técnico. ' +
-  'Probá de nuevo en unos minutos o comunicate con nuestra oficina de lunes a viernes de 8 a 16 hs.';
+  `Probá de nuevo en unos minutos o comunicate con nuestra oficina de ${DEFAULT_ATTENTION_HOURS}.`;
 
 /** Maps inbound WhatsApp media MIME types to a file extension for the upload. */
 const MIME_EXT: Record<string, string> = {
@@ -271,6 +275,7 @@ export class WebhookService {
         client: conversation.client,
         newSession: conversation.newSession ?? false,
         botName: context.botName,
+        attentionHours: context.attentionHours,
         flowState: this.parseFlowState(conversation.flowState),
       },
     );
@@ -485,19 +490,31 @@ export class WebhookService {
       month: 'long',
       year: 'numeric',
     });
+    // FAQ describes coverages, so it gets the price-free catalog. A catalog fetch
+    // failure must not block the reply — fall back to an empty block (the model
+    // then deflects coverage questions to an advisor, as the prompt instructs).
+    const catalog =
+      handoff === 'faq'
+        ? renderCatalogForPrompt(
+            await this.api.getProducts().catch(() => []),
+          )
+        : undefined;
     const system =
       handoff === 'cotizacion'
         ? buildCotizacionPrompt({
             botName: context.botName,
             producerPrompt: context.systemPrompt,
+            attentionHours: context.attentionHours,
             today,
             client: conversation.client,
           })
         : buildFaqPrompt({
             botName: context.botName,
             producerPrompt: context.systemPrompt,
+            attentionHours: context.attentionHours,
             today,
             client: conversation.client,
+            catalog,
           });
     const tools = handoff === 'cotizacion' ? COTIZADOR_TOOLS : undefined;
 

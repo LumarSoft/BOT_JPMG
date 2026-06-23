@@ -89,4 +89,6 @@ export interface FlowContext {
   flowState?: FlowState | null;
   /** Configurable bot display name (Producer.botName); null → generic fallback. */
   botName: string | null;
+  /** General attention window (Producer.attentionHours); null → app default. */
+  attentionHours: string | null;
 }
