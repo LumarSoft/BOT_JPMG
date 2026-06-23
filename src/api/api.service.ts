@@ -6,6 +6,8 @@ import type {
   BotContext,
   BotConversation,
   ConversationMessage,
+  CreateLeadInput,
+  CreateLeadResult,
   EstadoCuentaPoliza,
   IdentifyResult,
   InfoAutoBrand,
@@ -14,6 +16,7 @@ import type {
   PendingWarning,
   PolizaDocumento,
   PolizaSummary,
+  ProductPlanSummary,
   QuoteResult,
   SiniestroSummary,
   VehicleTypeParam,
@@ -85,6 +88,29 @@ export class ApiService {
   /** Marks the conversation as pending human attention (user requested an advisor). */
   async requestHandoff(conversationId: number): Promise<void> {
     await this.http.post(`/bot/conversation/${conversationId}/request-handoff`);
+  }
+
+  /** Creates an advisor-contact / fixed-plan lead, scoped to the conversation's producer. */
+  async createLead(
+    conversationId: number,
+    payload: CreateLeadInput,
+  ): Promise<CreateLeadResult> {
+    const { data } = await this.http.post<CreateLeadResult>(
+      `/bot/conversation/${conversationId}/leads`,
+      payload,
+    );
+    return data;
+  }
+
+  /** Lists the active fixed-price plans of a product (bolso, hogar) for the conversation's producer. */
+  async getPricing(
+    conversationId: number,
+    productType: string,
+  ): Promise<ProductPlanSummary[]> {
+    const { data } = await this.http.get<ProductPlanSummary[]>(
+      `/bot/conversation/${conversationId}/pricing/${productType}`,
+    );
+    return data;
   }
 
   /** Claims (and marks warned) the conversations idle past the inactivity window. */

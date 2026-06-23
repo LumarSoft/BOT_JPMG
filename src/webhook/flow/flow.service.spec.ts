@@ -20,6 +20,7 @@ describe('FlowService', () => {
     requestHandoff: jest.Mock;
     getPolizas: jest.Mock;
     createSiniestro: jest.Mock;
+    getPricing: jest.Mock;
   };
 
   const KEY = 'pn:wa';
@@ -60,6 +61,7 @@ describe('FlowService', () => {
         },
       ]),
       createSiniestro: jest.fn().mockResolvedValue({ id: 99 }),
+      getPricing: jest.fn().mockResolvedValue([]),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -237,6 +239,119 @@ describe('FlowService', () => {
       expect(api.getEstadoCuenta).toHaveBeenCalledWith(
         clientCtx.conversationId,
       );
+    });
+  });
+
+  describe('cotización shortcut', () => {
+    const clientCtx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Evelyn',
+        lastName: 'Benitez',
+        dni: '37334584',
+      } as FlowContext['client'],
+    };
+
+    it('jumps straight into the named category when the message specifies one (hogar)', async () => {
+      await send({ text: 'hola' }, clientCtx); // CLIENT_MENU
+      const res = await send(
+        { text: 'Me gustaria cotizar un hogar' },
+        clientCtx,
+      );
+
+      // No second menu and no FAQ leak: the hogar lead capture starts directly.
+      expect(res.handoff).toBeUndefined();
+      expect(res.state?.step).toBe('COT_LEAD_NOMBRE');
+      expect(api.getPricing).toHaveBeenCalledWith(
+        clientCtx.conversationId,
+        'hogar',
+      );
+    });
+
+    it('details every plan with its coverages before the picker (matches the web)', async () => {
+      api.getPricing.mockResolvedValueOnce([
+        {
+          id: 1,
+          productType: 'hogar',
+          name: 'Plan Hogar Básico',
+          monthlyPrice: 12500,
+          description: 'Protección esencial',
+          coverageItems: [
+            {
+              label: 'Incendio edificio',
+              category: 'Edificio',
+              amount: 8000000,
+            },
+            { label: 'Robo contenido', category: 'Contenido', amount: 1500000 },
+          ],
+          isActive: true,
+          sortOrder: 0,
+        },
+        {
+          id: 2,
+          productType: 'hogar',
+          name: 'Plan Hogar Full',
+          monthlyPrice: 21000,
+          description: null,
+          coverageItems: [
+            {
+              label: 'Incendio edificio',
+              category: 'Edificio',
+              amount: 15000000,
+            },
+          ],
+          isActive: true,
+          sortOrder: 1,
+        },
+      ]);
+
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'cotizar hogar' }, clientCtx);
+
+      expect(res.handoff).toBeUndefined();
+      expect(res.state?.step).toBe('COT_PLAN');
+      // A text breakdown precedes the interactive picker.
+      expect(res.messages[0].kind).toBe('text');
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
+
+      const detail =
+        res.messages[0].kind === 'text' ? res.messages[0].body : '';
+      // Each plan, its price and its coverages appear in the breakdown.
+      expect(detail).toContain('Plan Hogar Básico');
+      expect(detail).toContain('Plan Hogar Full');
+      expect(detail).toContain('Incendio edificio');
+      expect(detail).toContain('Robo contenido');
+      // Whole-peso formatting, same as the web (no decimals).
+      expect(detail).toMatch(/12\.500/);
+      expect(detail).not.toMatch(/12\.500,00/);
+    });
+
+    it('jumps straight into the online quote when the category is auto', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'quiero cotizar el auto' }, clientCtx);
+
+      expect(res.handoff).toBeUndefined();
+      expect(res.state?.step).toBe('LLM_COTIZACION');
+    });
+
+    it('falls back to the category menu when no category is named', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'quiero cotizar un seguro' }, clientCtx);
+
+      expect(res.handoff).toBeUndefined();
+      expect(res.state?.step).toBe('COTIZAR_TIPO');
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
+    });
+
+    it('shows the category menu when the user taps the generic Cotización option', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        { selectionId: OPT.cotizacion, text: '💰 Cotización' },
+        clientCtx,
+      );
+
+      expect(res.state?.step).toBe('COTIZAR_TIPO');
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
     });
   });
 });

@@ -14,8 +14,10 @@ import type {
 import {
   clientMenu,
   cotizarMenu,
+  COTIZAR_FIXED,
   COTIZAR_LABEL,
   COTIZAR_ONLINE,
+  COTIZAR_PRODUCT_TYPE,
   docPicker,
   DOC_PREFIX,
   formatDocumento,
@@ -24,12 +26,16 @@ import {
   formatSiniestros,
   leadMenu,
   OPT,
+  PLAN_PREFIX,
+  planDetails,
+  planPicker,
   POLIZA_PREFIX,
   polizaPicker,
   siniestroConfirm,
   siniestroTypeMenu,
   welcomeMenu,
 } from './flow.messages';
+import type { ProductPlanSummary } from '../../api/api.types';
 
 /**
  * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
@@ -290,6 +296,12 @@ export class FlowService {
         return this.handleLeadContact(input, ctx, key);
       case 'COTIZAR_TIPO':
         return this.handleCotizarTipo(input, ctx, key);
+      case 'COT_PLAN':
+        return this.handleCotPlan(state, input, ctx, key);
+      case 'COT_LEAD_NOMBRE':
+        return this.handleCotLeadNombre(state, input, key);
+      case 'COT_LEAD_TELEFONO':
+        return this.handleCotLeadTelefono(state, input, ctx, key);
       case 'LLM_COTIZACION':
         return this.handleLlm(input, key, 'cotizacion');
       case 'LLM_FAQ':
@@ -305,7 +317,7 @@ export class FlowService {
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult {
+  ): FlowResult | Promise<FlowResult> {
     const t = input.text.toLowerCase();
     const sel = input.selectionId;
 
@@ -332,9 +344,10 @@ export class FlowService {
     }
 
     // ── 2. Direct intent routing (before asking client/non-client) ──
-    // Cotizar doesn't need identification → go straight to the quote menu.
+    // Cotizar doesn't need identification → go straight to the quote flow
+    // (jumping to the named category when the message already specifies one).
     if (/\bcotiz|\bpresupuest|\bcu[aá]nto.*seguro|\bprecio.*seguro/.test(t)) {
-      return this.showCotizarMenu(key);
+      return this.enterCotizar(input, ctx, key);
     }
 
     // Client-scoped intents → acknowledge + re-ask with the welcome menu buttons.
@@ -370,7 +383,7 @@ export class FlowService {
         this.setState(key, 'SINIESTRO_TYPE');
         return { messages: [siniestroTypeMenu()] };
       case OPT.cotizacion:
-        return this.showCotizarMenu(key);
+        return this.enterCotizar(input, ctx, key);
       case OPT.pagos:
         return this.guard(ctx, key, 'pagos');
       case OPT.documentos:
@@ -404,13 +417,12 @@ export class FlowService {
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult {
-    void ctx;
+  ): FlowResult | Promise<FlowResult> {
     const opt = input.selectionId ?? this.matchLeadIntent(input.text);
 
     switch (opt) {
       case OPT.leadCotizar:
-        return this.showCotizarMenu(key);
+        return this.enterCotizar(input, ctx, key);
       case OPT.leadVendedor:
         this.setState(key, 'LEAD_CONTACT');
         return {
@@ -829,19 +841,23 @@ export class FlowService {
     };
   }
 
-  private handleLeadContact(
+  private async handleLeadContact(
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult {
-    // TODO: persist this sales lead via the API once an endpoint exists.
+  ): Promise<FlowResult> {
+    // A generic "call me" request (no specific product). Flag the conversation
+    // for human attention so it surfaces in the admin inbox/novedades — the
+    // product-specific quote leads go through createLead instead. Best-effort:
+    // a failed call must not block the reply.
     void input;
+    await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
     this.setState(key, 'LEAD_MENU');
     return {
       messages: [
         {
           kind: 'text',
-          body: '¡Gracias! Un representante de ventas te va a contactar a la brevedad.',
+          body: '¡Gracias! Tomé nota ✍️. Un representante de ventas te va a contactar a la brevedad (Lun a Vie de 8 a 16 hs).',
         },
         leadMenu(ctx.botName),
       ],
@@ -856,15 +872,46 @@ export class FlowService {
   }
 
   /**
-   * Routes a quote category. Auto/moto go to the online quote sub-flow (LLM +
-   * Triunfo); the other risks are quoted by an advisor — same split as the web,
-   * where only auto/moto have an instant quote.
+   * Entry point into the quote flow from a menu. When the user's message already
+   * names a category ("quiero cotizar un hogar", "cotizame el auto"), skip the
+   * category list and go straight into that category's sub-flow — they already
+   * told us what they want, asking again is friction. Falls back to the category
+   * menu only when no category is recognised ("quiero cotizar").
    */
-  private handleCotizarTipo(
+  private enterCotizar(
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult {
+  ): FlowResult | Promise<FlowResult> {
+    // Only infer the category from typed text. A tap on the generic "Cotización"
+    // option carries the row title (e.g. "💰 Cotización"), which names no
+    // category, so it correctly falls through to the menu below.
+    const category = input.selectionId
+      ? null
+      : this.matchCotizarCategory(input.text);
+    if (category) {
+      this.setState(key, 'COTIZAR_TIPO');
+      return this.handleCotizarTipo(
+        { text: input.text, selectionId: category },
+        ctx,
+        key,
+      );
+    }
+    return this.showCotizarMenu(key);
+  }
+
+  /**
+   * Routes a quote category. Auto/moto go to the online quote sub-flow (LLM +
+   * Triunfo). The fixed-price risks (bolso/hogar) show the admin-configured
+   * plans first; the remaining risks go straight to advisor-contact capture.
+   * Either way a ContactLead is persisted so the request reaches the panel —
+   * same split as the web.
+   */
+  private async handleCotizarTipo(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
     const opt = input.selectionId ?? this.matchCotizarCategory(input.text);
     if (!opt || !COTIZAR_LABEL[opt]) {
       // Category not recognised — LLM helps clarify; state stays COTIZAR_TIPO.
@@ -875,13 +922,153 @@ export class FlowService {
       return this.startCotizacion(key, opt === OPT.cotMoto ? 'moto' : 'auto');
     }
 
-    // Other risks: no online quote — take note and hand off to an advisor.
-    // TODO: persist this as a quote lead via the API once an endpoint exists.
-    const result = this.toMainMenu(key, ctx);
+    const productType = COTIZAR_PRODUCT_TYPE[opt];
+
+    if (COTIZAR_FIXED.has(opt)) {
+      const plans = await this.api
+        .getPricing(ctx.conversationId, productType)
+        .catch(() => [] as ProductPlanSummary[]);
+      if (plans.length > 0) {
+        this.setState(key, 'COT_PLAN', {
+          productType,
+          productLabel: COTIZAR_LABEL[opt],
+          plans,
+        });
+        // Send the full coverage breakdown first (same content as the web), then
+        // the interactive picker so the user chooses knowing what each includes.
+        return {
+          messages: [
+            planDetails(COTIZAR_LABEL[opt], plans),
+            planPicker(COTIZAR_LABEL[opt], plans),
+          ],
+        };
+      }
+      // No plans configured yet — fall back to plain advisor-contact capture.
+    }
+
+    return this.startLeadCapture(key, productType, COTIZAR_LABEL[opt]);
+  }
+
+  /** Handles the fixed-price plan selection (bolso/hogar). */
+  private handleCotPlan(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
+    void ctx;
+    const productType = state.data.productType as string;
+    const productLabel =
+      (state.data.productLabel as string | undefined) ?? 'Planes';
+    const plans = (state.data.plans as ProductPlanSummary[] | undefined) ?? [];
+    const planId = this.parsePrefId(input.selectionId, PLAN_PREFIX);
+    const plan = plans.find((p) => p.id === planId);
+
+    if (!plan) {
+      // Couldn't resolve the plan — re-show the picker instead of leaking to the FAQ.
+      return { messages: [planPicker(productLabel, plans)] };
+    }
+
+    this.setState(key, 'COT_LEAD_NOMBRE', {
+      productType,
+      selectedPlanId: plan.id,
+      planName: plan.name,
+    });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: `Elegiste el plan *${plan.name}*. Para que un asesor lo deje listo, decime tu *nombre y apellido*.`,
+        },
+      ],
+    };
+  }
+
+  /** Starts the advisor-contact capture for a lead product. */
+  private startLeadCapture(
+    key: string,
+    productType: string,
+    productLabel: string,
+  ): FlowResult {
+    this.setState(key, 'COT_LEAD_NOMBRE', { productType });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `📝 Genial, te ayudo a cotizar *${productLabel}*. ` +
+            'Un asesor te contacta con la propuesta. Para empezar, decime tu *nombre y apellido*.\n' +
+            '_Escribí *menú* para volver._',
+        },
+      ],
+    };
+  }
+
+  private handleCotLeadNombre(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    const name = input.text.trim();
+    if (name.length < 2) {
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Decime tu *nombre y apellido* para que el asesor te ubique.',
+          },
+        ],
+      };
+    }
+    this.setState(key, 'COT_LEAD_TELEFONO', {
+      ...state.data,
+      contactName: name,
+    });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Perfecto. Ahora pasame un *teléfono* de contacto donde te podamos llamar.',
+        },
+      ],
+    };
+  }
+
+  private async handleCotLeadTelefono(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const phone = input.text.trim();
+    if (phone.replace(/\D/g, '').length < 8) {
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'No reconocí el teléfono. Pasámelo con característica, por ejemplo *341 555-0000*.',
+          },
+        ],
+      };
+    }
+
+    const productType = state.data.productType as string;
+    const selectedPlanId = state.data.selectedPlanId as number | undefined;
+    const planName = state.data.planName as string | undefined;
+
+    await this.api.createLead(ctx.conversationId, {
+      productType,
+      contactName: state.data.contactName as string,
+      phone,
+      payload: planName ? { plan: planName } : {},
+      ...(selectedPlanId ? { selectedPlanId } : {}),
+    });
+
+    const planLine = planName ? ` con el plan *${planName}*` : '';
     return this.prepend(
-      `📝 Tomé tu interés en cotizar *${COTIZAR_LABEL[opt]}*. ` +
-        'Esta cobertura la cotiza un asesor: te va a contactar con la propuesta el mismo día hábil (Lun a Vie de 8 a 16 hs).',
-      result,
+      `✅ ¡Listo! Registré tu pedido de cotización${planLine}. ` +
+        'Un asesor te contacta a la brevedad (Lun a Vie de 8 a 16 hs).',
+      this.toMainMenu(key, ctx),
     );
   }
 

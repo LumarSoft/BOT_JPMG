@@ -152,3 +152,35 @@ export interface AttachAdjuntosResult {
   siniestroId: number;
   adjuntosCount: number;
 }
+
+// Advisor-contact / fixed-plan lead created by the bot for non-instant products.
+export interface CreateLeadInput {
+  productType: string; // bici | comercio | praxis | personas | bolso | hogar
+  contactName: string;
+  phone: string;
+  email?: string;
+  payload: Record<string, unknown>;
+  selectedPlanId?: number;
+}
+
+export interface CreateLeadResult {
+  id: number;
+}
+
+export interface PlanCoverageItem {
+  label: string;
+  category?: string;
+  amount: number;
+}
+
+// Admin-configured fixed-price plan (bolso, hogar).
+export interface ProductPlanSummary {
+  id: number;
+  productType: string;
+  name: string;
+  monthlyPrice: number;
+  description: string | null;
+  coverageItems: PlanCoverageItem[];
+  isActive: boolean;
+  sortOrder: number;
+}

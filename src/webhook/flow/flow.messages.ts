@@ -2,6 +2,7 @@ import type {
   EstadoCuentaPoliza,
   PolizaDocumento,
   PolizaSummary,
+  ProductPlanSummary,
   SiniestroSummary,
 } from '../../api/api.types';
 import type { ListRow, OutgoingMessage } from './flow.types';
@@ -50,6 +51,7 @@ export const OPT = {
 
 export const POLIZA_PREFIX = 'pol_';
 export const DOC_PREFIX = 'doc_';
+export const PLAN_PREFIX = 'plan_';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -68,6 +70,21 @@ function fmtMoney(value: string | number): string {
   const n = typeof value === 'string' ? Number(value) : value;
   if (!Number.isFinite(n)) return String(value);
   return n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' });
+}
+
+/**
+ * Whole-peso currency, used for fixed-plan prices and coverage amounts. Mirrors
+ * the web cotizador exactly (`maximumFractionDigits: 0`) so a hogar/bolso plan
+ * reads identically on WhatsApp and on the site.
+ */
+function fmtPlanMoney(value: string | number): string {
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(n)) return String(value);
+  return n.toLocaleString('es-AR', {
+    style: 'currency',
+    currency: 'ARS',
+    maximumFractionDigits: 0,
+  });
 }
 
 /** Short, human label for a policy, used in list rows and summaries. */
@@ -174,6 +191,22 @@ export function leadMenu(botName?: string | null): OutgoingMessage {
  */
 export const COTIZAR_ONLINE = new Set<string>([OPT.cotAuto, OPT.cotMoto]);
 
+/** Categories with admin-configured fixed-price plans (bolso, hogar). */
+export const COTIZAR_FIXED = new Set<string>([OPT.cotBolso, OPT.cotHogar]);
+
+/**
+ * Maps a quote category option to the canonical productType the API expects for
+ * leads and pricing (auto/moto are quoted online and not included here).
+ */
+export const COTIZAR_PRODUCT_TYPE: Record<string, string> = {
+  [OPT.cotBici]: 'bici',
+  [OPT.cotBolso]: 'bolso',
+  [OPT.cotComercio]: 'comercio',
+  [OPT.cotHogar]: 'hogar',
+  [OPT.cotPersonas]: 'personas',
+  [OPT.cotPraxis]: 'praxis',
+};
+
 /** Human label per quote category, used in the advisor hand-off copy. */
 export const COTIZAR_LABEL: Record<string, string> = {
   [OPT.cotAuto]: 'Auto',
@@ -204,8 +237,8 @@ export function cotizarMenu(): OutgoingMessage {
       },
       {
         id: OPT.cotBici,
-        title: '🚲 Bicicleta',
-        description: 'Urbanas, MTB y eléctricas',
+        title: '🚲 Bici / Monopatín',
+        description: 'Urbanas, MTB, eléctricas y monopatines',
       },
       {
         id: OPT.cotBolso,
@@ -233,6 +266,54 @@ export function cotizarMenu(): OutgoingMessage {
         description: 'RC profesional',
       },
     ],
+  };
+}
+
+/**
+ * Full coverage breakdown of every fixed-price plan, sent as text before the
+ * picker. Mirrors the web's comparison table ("qué incluye cada plan"): each
+ * plan lists its coverages with the insured amount and the monthly fee, plus the
+ * same provincial-tax disclaimer — so the WhatsApp quote matches the site.
+ */
+export function planDetails(
+  productLabel: string,
+  plans: ProductPlanSummary[],
+): OutgoingMessage {
+  const blocks = plans.map((p) => {
+    const lines = [`*${p.name}* — ${fmtPlanMoney(p.monthlyPrice)} / mes`];
+    if (p.description) lines.push(`_${p.description}_`);
+    for (const c of p.coverageItems) {
+      const cat = c.category ? ` (${c.category})` : '';
+      lines.push(`• ${c.label}${cat}: ${fmtPlanMoney(c.amount)}`);
+    }
+    return lines.join('\n');
+  });
+
+  return {
+    kind: 'text',
+    body: [
+      `📋 *${productLabel}* — qué incluye cada plan`,
+      ...blocks,
+      '_Estos valores pueden variar conforme los impuestos de cada provincia._\n\n👇 Elegí un plan en la lista para que un asesor lo deje listo.',
+    ].join('\n\n'),
+  };
+}
+
+/** Fixed-price plan picker for bolso/hogar. Row id = `plan_<id>`. */
+export function planPicker(
+  productLabel: string,
+  plans: ProductPlanSummary[],
+): OutgoingMessage {
+  const rows: ListRow[] = plans.slice(0, 10).map((p) => ({
+    id: `${PLAN_PREFIX}${p.id}`,
+    title: p.name,
+    description: `${fmtPlanMoney(p.monthlyPrice)} / mes`,
+  }));
+  return {
+    kind: 'list',
+    body: `*${productLabel}*\nElegí el plan que más te convenga:`,
+    button: 'Ver planes',
+    rows,
   };
 }
 
