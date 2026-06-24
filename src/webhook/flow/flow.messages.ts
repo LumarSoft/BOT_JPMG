@@ -1,4 +1,5 @@
 import type {
+  CatalogField,
   EstadoCuentaPoliza,
   PolizaDocumento,
   PolizaSummary,
@@ -313,6 +314,58 @@ export function planPicker(
     kind: 'list',
     body: `*${productLabel}*\nElegí el plan que más te convenga:`,
     button: 'Ver planes',
+    rows,
+  };
+}
+
+// Prefix for an option tapped in a `select` field picker. The suffix is the
+// option's index in field.options, so the value is resolved back in the flow.
+export const FIELD_OPT_PREFIX = 'field_opt_';
+
+/**
+ * The phrasing the bot uses to ask a field: the catalog's natural-language
+ * `question` when set, otherwise a generic prompt built from the label (with the
+ * help note and a placeholder example). Self-contained so it works as plain text
+ * or as a picker body.
+ */
+function fieldAsk(field: CatalogField): string {
+  const q = field.question?.trim();
+  if (q) return q;
+  const help = field.help ? ` _(${field.help})_` : '';
+  const example = field.placeholder
+    ? ` Por ejemplo: *${field.placeholder}*.`
+    : '';
+  return field.numeric
+    ? `¿Cuál es *${field.label}*?${help} Escribilo en números.${example}`
+    : `Decime *${field.label}*.${help}${example}`;
+}
+
+/**
+ * Question for a single catalog field, asked when the user types instead of
+ * tapping (text/numeric fields). `intro` prefixes the very first field with the
+ * "te ayudo a cotizar X" line so the capture opens naturally, and is reused to
+ * gently re-ask after an invalid answer; later fields are asked on their own.
+ */
+export function fieldPrompt(
+  field: CatalogField,
+  intro?: string,
+): OutgoingMessage {
+  return { kind: 'text', body: `${intro ?? ''}${fieldAsk(field)}` };
+}
+
+/** Interactive picker for a `select` catalog field. Row id = `field_opt_<index>`. */
+export function fieldSelectPicker(
+  field: CatalogField,
+  intro?: string,
+): OutgoingMessage {
+  const rows: ListRow[] = (field.options ?? []).slice(0, 10).map((opt, i) => ({
+    id: `${FIELD_OPT_PREFIX}${i}`,
+    title: opt,
+  }));
+  return {
+    kind: 'list',
+    body: `${intro ?? ''}${fieldAsk(field)}`,
+    button: 'Ver opciones',
     rows,
   };
 }

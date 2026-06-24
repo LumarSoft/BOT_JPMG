@@ -21,6 +21,9 @@ import {
   COTIZAR_PRODUCT_TYPE,
   docPicker,
   DOC_PREFIX,
+  FIELD_OPT_PREFIX,
+  fieldPrompt,
+  fieldSelectPicker,
   formatDocumento,
   goodbyeText,
   formatEstadoCuenta,
@@ -36,7 +39,11 @@ import {
   siniestroTypeMenu,
   welcomeMenu,
 } from './flow.messages';
-import type { ProductPlanSummary } from '../../api/api.types';
+import type {
+  CatalogField,
+  ProductCatalogItem,
+  ProductPlanSummary,
+} from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
 
 /**
@@ -311,6 +318,8 @@ export class FlowService {
         return this.handleCotizarTipo(input, ctx, key);
       case 'COT_PLAN':
         return this.handleCotPlan(state, input, ctx, key);
+      case 'COT_LEAD_FIELDS':
+        return this.handleCotLeadFields(state, input, key);
       case 'COT_LEAD_NOMBRE':
         return this.handleCotLeadNombre(state, input, key);
       case 'COT_LEAD_TELEFONO':
@@ -1002,46 +1011,189 @@ export class FlowService {
   }
 
   /**
-   * Starts the advisor-contact capture for a lead product. Leads off with a
-   * price-free "qué cubre" description from the shared catalog (same wording as
-   * the web) so the user knows what they're asking about, then offers the advisor
-   * by capturing their contact — the explicit "describe, then hand to an advisor"
-   * path.
+   * Starts the advisor-contact capture for a lead product. Lead products
+   * (bici/comercio/personas/praxis) first collect the same product-specific
+   * fields the web form asks — driven by the shared catalog so questions, web
+   * form and admin lead detail stay identical — then ask for contact details.
+   * Fixed products falling back here (no plans configured) and fieldless products
+   * go straight to contact capture, matching the web.
    */
   private async startLeadCapture(
     key: string,
     productType: string,
     productLabel: string,
   ): Promise<FlowResult> {
-    this.setState(key, 'COT_LEAD_NOMBRE', { productType });
+    const item = await this.getCatalogItem(productType);
     const messages: OutgoingMessage[] = [];
-    const coverage = await this.productCoverage(productType);
+    const coverage = item ? this.coverageLine(item) : null;
     if (coverage) messages.push({ kind: 'text', body: coverage });
+
+    const intro =
+      `📝 Genial, te ayudo a cotizar *${productLabel}*. ` +
+      'Un asesor te contacta con la propuesta.\n\n';
+
+    // Only lead products run the field capture; fixed/instant products carry no
+    // fields, so they fall through to plain contact capture (same as the web).
+    const fields = item?.flow === 'lead' ? item.fields : [];
+    if (fields.length > 0) {
+      this.setState(key, 'COT_LEAD_FIELDS', {
+        productType,
+        productLabel,
+        fields,
+        fieldIndex: 0,
+        answers: {},
+      });
+      messages.push(this.fieldMessage(fields[0], intro));
+      return { messages };
+    }
+
+    this.setState(key, 'COT_LEAD_NOMBRE', { productType });
     messages.push({
       kind: 'text',
       body:
-        `📝 Genial, te ayudo a cotizar *${productLabel}*. ` +
-        'Un asesor te contacta con la propuesta. Para empezar, decime tu *nombre y apellido*.\n' +
+        intro +
+        'Para empezar, decime tu *nombre y apellido*.\n' +
         '_Escribí *menú* para volver._',
     });
     return { messages };
   }
 
-  /**
-   * Price-free "qué cubre" line for a product, from the shared catalog (the same
-   * source the web uses). Returns null when the catalog is unavailable so the
-   * lead capture still proceeds without it.
-   */
-  private async productCoverage(productType: string): Promise<string | null> {
+  /** The shared catalog entry for a product, or null when it's unavailable. */
+  private async getCatalogItem(
+    productType: string,
+  ): Promise<ProductCatalogItem | null> {
     try {
-      const item = (await this.api.getProducts()).find(
-        (p) => p.id === productType,
+      return (
+        (await this.api.getProducts()).find((p) => p.id === productType) ?? null
       );
-      if (!item || item.includes.length === 0) return null;
-      return `🛡️ *${item.label}* — ${item.sub}.\nIncluye: ${item.includes.join(', ')}.`;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Price-free "qué cubre" line for a product, from the shared catalog (the same
+   * source the web uses). Returns null when the catalog has no coverage list.
+   */
+  private coverageLine(item: ProductCatalogItem): string | null {
+    if (item.includes.length === 0) return null;
+    return `🛡️ *${item.label}* — ${item.sub}.\nIncluye: ${item.includes.join(', ')}.`;
+  }
+
+  // ─── Product-field capture (shared catalog) ───────────────
+
+  /** Asks one catalog field — a list picker for `select`, plain text otherwise. */
+  private fieldMessage(field: CatalogField, intro?: string): OutgoingMessage {
+    return field.type === 'select' && (field.options?.length ?? 0) > 0
+      ? fieldSelectPicker(field, intro)
+      : fieldPrompt(field, intro);
+  }
+
+  /**
+   * Generic capture loop over the product's catalog fields: validates the answer
+   * for the current field, stores it under its label (the payload key the admin
+   * sees), then advances to the next field or to contact capture when done.
+   */
+  private handleCotLeadFields(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    const fields = (state.data.fields as CatalogField[] | undefined) ?? [];
+    const index = (state.data.fieldIndex as number | undefined) ?? 0;
+    const answers = {
+      ...((state.data.answers as Record<string, string> | undefined) ?? {}),
+    };
+    const field = fields[index];
+
+    if (!field) {
+      // Defensive: no field to capture → go straight to contact.
+      this.setState(key, 'COT_LEAD_NOMBRE', {
+        productType: state.data.productType,
+        answers,
+      });
+      return this.askContactName();
+    }
+
+    const value = this.readFieldValue(field, input);
+    if (value === null) {
+      // Couldn't read a valid answer — re-ask the same field with a short,
+      // kind correction so the user knows what to fix (no FAQ leak).
+      const retry =
+        field.type === 'select'
+          ? 'Elegí una de las opciones de la lista 🙂 '
+          : field.numeric
+            ? 'Necesito un *número* (sin texto). '
+            : 'No te llegué a entender 🙈 ';
+      return { messages: [this.fieldMessage(field, retry)] };
+    }
+    answers[field.label] = value;
+
+    const nextIndex = index + 1;
+    if (nextIndex < fields.length) {
+      this.setState(key, 'COT_LEAD_FIELDS', {
+        ...state.data,
+        answers,
+        fieldIndex: nextIndex,
+      });
+      return { messages: [this.fieldMessage(fields[nextIndex])] };
+    }
+
+    // All product fields captured → contact details.
+    this.setState(key, 'COT_LEAD_NOMBRE', {
+      productType: state.data.productType,
+      answers,
+    });
+    return this.askContactName('Perfecto 🙌. ');
+  }
+
+  /**
+   * Reads and validates the answer for a field. Returns the canonical value, or
+   * null when the answer is invalid (the caller re-asks). For `select` it accepts
+   * a tap or a typed option; for numeric it parses a positive amount.
+   */
+  private readFieldValue(field: CatalogField, input: UserInput): string | null {
+    if (field.type === 'select' && (field.options?.length ?? 0) > 0) {
+      const opts = field.options ?? [];
+      if (input.selectionId?.startsWith(FIELD_OPT_PREFIX)) {
+        const i = Number(input.selectionId.slice(FIELD_OPT_PREFIX.length));
+        if (Number.isInteger(i) && opts[i]) return opts[i];
+      }
+      const t = input.text.trim().toLowerCase();
+      if (t) {
+        const exact = opts.find((o) => o.toLowerCase() === t);
+        if (exact) return exact;
+        const partial = opts.find(
+          (o) => o.toLowerCase().includes(t) || t.includes(o.toLowerCase()),
+        );
+        if (partial) return partial;
+      }
+      return null;
+    }
+
+    const raw = input.text.trim();
+    if (field.numeric) {
+      const cleaned = raw
+        .replace(/[^0-9.,]/g, '')
+        .replace(/\./g, '')
+        .replace(',', '.');
+      const n = parseFloat(cleaned);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return String(Math.round(n));
+    }
+    if (raw.length < 2) return null;
+    return raw;
+  }
+
+  private askContactName(prefix = ''): FlowResult {
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: `${prefix}Para que el asesor te contacte, decime tu *nombre y apellido*.`,
+        },
+      ],
+    };
   }
 
   private handleCotLeadNombre(
@@ -1095,12 +1247,14 @@ export class FlowService {
     const productType = state.data.productType as string;
     const selectedPlanId = state.data.selectedPlanId as number | undefined;
     const planName = state.data.planName as string | undefined;
+    const answers =
+      (state.data.answers as Record<string, string> | undefined) ?? {};
 
     await this.api.createLead(ctx.conversationId, {
       productType,
       contactName: state.data.contactName as string,
       phone,
-      payload: planName ? { plan: planName } : {},
+      payload: { ...answers, ...(planName ? { plan: planName } : {}) },
       ...(selectedPlanId ? { selectedPlanId } : {}),
     });
 
@@ -1328,6 +1482,7 @@ export class FlowService {
       step === 'SINIESTRO_DESC' ||
       step === 'ASESOR_MOTIVO' ||
       step === 'LEAD_CONTACT' ||
+      step === 'COT_LEAD_FIELDS' ||
       step === 'COT_LEAD_NOMBRE' ||
       step === 'COT_LEAD_TELEFONO'
     );

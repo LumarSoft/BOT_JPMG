@@ -21,6 +21,7 @@ export type FlowStep =
   | 'LEAD_CONTACT' // non-client leaving name/time for a sales rep
   | 'COTIZAR_TIPO' // pick what to quote (auto/moto online vs other risks)
   | 'COT_PLAN' // pick a fixed-price plan (bolso/hogar)
+  | 'COT_LEAD_FIELDS' // capturing the product-specific fields (driven by the shared catalog)
   | 'COT_LEAD_NOMBRE' // capturing the contact name for an advisor-contact lead
   | 'COT_LEAD_TELEFONO' // capturing the contact phone, then create the lead
   | 'LLM_COTIZACION' // conversational quote flow (handed to the LLM)

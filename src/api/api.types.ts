@@ -72,6 +72,24 @@ export interface HoursStatus {
  * web so the bot describes coverages with the exact same wording. Price-free by
  * design (quotes come from Triunfo / fixed plans).
  */
+/**
+ * A data point captured during the advisor-contact (lead) flow. Shared with the
+ * web so the bot asks exactly what the form asks, and the lead reaches the admin
+ * with the same labels. `label` doubles as the payload key.
+ */
+export interface CatalogField {
+  label: string;
+  placeholder: string;
+  span?: 'half' | 'full';
+  type?: 'text' | 'select';
+  options?: string[];
+  help?: string;
+  /** Natural-language question the bot asks; falls back to a generic prompt when absent. */
+  question?: string;
+  /** When true the answer is validated as a positive number. */
+  numeric?: boolean;
+}
+
 export interface ProductCatalogItem {
   id: string;
   label: string;
@@ -80,6 +98,8 @@ export interface ProductCatalogItem {
   includes: string[];
   excludes: string[];
   flow: 'instant' | 'fixed' | 'lead';
+  /** Lead-flow fields to capture (empty for instant/fixed products). */
+  fields: CatalogField[];
 }
 
 export interface VehiculoSummary {
