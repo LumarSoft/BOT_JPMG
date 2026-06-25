@@ -38,18 +38,44 @@ export class WebhookController {
     const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     const metadata = body?.entry?.[0]?.changes?.[0]?.value?.metadata;
 
-    if (!message || message.type !== 'text') return { status: 'ok' };
+    if (!message) return { status: 'ok' };
 
-    const { from } = message;
-    const text = message.text.body;
     const phoneNumberId = metadata?.phone_number_id;
 
-    console.log(`📩 De: ${from} → "${text}"`);
-
     // Fire-and-forget: responde 200 a Meta de inmediato para evitar reintentos
-    this.webhookService
-      .handleMessage(from, text, phoneNumberId)
-      .catch(console.error);
+    if (message.type === 'text') {
+      console.log(`📩 De: ${message.from} → "${message.text.body}"`);
+      this.webhookService
+        .handleMessage(
+          message.from,
+          message.text.body,
+          phoneNumberId,
+          message.id,
+        )
+        .catch(console.error);
+    } else if (message.type === 'interactive') {
+      // A button/list tap: the title is the human-readable label (kept for the
+      // transcript) and the id is the deterministic option the flow routes on.
+      const reply =
+        message.interactive.type === 'button_reply'
+          ? message.interactive.button_reply
+          : message.interactive.list_reply;
+      console.log(`👆 De: ${message.from} → [opción ${reply.id}]`);
+      this.webhookService
+        .handleMessage(
+          message.from,
+          reply.title ?? '',
+          phoneNumberId,
+          message.id,
+          reply.id,
+        )
+        .catch(console.error);
+    } else if (message.type === 'image') {
+      console.log(`🖼️ De: ${message.from} → [imagen ${message.image.id}]`);
+      this.webhookService
+        .handleMedia(message.from, message.image.id, phoneNumberId, message.id)
+        .catch(console.error);
+    }
 
     return { status: 'ok' };
   }

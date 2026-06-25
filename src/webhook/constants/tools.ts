@@ -167,15 +167,15 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'quote_vehicle',
       description:
-        'Cotiza el seguro del vehículo en Triunfo en tiempo real y devuelve coberturas con precios. Requiere marca, CODIA del modelo, año de fabricación y código postal.',
+        'Cotiza el seguro del vehículo en Triunfo en tiempo real y devuelve coberturas con precios. Requiere el CODIA del modelo (ya incluye la marca), año de fabricación y código postal.',
       parameters: {
         type: 'object',
         properties: {
           vehicleType: { type: 'string', enum: ['auto', 'moto'] },
-          brandId: { type: 'integer', description: 'ID de la marca InfoAuto' },
           codia: {
             type: 'integer',
-            description: 'CODIA del modelo (de get_vehicle_models)',
+            description:
+              'CODIA del modelo obtenido de get_vehicle_models. El CODIA ya codifica la marca (codia = marca * 10000 + modelo), por lo que NO hace falta pasar brandId.',
           },
           manufactureYear: {
             type: 'integer',
@@ -186,14 +186,28 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             description: 'Código postal de la localidad',
           },
         },
-        required: [
-          'vehicleType',
-          'brandId',
-          'codia',
-          'manufactureYear',
-          'postalCode',
-        ],
+        required: ['vehicleType', 'codia', 'manufactureYear', 'postalCode'],
       },
     },
   },
 ];
+
+/** Tool names safe to expose during the conversational quote sub-flow. */
+const COTIZADOR_TOOL_NAMES = [
+  'search_vehicle_brands',
+  'get_vehicle_groups',
+  'get_vehicle_models',
+  'quote_vehicle',
+];
+
+/**
+ * Subset of tools handed to the LLM during cotización. Client-scoped tools
+ * (pólizas, siniestros, documentos, pagos) are intentionally excluded — those
+ * flows are driven by the deterministic state machine, never by the model.
+ */
+export const COTIZADOR_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] =
+  BOT_TOOLS.filter(
+    (tool) =>
+      tool.type === 'function' &&
+      COTIZADOR_TOOL_NAMES.includes(tool.function.name),
+  );
