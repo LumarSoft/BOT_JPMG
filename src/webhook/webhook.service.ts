@@ -303,6 +303,20 @@ export class WebhookService {
     }
 
     if (result.handoff) {
+      // Hard cost cap: if this number is over its monthly budget (resolved by the
+      // API from UsageMonthly), skip the paid LLM entirely. Deterministic flows
+      // already answered everything they can; nudge to the menu / a human.
+      if (context.llmEnabled === false) {
+        this.logger.warn(
+          `[5/5] Número ${phoneNumberId} sobre el presupuesto mensual — respondo sin modelo`,
+        );
+        await this.api
+          .saveMessage(conversation.conversationId, 'assistant', RATE_LIMIT_REPLY)
+          .catch(() => undefined);
+        await this.meta.sendText(to, RATE_LIMIT_REPLY, phoneNumberId);
+        return;
+      }
+
       // Cost backstop: if this sender has exceeded the hourly LLM budget, skip
       // the model entirely and nudge them to the menu / a human.
       if (!this.allowLlmCall(`${phoneNumberId}:${from}`)) {
@@ -326,6 +340,7 @@ export class WebhookService {
         conversation,
         text,
         result.handoff,
+        phoneNumberId,
       );
       await this.api
         .saveMessage(conversation.conversationId, 'assistant', reply)
@@ -483,6 +498,7 @@ export class WebhookService {
     conversation: BotConversation,
     text: string,
     handoff: 'cotizacion' | 'faq',
+    phoneNumberId: string,
   ): Promise<string> {
     const today = new Date().toLocaleDateString('es-AR', {
       weekday: 'long',
@@ -590,6 +606,16 @@ export class WebhookService {
       );
     } finally {
       this.logCost(handoff, promptTokens, completionTokens);
+      // Report token usage to the API for per-number monthly cost tracking and
+      // budget enforcement. Fire-and-forget — never blocks or breaks the reply.
+      if (promptTokens > 0 || completionTokens > 0) {
+        void this.api.reportOpenAiUsage({
+          phoneNumberId,
+          model: MODEL,
+          inputTokens: promptTokens,
+          outputTokens: completionTokens,
+        });
+      }
     }
 
     return FALLBACK_REPLY;

@@ -64,6 +64,19 @@ export class ApiService {
     return data;
   }
 
+  /**
+   * Reports OpenAI token usage for per-number monthly cost tracking + budget
+   * enforcement. Fire-and-forget: a failure here must never break the reply.
+   */
+  async reportOpenAiUsage(input: {
+    phoneNumberId: string;
+    model?: string;
+    inputTokens: number;
+    outputTokens: number;
+  }): Promise<void> {
+    await this.http.post('/bot/usage/openai', input).catch(() => undefined);
+  }
+
   async getConversation(
     phoneNumberId: string,
     waId: string,

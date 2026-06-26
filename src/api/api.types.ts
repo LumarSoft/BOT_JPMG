@@ -9,6 +9,9 @@ export interface BotContext {
   /** General attention window (Producer.attentionHours); null → app default. */
   attentionHours: string | null;
   systemPrompt: string;
+  /** False when the number is over its monthly budget — the bot must skip the
+   *  paid LLM and rely on the deterministic flows only. Absent on older APIs. */
+  llmEnabled?: boolean;
 }
 
 export interface ClientSummary {
