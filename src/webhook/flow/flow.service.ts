@@ -263,6 +263,18 @@ export class FlowService {
       return this.answerHours();
     }
 
+    // Hard topic guard (deterministic, NO LLM): if the user clearly asks about
+    // something off-domain (programming, math, recipes, general chatter), we
+    // refuse and steer back to the menu BEFORE any model call. This is the
+    // bulletproof "no te vayas por las ramas" — it never reaches the LLM.
+    if (
+      !sel &&
+      this.isOffTopic(input.text) &&
+      !this.isCapturingData(existing.state.step)
+    ) {
+      return this.offTopicReply(key, ctx);
+    }
+
     try {
       // Sticky LLM sub-flows (cotización / FAQ free-text) keep routing every
       // message to the model until the user changes topic. A message that
@@ -1606,6 +1618,42 @@ export class FlowService {
    * on ordinary text — note "ahora" is not matched (no word boundary before
    * "hora").
    */
+  /**
+   * Detects clearly off-domain requests (programming, math, recipes, translations,
+   * jokes, write-this-for-me, general trivia) so the bot refuses deterministically
+   * instead of letting the LLM wander. Tight patterns to avoid false positives on
+   * real insurance questions.
+   */
+  private isOffTopic(text: string): boolean {
+    const t = text.toLowerCase();
+    return (
+      // Programming / tech
+      /\b(javascript|typescript|python|java|kotlin|c\+\+|c#|php|html|css|sql|node|react|bash|powershell)\b/.test(t) ||
+      /\b(hello world|console\.log|c[oó]digo|codigo|programar|programaci[oó]n|funci[oó]n|algoritmo|script|compilar|debug)\b/.test(
+        t,
+      ) ||
+      // Math / homework
+      /\b(ecuaci[oó]n|integral|derivada|factoriz|teorema|resolv[eé] (este|el) (c[aá]lculo|problema))\b/.test(t) ||
+      // Creative / generic assistant abuse
+      /\b(receta|cocinar|poema|poes[ií]a|chiste|cuento|ensayo|redact[aá]|traduc[ií]|traducci[oó]n)\b/.test(t) ||
+      /\b(qui[eé]n (es|fue|gan[oó])|capital de|cu[aá]nto es \d)\b/.test(t)
+    );
+  }
+
+  /** Fixed refusal for off-domain messages + the current menu (no LLM, no cost). */
+  private offTopicReply(key: string, ctx: FlowContext): FlowResult {
+    const menu = this.toMainMenu(key, ctx);
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Disculpá, soy el asistente de *JPMG* y solo puedo ayudarte con *seguros* y trámites de la productora 🙂. ¿Te doy una mano con eso?',
+        },
+        ...menu.messages,
+      ],
+    };
+  }
+
   private isHoursQuestion(text: string): boolean {
     const t = text.toLowerCase();
     return (
