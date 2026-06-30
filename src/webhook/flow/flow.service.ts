@@ -55,6 +55,22 @@ import { attentionHoursOf } from '../constants/business';
 const GREETING_RE =
   /^(?:hola+s?|holis|buenas|buen(?:os|as)?\s*(?:d[ií]as?|tardes?|noches?)?|buen\s*d[ií]a|hey+|qu[eé]\s+tal|saludos)[\s!.,¡?]*$/i;
 
+/** Synthetic selectionId the media handler feeds in when a photo was received,
+ * so the deterministic claim-photo steps advance without the user typing. */
+export const PHOTO_RECEIVED = '__photo_received__';
+
+/** Claim photo steps → the `tipo` label stored on each attachment. */
+export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
+  SINIESTRO_FOTO_TARJETA: 'tarjeta_verde',
+  SINIESTRO_FOTO_CARNET: 'carnet',
+  SINIESTRO_TERCERO_TARJETA: 'tarjeta_verde_tercero',
+  SINIESTRO_TERCERO_CARNET: 'carnet_tercero',
+};
+
+/** Buttons for the "¿hubo un tercero?" step. */
+const TERCERO_SI = 'sin_tercero_si';
+const TERCERO_NO = 'sin_tercero_no';
+
 /** Formats a Date as YYYY-MM-DD in local time (what the API expects). */
 function localISODate(d: Date): string {
   const y = d.getFullYear();
@@ -306,6 +322,16 @@ export class FlowService {
         return this.handleSiniestroDesc(state, input, key);
       case 'SINIESTRO_CONFIRM':
         return this.handleSiniestroConfirm(state, input, ctx, key);
+      case 'SINIESTRO_FOTO_TARJETA':
+        return this.handleSinFotoTarjeta(input, key);
+      case 'SINIESTRO_FOTO_CARNET':
+        return this.handleSinFotoCarnet(input, key);
+      case 'SINIESTRO_TERCERO':
+        return this.handleSinTercero(input, key);
+      case 'SINIESTRO_TERCERO_TARJETA':
+        return this.handleSinTerceroTarjeta(input, key);
+      case 'SINIESTRO_TERCERO_CARNET':
+        return this.handleSinTerceroCarnet(input, key);
       case 'DOC_POLIZA':
         return this.handleDocPoliza(state, input, ctx, key);
       case 'DOC_TYPE':
@@ -755,15 +781,133 @@ export class FlowService {
       descripcion: state.data.descripcion as string,
     });
 
-    this.setState(key, 'CLIENT_MENU');
+    // Start the guided photo capture. Each photo the client sends from here is
+    // attached to THIS claim and labeled by type (tarjeta verde / carnet / tercero).
+    this.setState(key, 'SINIESTRO_FOTO_TARJETA', { siniestroId: siniestro.id });
     return {
       messages: [
         {
           kind: 'text',
           body:
             `✅ Registré tu denuncia (N° interno *${siniestro.id}*).\n` +
-            `La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.\n\n` +
-            `📸 *Importante:* si tenés *fotos del daño*, mandámelas *ahora* por este chat (podés enviar varias) y las sumo automáticamente a la denuncia.`,
+            `La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.`,
+        },
+        {
+          kind: 'text',
+          body:
+            'Ahora sumemos algunas *fotos* a tu reclamo 📎.\n\n' +
+            'Mandame una *foto de la tarjeta verde* (cédula del vehículo). ' +
+            'Si no la tenés a mano, escribí *no la tengo* y seguimos.',
+        },
+      ],
+    };
+  }
+
+  // ─── Siniestro: captura guiada de fotos ───────────────────
+
+  /** True when the user is skipping a photo step ("no", "no la tengo", "saltar"). */
+  private isPhotoSkip(text: string): boolean {
+    return /^(no|no la tengo|no las? tengo|no tengo|salt(ar|o|á)|omitir|siguiente|despu[eé]s|listo)\b/i.test(
+      text.trim(),
+    );
+  }
+
+  /** A photo step advances on a received photo (synthetic id) or an explicit skip. */
+  private photoAdvances(input: UserInput): boolean {
+    return input.selectionId === PHOTO_RECEIVED || (!input.selectionId && this.isPhotoSkip(input.text));
+  }
+
+  private askPhoto(key: string, step: FlowStep, body: string): FlowResult {
+    this.setState(key, step);
+    return { messages: [{ kind: 'text', body }] };
+  }
+
+  private retryPhoto(): FlowResult {
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Mandame la *foto* 📷, o escribí *no la tengo* para saltar este paso.',
+        },
+      ],
+    };
+  }
+
+  private handleSinFotoTarjeta(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askPhoto(
+      key,
+      'SINIESTRO_FOTO_CARNET',
+      'Perfecto. Ahora una *foto de tu carnet de conducir*. (si no la tenés, escribí *no la tengo*)',
+    );
+  }
+
+  private handleSinFotoCarnet(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    this.setState(key, 'SINIESTRO_TERCERO');
+    return {
+      messages: [
+        {
+          kind: 'buttons',
+          body: '¿Hubo un *tercero involucrado* en el siniestro?',
+          buttons: [
+            { id: TERCERO_SI, title: 'Sí, hubo' },
+            { id: TERCERO_NO, title: 'No' },
+          ],
+        },
+      ],
+    };
+  }
+
+  private handleSinTercero(input: UserInput, key: string): FlowResult {
+    const t = input.text.trim().toLowerCase();
+    const yes = input.selectionId === TERCERO_SI || /^s[ií]\b/.test(t) || /\bhubo\b/.test(t);
+    const no = input.selectionId === TERCERO_NO || /^no\b/.test(t);
+
+    if (yes) {
+      return this.askPhoto(
+        key,
+        'SINIESTRO_TERCERO_TARJETA',
+        'Mandame la *foto de la tarjeta verde del tercero* (si la tenés). (o *no la tengo*)',
+      );
+    }
+    if (no) return this.finishSiniestroPhotos(key);
+
+    return {
+      messages: [
+        {
+          kind: 'buttons',
+          body: 'Decime si hubo un tercero involucrado:',
+          buttons: [
+            { id: TERCERO_SI, title: 'Sí, hubo' },
+            { id: TERCERO_NO, title: 'No' },
+          ],
+        },
+      ],
+    };
+  }
+
+  private handleSinTerceroTarjeta(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askPhoto(
+      key,
+      'SINIESTRO_TERCERO_CARNET',
+      'Y por último, la *foto del carnet de conducir del tercero*. (o *no la tengo*)',
+    );
+  }
+
+  private handleSinTerceroCarnet(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.finishSiniestroPhotos(key);
+  }
+
+  private finishSiniestroPhotos(key: string): FlowResult {
+    this.setState(key, 'CLIENT_MENU');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te contacta. ¿Necesitás algo más?',
         },
         clientMenu(),
       ],
@@ -1484,7 +1628,12 @@ export class FlowService {
       step === 'LEAD_CONTACT' ||
       step === 'COT_LEAD_FIELDS' ||
       step === 'COT_LEAD_NOMBRE' ||
-      step === 'COT_LEAD_TELEFONO'
+      step === 'COT_LEAD_TELEFONO' ||
+      step === 'SINIESTRO_FOTO_TARJETA' ||
+      step === 'SINIESTRO_FOTO_CARNET' ||
+      step === 'SINIESTRO_TERCERO' ||
+      step === 'SINIESTRO_TERCERO_TARJETA' ||
+      step === 'SINIESTRO_TERCERO_CARNET'
     );
   }
 

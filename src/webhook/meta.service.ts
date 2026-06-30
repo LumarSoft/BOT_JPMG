@@ -92,6 +92,32 @@ export class MetaService {
     });
   }
 
+  /**
+   * Sends an approved template message (HSM). Required for first contact outside
+   * the 24-hour window — e.g. following up a web quote with a client who never
+   * messaged the bot. `params` fill the body variables ({{1}}, {{2}}, …) in order.
+   */
+  async sendTemplate(
+    to: string,
+    phoneNumberId: string,
+    template: string,
+    lang: string,
+    params: string[] = [],
+  ): Promise<void> {
+    const components = params.length
+      ? [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: p })) }]
+      : undefined;
+    await this.send(phoneNumberId, {
+      to,
+      type: 'template',
+      template: {
+        name: template,
+        language: { code: lang },
+        ...(components ? { components } : {}),
+      },
+    });
+  }
+
   /** Posts a message payload to the Meta Cloud API, swallowing errors (logged). */
   private async send(
     phoneNumberId: string,

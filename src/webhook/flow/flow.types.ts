@@ -15,6 +15,11 @@ export type FlowStep =
   | 'SINIESTRO_FECHA' // waiting for the incident date
   | 'SINIESTRO_DESC' // waiting for the description
   | 'SINIESTRO_CONFIRM' // confirm before creating
+  | 'SINIESTRO_FOTO_TARJETA' // waiting for the insured's green-card photo
+  | 'SINIESTRO_FOTO_CARNET' // waiting for the insured's driver-license photo
+  | 'SINIESTRO_TERCERO' // ask whether a third party was involved
+  | 'SINIESTRO_TERCERO_TARJETA' // third party's green-card photo
+  | 'SINIESTRO_TERCERO_CARNET' // third party's driver-license photo
   | 'DOC_POLIZA' // pick the policy to get documents from
   | 'DOC_TYPE' // pick which document to send
   | 'ASESOR_MOTIVO' // waiting for the reason to pass to an advisor

@@ -5,7 +5,7 @@ import axios from 'axios';
 import { ApiService } from '../api/api.service';
 import type { BotContext, BotConversation } from '../api/api.types';
 import { MetaService } from './meta.service';
-import { FlowService } from './flow/flow.service';
+import { FlowService, PHOTO_RECEIVED, SINIESTRO_PHOTO_TIPO } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS } from './constants/tools';
@@ -425,11 +425,11 @@ export class WebhookService {
     this.logger.log(`Procesando imagen de ${from}...`);
     const to = this.meta.normalizePhone(from);
 
-    let conversationId: number;
+    let context: BotContext;
+    let conversation: BotConversation;
     try {
-      await this.api.getContext(phoneNumberId);
-      const conversation = await this.api.getConversation(phoneNumberId, from);
-      conversationId = conversation.conversationId;
+      context = await this.api.getContext(phoneNumberId);
+      conversation = await this.api.getConversation(phoneNumberId, from);
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 404) {
         this.logger.warn(
@@ -454,24 +454,71 @@ export class WebhookService {
       return;
     }
 
+    // If we're in a guided claim-photo step, label the attachment by type so the
+    // admin sees "tarjeta verde / carnet / tercero" instead of an unnamed photo.
+    const flowState = this.parseFlowState(conversation.flowState);
+    const tipo = flowState?.step ? SINIESTRO_PHOTO_TIPO[flowState.step] : undefined;
+
     try {
-      const { adjuntosCount } = await this.api.attachAdjunto(conversationId, {
-        buffer: media.buffer,
-        filename: buildMediaFilename(media.mimeType),
-        mimeType: media.mimeType,
-      });
-      const reply = `📎 Recibí tu foto y la adjunté a la denuncia (${adjuntosCount} en total). Si tenés más, mandámelas.`;
-      // Best-effort transcript note so later turns know a photo was sent.
-      await this.api
-        .saveMessage(conversationId, 'user', '[El cliente envió una foto]')
-        .catch(() => undefined);
-      await this.api
-        .saveMessage(conversationId, 'assistant', reply)
-        .catch(() => undefined);
-      await this.meta.sendText(to, reply, phoneNumberId);
+      await this.api.attachAdjunto(
+        conversation.conversationId,
+        {
+          buffer: media.buffer,
+          filename: buildMediaFilename(media.mimeType),
+          mimeType: media.mimeType,
+        },
+        tipo,
+      );
     } catch (error) {
       await this.meta.sendText(to, this.mediaErrorReply(error), phoneNumberId);
+      return;
     }
+
+    // Best-effort transcript note so later turns know a photo was sent.
+    await this.api
+      .saveMessage(conversation.conversationId, 'user', '[El cliente envió una foto]')
+      .catch(() => undefined);
+
+    // A human agent owns the chat → store the photo but stay silent.
+    if (conversation.botPaused) return;
+
+    // In a guided photo step: advance the deterministic flow and send the next
+    // prompt (next photo / "¿hubo tercero?" / closing), keeping it on the rails.
+    if (tipo) {
+      const key = `${phoneNumberId}:${from}`;
+      const result = await this.flow.handle(
+        key,
+        { text: '', selectionId: PHOTO_RECEIVED },
+        {
+          conversationId: conversation.conversationId,
+          client: conversation.client,
+          newSession: false,
+          botName: context.botName,
+          attentionHours: context.attentionHours,
+          flowState,
+        },
+      );
+      await this.api
+        .saveFlowState(
+          conversation.conversationId,
+          result.state ? JSON.stringify(result.state) : null,
+        )
+        .catch((error: Error) => this.logger.error(`No se pudo guardar el flowState: ${error.message}`));
+      for (const message of result.messages) {
+        await this.dispatch(to, message, phoneNumberId);
+        await this.api
+          .saveMessage(conversation.conversationId, 'assistant', this.toTranscript(message))
+          .catch(() => undefined);
+      }
+      return;
+    }
+
+    // Outside the guided flow: generic acknowledgement (attaches to the open claim).
+    const reply = '📎 Recibí tu foto y la sumé a tu denuncia. Si tenés más, mandámelas.';
+    await this.api
+      .saveMessage(conversation.conversationId, 'assistant', reply)
+      .catch(() => undefined);
+    await this.meta.sendText(to, reply, phoneNumberId);
   }
 
   /** Maps an attach-photo failure to a user-facing message. */
@@ -552,6 +599,12 @@ export class WebhookService {
         );
         const completion = await this.openai.chat.completions.create({
           model: MODEL,
+          // Low temperature = the model sticks to the instructions and stops
+          // wandering off-topic. This is the main "no te vayas por las ramas"
+          // lever; the apparent concurrency issue was really high-temperature
+          // creativity surfacing more often when more messages hit the LLM.
+          temperature: 0.2,
+          top_p: 1,
           max_tokens: MAX_TOKENS[handoff],
           messages,
           ...(tools ? { tools } : {}),

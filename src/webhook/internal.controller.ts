@@ -24,6 +24,26 @@ export class InternalController {
     return { ok: true };
   }
 
+  /**
+   * Called by john-api to send an approved template (e.g. the web-quote
+   * follow-up). Templates are the only way to reach a client outside the 24h
+   * window. `params` fill the template's body variables in order.
+   */
+  @Post('send-template')
+  async sendTemplate(
+    @Body()
+    body: { to: string; phoneNumberId: string; template: string; lang?: string; params?: string[] },
+  ) {
+    await this.meta.sendTemplate(
+      this.meta.normalizePhone(body.to),
+      body.phoneNumberId,
+      body.template,
+      body.lang ?? 'es_AR',
+      body.params ?? [],
+    );
+    return { ok: true };
+  }
+
   /** Called by john-api on release so the user gets the welcome menu next time. */
   @Post('reset-flow')
   resetFlow(@Body() body: { phoneNumberId: string; waId: string }) {

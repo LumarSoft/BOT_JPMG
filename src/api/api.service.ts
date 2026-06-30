@@ -208,10 +208,15 @@ export class ApiService {
     return data;
   }
 
-  /** Uploads a WhatsApp photo, attaching it to the conversation's latest open claim. */
+  /**
+   * Uploads a WhatsApp photo, attaching it to the conversation's latest open
+   * claim. `tipo` (optional) categorizes the photo (tarjeta_verde, carnet,
+   * tarjeta_verde_tercero, carnet_tercero) so the admin sees labeled documents.
+   */
   async attachAdjunto(
     conversationId: number,
     file: { buffer: Buffer; filename: string; mimeType: string },
+    tipo?: string,
   ): Promise<AttachAdjuntosResult> {
     const form = new FormData();
     form.append(
@@ -222,8 +227,9 @@ export class ApiService {
       file.filename,
     );
 
+    const query = tipo ? `?tipo=${encodeURIComponent(tipo)}` : '';
     const { data } = await this.http.post<AttachAdjuntosResult>(
-      `/bot/conversation/${conversationId}/adjuntos`,
+      `/bot/conversation/${conversationId}/adjuntos${query}`,
       form,
     );
     return data;
