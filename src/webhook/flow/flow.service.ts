@@ -65,6 +65,7 @@ export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
   SINIESTRO_FOTO_CARNET: 'carnet',
   SINIESTRO_TERCERO_TARJETA: 'tarjeta_verde_tercero',
   SINIESTRO_TERCERO_CARNET: 'carnet_tercero',
+  SINIESTRO_FOTO_DANIO: 'siniestro',
 };
 
 /** Buttons for the "¿hubo un tercero?" step. */
@@ -344,6 +345,8 @@ export class FlowService {
         return this.handleSinTerceroTarjeta(input, key);
       case 'SINIESTRO_TERCERO_CARNET':
         return this.handleSinTerceroCarnet(input, key);
+      case 'SINIESTRO_FOTO_DANIO':
+        return this.handleSinFotoDanio(input, key);
       case 'DOC_POLIZA':
         return this.handleDocPoliza(state, input, ctx, key);
       case 'DOC_TYPE':
@@ -883,7 +886,7 @@ export class FlowService {
         'Mandame la *foto de la tarjeta verde del tercero* (si la tenés). (o *no la tengo*)',
       );
     }
-    if (no) return this.finishSiniestroPhotos(key);
+    if (no) return this.askDanio(key);
 
     return {
       messages: [
@@ -910,7 +913,50 @@ export class FlowService {
 
   private handleSinTerceroCarnet(input: UserInput, key: string): FlowResult {
     if (!this.photoAdvances(input)) return this.retryPhoto();
-    return this.finishSiniestroPhotos(key);
+    return this.askDanio(key);
+  }
+
+  /** Asks for the incident/damage photos (multiple allowed), the last photo step. */
+  private askDanio(key: string): FlowResult {
+    this.setState(key, 'SINIESTRO_FOTO_DANIO');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            'Por último, mandame *fotos del siniestro* 📸 (los daños del vehículo, el lugar, lo que tengas). ' +
+            'Podés enviar varias. Cuando termines, escribí *listo*. Si no tenés, escribí *no tengo*.',
+        },
+      ],
+    };
+  }
+
+  private handleSinFotoDanio(input: UserInput, key: string): FlowResult {
+    // A photo arrived → attach it (done by the media handler) and stay here so the
+    // user can keep sending more of the incident.
+    if (input.selectionId === PHOTO_RECEIVED) {
+      this.setState(key, 'SINIESTRO_FOTO_DANIO');
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: '📎 Recibí la foto y la sumé a tu denuncia. Si tenés *más fotos del siniestro*, mandámelas. Cuando termines, escribí *listo*.',
+          },
+        ],
+      };
+    }
+    // "listo" / "no tengo" → close the claim capture.
+    if (!input.selectionId && this.isPhotoSkip(input.text)) {
+      return this.finishSiniestroPhotos(key);
+    }
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Mandame las *fotos del siniestro* (los daños, el lugar), o escribí *listo* cuando termines.',
+        },
+      ],
+    };
   }
 
   private finishSiniestroPhotos(key: string): FlowResult {
@@ -919,7 +965,7 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te contacta. ¿Necesitás algo más?',
+          body: '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te contacta a la brevedad. ¿Necesitás algo más?',
         },
         clientMenu(),
       ],
@@ -1681,7 +1727,8 @@ export class FlowService {
       step === 'SINIESTRO_FOTO_CARNET' ||
       step === 'SINIESTRO_TERCERO' ||
       step === 'SINIESTRO_TERCERO_TARJETA' ||
-      step === 'SINIESTRO_TERCERO_CARNET'
+      step === 'SINIESTRO_TERCERO_CARNET' ||
+      step === 'SINIESTRO_FOTO_DANIO'
     );
   }
 

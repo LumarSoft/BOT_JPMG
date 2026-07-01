@@ -20,6 +20,7 @@ export type FlowStep =
   | 'SINIESTRO_TERCERO' // ask whether a third party was involved
   | 'SINIESTRO_TERCERO_TARJETA' // third party's green-card photo
   | 'SINIESTRO_TERCERO_CARNET' // third party's driver-license photo
+  | 'SINIESTRO_FOTO_DANIO' // photos of the incident/damage (multiple, then finish)
   | 'DOC_POLIZA' // pick the policy to get documents from
   | 'DOC_TYPE' // pick which document to send
   | 'ASESOR_MOTIVO' // waiting for the reason to pass to an advisor
