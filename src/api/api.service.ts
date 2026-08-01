@@ -77,6 +77,19 @@ export class ApiService {
     await this.http.post('/bot/usage/openai', input).catch(() => undefined);
   }
 
+  /**
+   * Reports a billable Meta conversation. Meta sends the cost in the `pricing`
+   * object of the *status* webhook, so this is called from there rather than
+   * when the message is sent. Fire-and-forget, same as the OpenAI report.
+   */
+  async reportMetaUsage(input: {
+    phoneNumberId: string;
+    conversations?: number;
+    costUsd?: number;
+  }): Promise<void> {
+    await this.http.post('/bot/usage/meta', input).catch(() => undefined);
+  }
+
   async getConversation(
     phoneNumberId: string,
     waId: string,
