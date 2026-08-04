@@ -32,7 +32,13 @@ export class InternalController {
   @Post('send-template')
   async sendTemplate(
     @Body()
-    body: { to: string; phoneNumberId: string; template: string; lang?: string; params?: string[] },
+    body: {
+      to: string;
+      phoneNumberId: string;
+      template: string;
+      lang?: string;
+      params?: string[];
+    },
   ) {
     await this.meta.sendTemplate(
       this.meta.normalizePhone(body.to),

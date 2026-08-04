@@ -4,12 +4,25 @@ import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
 import { attentionHoursOf } from './constants/business';
 
-/** Builds the inactivity notice, quoting the producer's own attention window. */
-function warningText(attentionHours?: string | null): string {
+/**
+ * Builds the goodbye sent when a session expires. It has to be explicit that the
+ * chat closed: the menus stay on the user's screen and are still tappable, so
+ * someone who isn't told just taps one and gets a puzzling "¡Hola de nuevo!"
+ * instead of what they asked for. Saying "escribinos y arrancamos de nuevo" sets
+ * the expectation that the next step is a message, not a tap.
+ */
+function warningText(
+  attentionHours?: string | null,
+  isOpenNow?: boolean,
+): string {
+  const closed =
+    isOpenNow === false
+      ? ' Ahora estamos fuera de horario, pero dejanos tu mensaje igual y te respondemos al reabrir.'
+      : '';
   return (
     'Por inactividad damos por finalizada esta conversación. 🙂 ' +
     'Cuando quieras retomar, escribinos y arrancamos de nuevo. ' +
-    `Te atendemos de ${attentionHoursOf(attentionHours)}.`
+    `Te atendemos de ${attentionHoursOf(attentionHours)}.${closed}`
   );
 }
 
@@ -40,7 +53,7 @@ export class InactivityWarningService {
       for (const c of pending) {
         await this.meta.sendText(
           this.meta.normalizePhone(c.waId),
-          warningText(c.attentionHours),
+          warningText(c.attentionHours, c.isOpenNow),
           c.phoneNumberId,
         );
       }

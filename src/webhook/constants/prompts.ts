@@ -1,4 +1,5 @@
 import { attentionHoursOf } from './business';
+import { displayName } from '../flow/flow.messages';
 
 export interface FocusedPromptOptions {
   /** Bot display name configured per producer (Producer.botName). Falls back to a
@@ -18,14 +19,18 @@ export interface FocusedPromptOptions {
   catalog?: string;
 }
 
-/** A line telling the model who the (already identified) client is, when known. */
+/** A line telling the model who the (already identified) client is, when known.
+ * The name is normalised first: the cartera stores it shouted in caps, and a
+ * company's razón social lives in `firstName` — the model was echoing both back
+ * verbatim ("¡Hola de nuevo, JOHN PELLEGRINI MANAGEMENT GROUP SRL!"). */
 function clientContext(
   client?: { firstName: string; lastName: string } | null,
 ): string {
-  const name = client ? `${client.firstName} ${client.lastName}`.trim() : '';
+  if (!client) return '';
+  const name = displayName(client.firstName);
   return name
-    ? `\nEl cliente ya está identificado: *${name}*. Tratalo por su nombre cuando sea natural y no le pidas datos personales que ya tenemos.`
-    : '';
+    ? `\nEl cliente ya está identificado y se llama *${name}*. Llamalo así, tal cual está escrito acá (no en mayúsculas ni con el apellido), solo cuando sea natural, y no le pidas datos personales que ya tenemos.`
+    : `\nEl cliente ya está identificado (es una empresa). No lo trates por nombre de pila ni repitas su razón social, y no le pidas datos que ya tenemos.`;
 }
 
 /** Builds the bot's identity line from the configured name, with a generic
@@ -80,9 +85,13 @@ Pedí de a uno los datos que falten: marca, modelo/versión, año y localidad o 
 1. search_vehicle_brands con la marca → si hay varias, confirmá cuál.
 2. get_vehicle_groups → confirmá la línea de modelo (ej: CRONOS).
 3. get_vehicle_models → elegí/confirmá la versión y quedate con el CODIA.
-4. *Antes de cotizar, preguntá expresamente si el vehículo tiene GNC* (sí/no). Es obligatorio: no llames a quote_vehicle sin esa respuesta. Si ya lo dijo en la charla, no lo vuelvas a preguntar.
+4. *Antes de cotizar, preguntá expresamente si el vehículo tiene GNC*. Es obligatorio: no llames a quote_vehicle sin esa respuesta. Si ya lo dijo en la charla, no lo vuelvas a preguntar.
+   La pregunta del GNC va *sola*: cerrá el mensaje con "¿Tu auto tiene GNC?" (o "¿Tu moto tiene GNC?") y nada más después. No la mezcles con otra pregunta ni con una lista de versiones, y no agregues "(sí/no)": el usuario responde con botones.
 5. quote_vehicle con marca (brandId), CODIA, año y código postal.
-6. Presentá hasta 4 coberturas de menor a mayor precio (tipo/código + precio mensual aproximado). Aclará que es un valor orientativo, sujeto a inspección y confirmación del asesor.
+6. Presentá hasta 4 coberturas de menor a mayor precio. Usá el *nombre* de cada cobertura y el precio tal cual vienen en el resultado de la tool — ya están escritos como los tiene que ver el cliente. No los reformatees, no los conviertas ni inventes otro código. Aclará que es un valor orientativo, sujeto a inspección y confirmación del asesor.
+
+## LLAMÁ LAS TOOLS, NO LAS ANUNCIES
+Nunca cierres un turno diciendo que vas a buscar algo ("un segundo", "ya te digo", "voy a buscar la marca"): el usuario se queda esperando una respuesta que nunca llega. Llamá la tool en el mismo turno y contestá con el resultado. Si necesitás encadenar varias (marca → línea → versión), encadenalas todas antes de escribir tu respuesta.
 GNC: el GNC no afecta la cotización online, pero dejá anotada la respuesta (tiene / no tiene) para el asesor. Si no sabe el código postal, pedí la localidad.
 
 ## REGLAS (CONTROL ESTRICTO — NO TE VAYAS POR LAS RAMAS)
@@ -127,5 +136,7 @@ ${catalogSection(options.catalog)}
 /** Renders the catalog reference block for the FAQ prompt, when available. */
 function catalogSection(catalog?: string): string {
   const c = catalog?.trim();
-  return c ? `\n## COBERTURAS QUE OFRECEMOS (descripción, sin precios)\n${c}\n` : '';
+  return c
+    ? `\n## COBERTURAS QUE OFRECEMOS (descripción, sin precios)\n${c}\n`
+    : '';
 }

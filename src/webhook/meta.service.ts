@@ -105,7 +105,12 @@ export class MetaService {
     params: string[] = [],
   ): Promise<void> {
     const components = params.length
-      ? [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: p })) }]
+      ? [
+          {
+            type: 'body',
+            parameters: params.map((p) => ({ type: 'text', text: p })),
+          },
+        ]
       : undefined;
     await this.send(phoneNumberId, {
       to,

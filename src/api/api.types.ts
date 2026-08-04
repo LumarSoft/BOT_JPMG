@@ -51,6 +51,8 @@ export interface PendingWarning {
   phoneNumberId: string;
   /** The producer's attention window, so the notice quotes its own hours. */
   attentionHours: string | null;
+  /** False when the office is closed — the goodbye then says when we're back. */
+  isOpenNow?: boolean;
 }
 
 /**

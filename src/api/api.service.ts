@@ -113,8 +113,15 @@ export class ApiService {
   }
 
   /** Resets the conversation session (secret /reset dev command): drops history, keeps the client. */
-  async resetSession(conversationId: number): Promise<void> {
-    await this.http.post(`/bot/conversation/${conversationId}/reset`);
+  /**
+   * Ends the current session. `full` also unlinks the identified client — used
+   * by the /reset dev command, which must start from zero; a normal "finalizar"
+   * keeps the link so the client is still greeted by name next time.
+   */
+  async resetSession(conversationId: number, full = false): Promise<void> {
+    await this.http.post(
+      `/bot/conversation/${conversationId}/reset${full ? '?full=true' : ''}`,
+    );
   }
 
   /** Persists the bot's serialized flow state (or null to clear it) so it survives a restart. */
@@ -256,13 +263,15 @@ export class ApiService {
    */
   async getProducts(): Promise<ProductCatalogItem[]> {
     const now = Date.now();
-    if (this.catalogCache && now - this.catalogCache.fetchedAt < CATALOG_TTL_MS) {
+    if (
+      this.catalogCache &&
+      now - this.catalogCache.fetchedAt < CATALOG_TTL_MS
+    ) {
       return this.catalogCache.items;
     }
     try {
-      const { data } = await this.http.get<ProductCatalogItem[]>(
-        '/public/products',
-      );
+      const { data } =
+        await this.http.get<ProductCatalogItem[]>('/public/products');
       this.catalogCache = { items: data, fetchedAt: now };
       return data;
     } catch (error) {

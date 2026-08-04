@@ -5,8 +5,14 @@ import axios from 'axios';
 import { ApiService } from '../api/api.service';
 import type { BotContext, BotConversation } from '../api/api.types';
 import { MetaService } from './meta.service';
-import { FlowService, PHOTO_RECEIVED, SINIESTRO_PHOTO_TIPO } from './flow/flow.service';
+import {
+  FlowService,
+  PHOTO_RECEIVED,
+  SINIESTRO_PHOTO_TIPO,
+} from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
+import { gncButtons, toWhatsAppMarkdown } from './flow/flow.messages';
+import { renderQuote } from './constants/coverages';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS } from './constants/tools';
 import {
@@ -240,7 +246,10 @@ export class WebhookService {
 
       // Secret dev command: reset the session and stop here.
       if (text.trim().toLowerCase() === RESET_COMMAND) {
-        await this.api.resetSession(conversation.conversationId);
+        // Full reset: also unlinks the identified client, so the next message
+        // starts from the "¿sos cliente?" welcome instead of greeting whoever
+        // was identified before.
+        await this.api.resetSession(conversation.conversationId, true);
         this.flow.reset(`${phoneNumberId}:${from}`);
         await this.meta.sendText(
           this.meta.normalizePhone(from),
@@ -311,7 +320,11 @@ export class WebhookService {
           `[5/5] Número ${phoneNumberId} sobre el presupuesto mensual — respondo sin modelo`,
         );
         await this.api
-          .saveMessage(conversation.conversationId, 'assistant', RATE_LIMIT_REPLY)
+          .saveMessage(
+            conversation.conversationId,
+            'assistant',
+            RATE_LIMIT_REPLY,
+          )
           .catch(() => undefined);
         await this.meta.sendText(to, RATE_LIMIT_REPLY, phoneNumberId);
         return;
@@ -335,21 +348,31 @@ export class WebhookService {
       }
 
       this.logger.log(`[5/5] Handoff al LLM (${result.handoff})`);
-      const reply = await this.generateReply(
+      const raw = await this.generateReply(
         context,
         conversation,
         text,
         result.handoff,
         phoneNumberId,
       );
+      // The model writes standard markdown; WhatsApp speaks its own dialect.
+      const reply = toWhatsAppMarkdown(raw);
+      // The quote sub-flow's GNC question goes out as buttons instead of text.
+      const message: OutgoingMessage =
+        (result.handoff === 'cotizacion' ? gncButtons(reply) : null) ??
+        ({ kind: 'text', body: reply } as const);
       await this.api
-        .saveMessage(conversation.conversationId, 'assistant', reply)
+        .saveMessage(
+          conversation.conversationId,
+          'assistant',
+          this.toTranscript(message),
+        )
         .catch((error: Error) =>
           this.logger.error(
             `No se pudo guardar la respuesta: ${error.message}`,
           ),
         );
-      await this.meta.sendText(to, reply, phoneNumberId);
+      await this.dispatch(to, message, phoneNumberId);
     }
 
     this.logger.log(`Mensaje(s) enviado(s) a ${to} ✓`);
@@ -457,7 +480,9 @@ export class WebhookService {
     // If we're in a guided claim-photo step, label the attachment by type so the
     // admin sees "tarjeta verde / carnet / tercero" instead of an unnamed photo.
     const flowState = this.parseFlowState(conversation.flowState);
-    const tipo = flowState?.step ? SINIESTRO_PHOTO_TIPO[flowState.step] : undefined;
+    const tipo = flowState?.step
+      ? SINIESTRO_PHOTO_TIPO[flowState.step]
+      : undefined;
 
     try {
       await this.api.attachAdjunto(
@@ -476,7 +501,11 @@ export class WebhookService {
 
     // Best-effort transcript note so later turns know a photo was sent.
     await this.api
-      .saveMessage(conversation.conversationId, 'user', '[El cliente envió una foto]')
+      .saveMessage(
+        conversation.conversationId,
+        'user',
+        '[El cliente envió una foto]',
+      )
       .catch(() => undefined);
 
     // A human agent owns the chat → store the photo but stay silent.
@@ -503,18 +532,27 @@ export class WebhookService {
           conversation.conversationId,
           result.state ? JSON.stringify(result.state) : null,
         )
-        .catch((error: Error) => this.logger.error(`No se pudo guardar el flowState: ${error.message}`));
+        .catch((error: Error) =>
+          this.logger.error(
+            `No se pudo guardar el flowState: ${error.message}`,
+          ),
+        );
       for (const message of result.messages) {
         await this.dispatch(to, message, phoneNumberId);
         await this.api
-          .saveMessage(conversation.conversationId, 'assistant', this.toTranscript(message))
+          .saveMessage(
+            conversation.conversationId,
+            'assistant',
+            this.toTranscript(message),
+          )
           .catch(() => undefined);
       }
       return;
     }
 
     // Outside the guided flow: generic acknowledgement (attaches to the open claim).
-    const reply = '📎 Recibí tu foto y la sumé a tu denuncia. Si tenés más, mandámelas.';
+    const reply =
+      '📎 Recibí tu foto y la sumé a tu denuncia. Si tenés más, mandámelas.';
     await this.api
       .saveMessage(conversation.conversationId, 'assistant', reply)
       .catch(() => undefined);
@@ -558,9 +596,7 @@ export class WebhookService {
     // then deflects coverage questions to an advisor, as the prompt instructs).
     const catalog =
       handoff === 'faq'
-        ? renderCatalogForPrompt(
-            await this.api.getProducts().catch(() => []),
-          )
+        ? renderCatalogForPrompt(await this.api.getProducts().catch(() => []))
         : undefined;
     const system =
       handoff === 'cotizacion'
@@ -784,14 +820,15 @@ export class WebhookService {
           // can be wrong if it browsed models across mismatched brand/group combinations.
           const codiaNum = Number(args.codia);
           const brandFromCodia = Math.floor(codiaNum / 10000);
-          return JSON.stringify(
-            await this.api.quoteVehicle(vehicleType, {
-              brand: String(brandFromCodia),
-              model: String(codiaNum),
-              manufactureYear: Number(args.manufactureYear),
-              postalCode: Number(args.postalCode),
-            }),
-          );
+          const quote = await this.api.quoteVehicle(vehicleType, {
+            brand: String(brandFromCodia),
+            model: String(codiaNum),
+            manufactureYear: Number(args.manufactureYear),
+            postalCode: Number(args.postalCode),
+          });
+          // Hand the model coverage names and ARS-formatted prices, not raw
+          // codes and bare numbers — see constants/coverages.ts.
+          return JSON.stringify(renderQuote(quote));
         }
         default:
           return JSON.stringify({ error: `Tool desconocida: ${name}` });

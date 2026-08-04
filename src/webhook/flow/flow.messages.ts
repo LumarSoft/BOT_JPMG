@@ -6,7 +6,7 @@ import type {
   ProductPlanSummary,
   SiniestroSummary,
 } from '../../api/api.types';
-import type { ListRow, OutgoingMessage } from './flow.types';
+import type { ListRow, OutgoingMessage, ReplyButton } from './flow.types';
 
 /**
  * Deterministic copy and menu builders. Every message the bot sends in a
@@ -48,7 +48,25 @@ export const OPT = {
   // global
   menu: 'menu',
   finalizar: 'finalizar',
+  // offered when a step has failed to understand the user twice
+  stuckMenu: 'stuck_menu',
+  stuckAsesor: 'stuck_asesor',
 } as const;
+
+/** The client menu's option ids — the taps that still mean something after a
+ * session expires (unlike a picker's `pol_`/`plan_` ids, which reference data
+ * the expired session no longer has). */
+export const CLIENT_MENU_OPTS = new Set<string>([
+  OPT.siniestros,
+  OPT.cotizacion,
+  OPT.pagos,
+  OPT.documentos,
+  OPT.grua,
+  OPT.asesor,
+]);
+
+/** Same idea for the welcome buttons. */
+export const ROOT_OPTS = new Set<string>([OPT.cliente, OPT.noCliente]);
 
 export const POLIZA_PREFIX = 'pol_';
 export const DOC_PREFIX = 'doc_';
@@ -88,13 +106,75 @@ function fmtPlanMoney(value: string | number): string {
   });
 }
 
-/** Short, human label for a policy, used in list rows and summaries. */
-function polizaLabel(p: PolizaSummary): string {
+/**
+ * Human label per risk type. The API stores the raw Prisma enum (`other`,
+ * `home`, …); showing it as-is leaked "other" into the pickers and the account
+ * statement, so every fallback goes through here.
+ */
+const RISK_LABEL: Record<string, string> = {
+  auto: 'Auto',
+  moto: 'Moto',
+  home: 'Hogar',
+  life: 'Vida',
+  commercial: 'Comercio',
+  other: 'Otro riesgo',
+};
+
+function riskLabel(riskType: string): string {
+  return RISK_LABEL[riskType] ?? riskType;
+}
+
+/**
+ * Short, human label for a policy: the insured asset ("FORD RANGER 3.0 TDI DC
+ * 4X4"), falling back to the risk type when the policy carries no vehicle.
+ * Shared by the pickers, the claim confirmation and the account statement so the
+ * client always recognises the policy by the same name.
+ */
+function polizaLabel(p: Pick<PolizaSummary, 'riskType' | 'vehiculo'>): string {
   const v = p.vehiculo;
   if (v && (v.marca || v.modelo)) {
     return [v.marca, v.modelo].filter(Boolean).join(' ');
   }
-  return p.riskType;
+  return riskLabel(p.riskType);
+}
+
+/** Secondary line for a policy: certificate number plus plate when there is one. */
+function polizaRef(p: Pick<PolizaSummary, 'certificado' | 'vehiculo'>): string {
+  const dominio = p.vehiculo?.dominio;
+  return `Póliza ${p.certificado}${dominio ? ` · ${dominio}` : ''}`;
+}
+
+/**
+ * Legal-entity markers. The cartera stores a company's razón social in
+ * `firstName`, so greeting "by name" produced "¡Hola de nuevo, JOHN PELLEGRINI
+ * MANAGEMENT GROUP SRL!". When one of these matches we greet without a name.
+ */
+const COMPANY_RE =
+  /\b(s\.?r\.?l|s\.?a\.?s?|s\.?a\.?u|sociedad|coop(erativa)?|asociaci[oó]n|fundaci[oó]n)\b\.?/i;
+
+/**
+ * How the bot addresses a client: first given name only, in normal casing. The
+ * cartera stores names shouted in caps ("EVELYN ELIZABETH"), which reads as if
+ * the bot were yelling. Returns null when there is no usable name (empty, or a
+ * company), so callers greet without one instead of interpolating a blank.
+ */
+export function displayName(firstName?: string | null): string | null {
+  const raw = firstName?.trim();
+  if (!raw || COMPANY_RE.test(raw)) return null;
+
+  const first = raw.split(/\s+/)[0];
+  return first
+    .toLowerCase()
+    .replace(
+      /(^|[-'])(\p{L})/gu,
+      (_m, sep: string, ch: string) => sep + ch.toUpperCase(),
+    );
+}
+
+/** "¡Hola de nuevo, Evelyn!" — or without the name when there isn't a usable one. */
+export function returningGreeting(firstName?: string | null): string {
+  const name = displayName(firstName);
+  return name ? `¡Hola de nuevo, ${name}!` : '¡Hola de nuevo!';
 }
 
 // ─── Menus ──────────────────────────────────────────────────
@@ -114,7 +194,8 @@ export function welcomeMenu(
   firstName?: string,
   botName?: string | null,
 ): OutgoingMessage {
-  const hi = firstName ? `¡Hola, ${firstName}! ` : '¡Hola! ';
+  const name = displayName(firstName);
+  const hi = name ? `¡Hola, ${name}! ` : '¡Hola! ';
   return {
     kind: 'buttons',
     body:
@@ -124,6 +205,25 @@ export function welcomeMenu(
       { id: OPT.cliente, title: 'Sí, soy cliente' },
       { id: OPT.noCliente, title: 'Todavía no' },
       { id: OPT.finalizar, title: 'Finalizar' },
+    ],
+  };
+}
+
+/**
+ * Offered when a step has failed to read the user's answer twice in a row.
+ * Repeating the same question a third time is what turned a misunderstanding
+ * into a loop, so at this point we stop insisting and hand over the two things
+ * that always work: going back to the list of options, or a human.
+ */
+export function stuckMenu(): OutgoingMessage {
+  return {
+    kind: 'buttons',
+    body:
+      'Perdón, no te estoy entendiendo por acá 🙈. ' +
+      '¿Querés volver al menú y elegir de la lista, o preferís que te contacte un asesor?',
+    buttons: [
+      { id: OPT.stuckMenu, title: 'Elegir de la lista' },
+      { id: OPT.stuckAsesor, title: 'Hablar con un asesor' },
     ],
   };
 }
@@ -300,10 +400,15 @@ export function planDetails(
   };
 }
 
-/** Fixed-price plan picker for bolso/hogar. Row id = `plan_<id>`. */
+/**
+ * Fixed-price plan picker for bolso/hogar. Row id = `plan_<id>`. `intro` prefixes
+ * the body when we're re-asking after an answer we couldn't read, so the retry
+ * never looks like the bot repeating itself verbatim.
+ */
 export function planPicker(
   productLabel: string,
   plans: ProductPlanSummary[],
+  intro?: string,
 ): OutgoingMessage {
   const rows: ListRow[] = plans.slice(0, 10).map((p) => ({
     id: `${PLAN_PREFIX}${p.id}`,
@@ -312,7 +417,7 @@ export function planPicker(
   }));
   return {
     kind: 'list',
-    body: `*${productLabel}*\nElegí el plan que más te convenga:`,
+    body: `${intro ?? ''}*${productLabel}*\nElegí el plan que más te convenga:`,
     button: 'Ver planes',
     rows,
   };
@@ -370,6 +475,73 @@ export function fieldSelectPicker(
   };
 }
 
+// ─── LLM output cleanup ─────────────────────────────────────
+
+/**
+ * Rewrites the standard-markdown the model keeps emitting into WhatsApp's own
+ * syntax. WhatsApp bolds with a single `*`, so every quote went out reading
+ * literally `**Cobertura A**`; it has no headings either. The prompt already
+ * asks for WhatsApp formatting — this is the belt to that suspenders, applied to
+ * whatever the model actually produced.
+ */
+export function toWhatsAppMarkdown(text: string): string {
+  return (
+    text
+      // **bold** / __bold__ → *bold*  (run before the italics rule)
+      .replace(/\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*/g, '*$1*')
+      .replace(/__(?!\s)([\s\S]+?)(?<!\s)__/g, '*$1*')
+      // ### Heading → *Heading*
+      .replace(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm, '*$1*')
+      // Markdown bullets "- " / "* " → the bullet WhatsApp users expect
+      .replace(/^(\s*)[-*]\s+(?=\S)/gm, '$1• ')
+      .trim()
+  );
+}
+
+// ─── GNC (cotización online) ────────────────────────────────
+
+/**
+ * The one yes/no the quote sub-flow always has to ask. The LLM writes the
+ * question as free text, so we re-render it as reply buttons: the client taps
+ * instead of typing and the answer comes back as a fixed label the model can't
+ * misread ("Sí, tiene GNC" arrives as the user's text), which saves the extra
+ * round trip an ambiguous answer would otherwise cost.
+ */
+const GNC_BUTTONS: ReplyButton[] = [
+  { id: 'gnc_si', title: 'Sí, tiene GNC' },
+  { id: 'gnc_no', title: 'No tiene GNC' },
+];
+
+/** A numbered list means the message is still offering options — not a yes/no. */
+const NUMBERED_LIST_RE = /^\s*\d+[.)]\s/m;
+
+/**
+ * Turns a model reply that ends by asking about GNC into a buttons message, or
+ * returns null when it isn't that question. We only convert when the *last*
+ * question of the message is the GNC one and the message isn't still offering a
+ * numbered list of versions — otherwise the buttons would answer a different
+ * question than the one on screen.
+ */
+export function gncButtons(reply: string): OutgoingMessage | null {
+  if (NUMBERED_LIST_RE.test(reply)) return null;
+
+  const end = reply.lastIndexOf('?');
+  if (end === -1) return null;
+  // The closing question starts after the nearest opening "¿" or sentence break.
+  const before = reply.slice(0, end);
+  const start = Math.max(
+    before.lastIndexOf('¿'),
+    before.lastIndexOf('.'),
+    before.lastIndexOf('!'),
+    before.lastIndexOf('\n'),
+  );
+  if (!/\bgnc\b/i.test(before.slice(start + 1))) return null;
+
+  // The model sometimes still appends "(sí/no)" — the buttons replace it.
+  const body = reply.replace(/\s*\(\s*s[ií]\s*\/\s*no\s*\)/gi, '').trim();
+  return body ? { kind: 'buttons', body, buttons: GNC_BUTTONS } : null;
+}
+
 export function siniestroTypeMenu(): OutgoingMessage {
   return {
     kind: 'buttons',
@@ -388,7 +560,7 @@ export function polizaPicker(
   const rows: ListRow[] = polizas.map((p) => ({
     id: `${POLIZA_PREFIX}${p.id}`,
     title: polizaLabel(p),
-    description: `Póliza ${p.certificado}${p.vehiculo?.dominio ? ` · ${p.vehiculo.dominio}` : ''}`,
+    description: polizaRef(p),
   }));
   return { kind: 'list', body, button: 'Elegir póliza', rows };
 }
@@ -412,7 +584,7 @@ export function siniestroConfirm(
   descripcion: string,
 ): OutgoingMessage {
   const polizaTxt = poliza
-    ? `${polizaLabel(poliza)} (Póliza ${poliza.certificado})`
+    ? `${polizaLabel(poliza)} (${polizaRef(poliza)})`
     : 'la póliza seleccionada';
   return {
     kind: 'buttons',
@@ -437,7 +609,9 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
   }
 
   const blocks = polizas.map((p) => {
-    const head = `*Póliza ${p.certificado}* (${p.riskType})`;
+    // The client recognises the policy by the insured asset, not by its
+    // certificate number — same label the claim flow uses.
+    const head = `*${polizaLabel(p)}*\n_${polizaRef(p)}_`;
     if (p.cuotasImpagas.length === 0) {
       return `${head}\n✅ Sin cuotas impagas. ${p.cuotasPagas} cuota(s) paga(s).`;
     }

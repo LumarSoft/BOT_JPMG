@@ -97,7 +97,9 @@ describe('WebhookService', () => {
         'wamid-reset',
       );
 
-      expect(api.resetSession).toHaveBeenCalledWith(5);
+      // `true` = full reset: the identified client is unlinked too, so the next
+      // message starts from the "¿sos cliente?" welcome.
+      expect(api.resetSession).toHaveBeenCalledWith(5, true);
       expect(api.saveMessage).not.toHaveBeenCalled();
       expect(meta.sendText).toHaveBeenCalledTimes(1);
     });
