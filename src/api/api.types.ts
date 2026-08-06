@@ -9,6 +9,9 @@ export interface BotContext {
   /** General attention window (Producer.attentionHours); null → app default. */
   attentionHours: string | null;
   systemPrompt: string;
+  /** False when the number is over its monthly budget — the bot must skip the
+   *  paid LLM and rely on the deterministic flows only. Absent on older APIs. */
+  llmEnabled?: boolean;
 }
 
 export interface ClientSummary {
@@ -48,6 +51,8 @@ export interface PendingWarning {
   phoneNumberId: string;
   /** The producer's attention window, so the notice quotes its own hours. */
   attentionHours: string | null;
+  /** False when the office is closed — the goodbye then says when we're back. */
+  isOpenNow?: boolean;
 }
 
 /**

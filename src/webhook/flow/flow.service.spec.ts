@@ -376,6 +376,148 @@ describe('FlowService', () => {
       expect((res.messages[0] as { body: string }).body).toContain('horario');
     });
 
+    /**
+     * A real conversation looped forever here: the client was on the bolso plan
+     * picker and asked for a monopatín, and every turn re-sent the same picker
+     * verbatim because COT_PLAN only ever read a `plan_<id>` tap.
+     */
+    describe('plan picker (COT_PLAN) is not a dead end', () => {
+      beforeEach(() => {
+        api.getPricing.mockResolvedValue([
+          {
+            id: 1,
+            productType: 'bolso',
+            name: 'Bolso Base',
+            monthlyPrice: 4200,
+            description: null,
+            coverageItems: [],
+            isActive: true,
+            sortOrder: 1,
+          },
+        ]);
+      });
+
+      /** Drives the user onto the bolso plan picker. */
+      async function enterPlanPicker() {
+        await send({ text: 'hola' });
+        await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+        await send({ text: 'quiero cotizar' });
+        await send({ selectionId: OPT.cotBolso, text: '' });
+        expect(stored?.step).toBe('COT_PLAN');
+      }
+
+      it('switches category when the user names a different risk', async () => {
+        await enterPlanPicker();
+
+        const res = await send({
+          text: 'Quiero un seguro para mi monopatin electrico',
+        });
+
+        // Left the bolso picker for the bici/monopatín flow.
+        expect(stored?.step).not.toBe('COT_PLAN');
+        expect(stored?.data.productType).toBe('bici');
+        expect(JSON.stringify(res.messages)).not.toContain('Bolso Base');
+      });
+
+      it('says it did not understand instead of repeating the picker verbatim', async () => {
+        await enterPlanPicker();
+
+        const res = await send({ text: 'no sé, cuál me conviene' });
+
+        expect(stored?.step).toBe('COT_PLAN');
+        expect(JSON.stringify(res.messages)).toContain('No reconocí ese plan');
+      });
+
+      it('lets the user out with "cancelar"', async () => {
+        await enterPlanPicker();
+
+        await send({ text: 'cancelar' });
+
+        expect(stored?.step).toBe('LEAD_MENU');
+      });
+
+      it('offers the escape buttons on the second miss instead of insisting', async () => {
+        await enterPlanPicker();
+
+        const first = await send({ text: 'no sé, cuál me conviene' });
+        expect(JSON.stringify(first.messages)).toContain(
+          'No reconocí ese plan',
+        );
+
+        const second = await send({ text: 'no sé, cuál me conviene' });
+        const body = JSON.stringify(second.messages);
+        expect(body).toContain('no te estoy entendiendo');
+        expect(body).toContain('Elegir de la lista');
+        expect(body).toContain('Hablar con un asesor');
+        // Still on the step: a proper answer afterwards must keep working.
+        expect(stored?.step).toBe('COT_PLAN');
+      });
+
+      it('routes the escape buttons', async () => {
+        await enterPlanPicker();
+        await send({ text: 'ni idea' });
+        await send({ text: 'ni idea' });
+
+        const res = await send({
+          selectionId: OPT.stuckAsesor,
+          text: 'Hablar con un asesor',
+        });
+
+        expect(api.requestHandoff).toHaveBeenCalled();
+        expect((res.messages[0] as { body: string }).body).toContain(
+          'tomé nota',
+        );
+      });
+
+      it('clears the retry counter once the user is understood', async () => {
+        await enterPlanPicker();
+        await send({ text: 'ni idea' }); // one miss
+        expect(stored?.data.retries).toBe(1);
+
+        // A recognised category moves the flow on; the counter must not follow.
+        await send({ text: 'quiero un seguro para mi bici' });
+        expect(stored?.data.retries).toBeUndefined();
+      });
+    });
+
+    describe('an expired session does not swallow the message that reopens it', () => {
+      const clientCtx: FlowContext = {
+        ...leadCtx,
+        client: {
+          firstName: 'EVELYN ELIZABETH',
+          lastName: 'BENITEZ',
+          dni: '37334584',
+        } as FlowContext['client'],
+      };
+
+      it('greets and answers the tapped menu option in the same turn', async () => {
+        // No stored state = the session expired and the snapshot was dropped,
+        // but the old menu is still on the user's screen.
+        const res = await flow.handle(
+          KEY,
+          { selectionId: OPT.pagos, text: '💳 Pagos y cobranzas' },
+          { ...clientCtx, newSession: true, flowState: null },
+        );
+
+        expect((res.messages[0] as { body: string }).body).toBe(
+          '¡Hola de nuevo, Evelyn!',
+        );
+        expect(api.getEstadoCuenta).toHaveBeenCalled();
+      });
+
+      it('still just greets when the tap referenced data the session no longer has', async () => {
+        const res = await flow.handle(
+          KEY,
+          { selectionId: 'plan_7', text: 'Bolso Plus' },
+          { ...clientCtx, newSession: true, flowState: null },
+        );
+
+        // A stale picker id can't be honoured — fall back to the menu.
+        expect(res.messages[1].kind).toBe('list');
+        expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+      });
+    });
+
     it('does not hijack typed data while capturing (asesor motivo)', async () => {
       const clientCtx: FlowContext = {
         ...leadCtx,

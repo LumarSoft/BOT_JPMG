@@ -14,6 +14,7 @@ import type {
 } from './flow.types';
 import {
   clientMenu,
+  CLIENT_MENU_OPTS,
   cotizarMenu,
   COTIZAR_FIXED,
   COTIZAR_LABEL,
@@ -35,8 +36,11 @@ import {
   planPicker,
   POLIZA_PREFIX,
   polizaPicker,
+  returningGreeting,
+  ROOT_OPTS,
   siniestroConfirm,
   siniestroTypeMenu,
+  stuckMenu,
   welcomeMenu,
 } from './flow.messages';
 import type {
@@ -54,6 +58,35 @@ import { attentionHoursOf } from '../constants/business';
  */
 const GREETING_RE =
   /^(?:hola+s?|holis|buenas|buen(?:os|as)?\s*(?:d[ií]as?|tardes?|noches?)?|buen\s*d[ií]a|hey+|qu[eé]\s+tal|saludos)[\s!.,¡?]*$/i;
+
+/** Synthetic selectionId the media handler feeds in when a photo was received,
+ * so the deterministic claim-photo steps advance without the user typing. */
+export const PHOTO_RECEIVED = '__photo_received__';
+
+/** Claim photo steps → the `tipo` label stored on each attachment. */
+export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
+  SINIESTRO_FOTO_TARJETA: 'tarjeta_verde',
+  SINIESTRO_FOTO_CARNET: 'carnet',
+  SINIESTRO_TERCERO_TARJETA: 'tarjeta_verde_tercero',
+  SINIESTRO_TERCERO_CARNET: 'carnet_tercero',
+  SINIESTRO_FOTO_DANIO: 'siniestro',
+};
+
+/** Buttons for the "¿hubo un tercero?" step. */
+const TERCERO_SI = 'sin_tercero_si';
+const TERCERO_NO = 'sin_tercero_no';
+
+/**
+ * How many times a step may re-ask before offering a way out. Every step here is
+ * deliberately closed to the LLM, so an answer it can't read is re-asked
+ * forever — one real conversation sent the same plan picker three times in a row
+ * while the client kept asking for a monopatín. At the second miss we stop
+ * insisting and offer the menu or a human instead.
+ */
+const MAX_RETRIES = 2;
+
+/** Slot holding the per-step retry counter inside `FlowState.data`. */
+const RETRIES = 'retries';
 
 /** Formats a Date as YYYY-MM-DD in local time (what the API expects). */
 function localISODate(d: Date): string {
@@ -194,27 +227,85 @@ export class FlowService {
     ctx: FlowContext,
   ): Promise<FlowResult> {
     const existing = this.load(key);
+    const sel = input.selectionId;
 
     // First contact (no state): greet and branch on whether they're a client.
     if (!existing) {
       if (ctx.client) {
+        const hello = returningGreeting(ctx.client.firstName);
         this.setState(key, 'CLIENT_MENU', {}, 'client');
-        return {
-          messages: [
-            { kind: 'text', body: `¡Hola de nuevo, ${ctx.client.firstName}!` },
-            clientMenu(),
-          ],
-        };
+        // The message that reopened the chat must not be lost. The old menu is
+        // still on the user's screen after a session expires, so a returning
+        // client taps "Pagos" and used to get only the greeting + the menu
+        // again. If the tap (or the text) names a menu option, answer it in the
+        // same turn. Stale ids from a picker (plan_/pol_) aren't menu options,
+        // so they correctly fall through to the menu.
+        const opt = sel ?? this.matchClientIntent(input.text);
+        if (opt && CLIENT_MENU_OPTS.has(opt)) {
+          return this.prepend(
+            hello,
+            await this.handleClientMenu(
+              { ...input, selectionId: opt },
+              ctx,
+              key,
+            ),
+          );
+        }
+        return { messages: [{ kind: 'text', body: hello }, clientMenu()] };
       }
       this.setState(key, 'ROOT');
+      // Same for someone we can't identify: a tap on "Sí, soy cliente" /
+      // "Todavía no" still routes instead of being answered with the very
+      // question it just answered.
+      if (sel && ROOT_OPTS.has(sel)) {
+        return this.handleRoot(input, ctx, key);
+      }
       return { messages: [welcomeMenu(undefined, ctx.botName)] };
     }
-
-    const sel = input.selectionId;
 
     // Global escape hatch: "menú" / the back option returns to the main menu.
     if (sel === OPT.menu || /^men[uú]$/i.test(input.text.trim())) {
       return this.toMainMenu(key, ctx);
+    }
+
+    // The escape offered after a step failed to understand the user twice.
+    if (sel === OPT.stuckMenu) {
+      return this.toMainMenu(key, ctx);
+    }
+    if (sel === OPT.stuckAsesor) {
+      await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+      this.setState(
+        key,
+        existing.state.audience === 'lead' ? 'LEAD_MENU' : 'CLIENT_MENU',
+      );
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body:
+              `Listo, tomé nota ✍️. Un asesor te va a contactar a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
+              (await this.closedNote()),
+          },
+          existing.state.audience === 'lead'
+            ? leadMenu(ctx.botName)
+            : clientMenu(),
+        ],
+      };
+    }
+
+    // Second escape hatch: "cancelar" / "volver". Pickers and capture steps
+    // deliberately never leak to the LLM, so without this the only way out is
+    // the literal word "menú" — a user who writes "cancelar" stays trapped.
+    // SINIESTRO_CONFIRM owns "cancelar" as one of its buttons and handles it
+    // itself (it also confirms the denuncia was dropped), so it's excluded.
+    if (
+      existing.state.step !== 'SINIESTRO_CONFIRM' &&
+      (sel === OPT.cancelar ||
+        /^(cancelar|cancelá|volver|atr[aá]s|olvidalo|dejalo)$/i.test(
+          input.text.trim(),
+        ))
+    ) {
+      return this.prepend('Listo, lo dejamos acá.', this.toMainMenu(key, ctx));
     }
 
     // A standalone greeting mid-session means "take me back to the menu", not a
@@ -245,6 +336,18 @@ export class FlowService {
       !this.isCapturingData(existing.state.step)
     ) {
       return this.answerHours();
+    }
+
+    // Hard topic guard (deterministic, NO LLM): if the user clearly asks about
+    // something off-domain (programming, math, recipes, general chatter), we
+    // refuse and steer back to the menu BEFORE any model call. This is the
+    // bulletproof "no te vayas por las ramas" — it never reaches the LLM.
+    if (
+      !sel &&
+      this.isOffTopic(input.text) &&
+      !this.isCapturingData(existing.state.step)
+    ) {
+      return this.offTopicReply(key, ctx);
     }
 
     try {
@@ -306,6 +409,18 @@ export class FlowService {
         return this.handleSiniestroDesc(state, input, key);
       case 'SINIESTRO_CONFIRM':
         return this.handleSiniestroConfirm(state, input, ctx, key);
+      case 'SINIESTRO_FOTO_TARJETA':
+        return this.handleSinFotoTarjeta(input, key);
+      case 'SINIESTRO_FOTO_CARNET':
+        return this.handleSinFotoCarnet(input, key);
+      case 'SINIESTRO_TERCERO':
+        return this.handleSinTercero(state, input, key);
+      case 'SINIESTRO_TERCERO_TARJETA':
+        return this.handleSinTerceroTarjeta(input, key);
+      case 'SINIESTRO_TERCERO_CARNET':
+        return this.handleSinTerceroCarnet(input, key);
+      case 'SINIESTRO_FOTO_DANIO':
+        return this.handleSinFotoDanio(input, key);
       case 'DOC_POLIZA':
         return this.handleDocPoliza(state, input, ctx, key);
       case 'DOC_TYPE':
@@ -521,14 +636,12 @@ export class FlowService {
       await this.api.identifyClient(ctx.conversationId, params);
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 404) {
-        return {
-          messages: [
-            {
-              kind: 'text',
-              body: 'No encontré ningún cliente con ese dato. Verificá el DNI o la patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.',
-            },
-          ],
-        };
+        return this.retry(key, state, [
+          {
+            kind: 'text',
+            body: 'No encontré ningún cliente con ese dato. Verificá el DNI o la patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.',
+          },
+        ]);
       }
       throw error;
     }
@@ -625,14 +738,12 @@ export class FlowService {
     if (polizaId === null || !polizas.some((p) => p.id === polizaId)) {
       // Can't resolve the policy. Re-show the picker instead of leaking to the
       // FAQ model, which doesn't know we're mid-denuncia and would strand the claim.
-      return {
-        messages: [
-          polizaPicker(
-            polizas,
-            'No reconocí esa póliza. Elegí una de la lista, por favor:',
-          ),
-        ],
-      };
+      return this.retry(key, state, [
+        polizaPicker(
+          polizas,
+          'No reconocí esa póliza. Elegí una de la lista, o escribí *menú* para volver.',
+        ),
+      ]);
     }
 
     this.setState(key, 'SINIESTRO_FECHA', { ...state.data, polizaId });
@@ -655,14 +766,12 @@ export class FlowService {
     if (!fecha) {
       // Couldn't read a date. Re-ask deterministically (staying in this step)
       // instead of handing to the FAQ model, which would derail the denuncia.
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body: 'No pude leer la fecha 🗓️. Decime *hoy* o *ayer*, o escribila como *DD/MM/AAAA* (por ejemplo 05/06/2026).',
-          },
-        ],
-      };
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'No pude leer la fecha 🗓️. Decime *hoy* o *ayer*, o escribila como *DD/MM/AAAA* (por ejemplo 05/06/2026).',
+        },
+      ]);
     }
     this.setState(key, 'SINIESTRO_DESC', {
       ...state.data,
@@ -688,14 +797,12 @@ export class FlowService {
     if (descripcion.length < 5) {
       // Too short. Re-ask in-flow rather than leaking to the FAQ model, so the
       // denuncia keeps moving toward confirmation.
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body: 'Contame un poco más de qué pasó (cómo fue, y la hora y el lugar si los tenés).',
-          },
-        ],
-      };
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'Contame un poco más de qué pasó (cómo fue, y la hora y el lugar si los tenés).',
+        },
+      ]);
     }
 
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
@@ -734,15 +841,13 @@ export class FlowService {
       // the confirmation card so the final step never slips into the FAQ model.
       const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
       const poliza = polizas.find((p) => p.id === state.data.polizaId);
-      return {
-        messages: [
-          siniestroConfirm(
-            poliza,
-            state.data.fechaDisplay as string,
-            state.data.descripcion as string,
-          ),
-        ],
-      };
+      return this.retry(key, state, [
+        siniestroConfirm(
+          poliza,
+          state.data.fechaDisplay as string,
+          state.data.descripcion as string,
+        ),
+      ]);
     }
 
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
@@ -755,15 +860,184 @@ export class FlowService {
       descripcion: state.data.descripcion as string,
     });
 
-    this.setState(key, 'CLIENT_MENU');
+    // Start the guided photo capture. Each photo the client sends from here is
+    // attached to THIS claim and labeled by type (tarjeta verde / carnet / tercero).
+    this.setState(key, 'SINIESTRO_FOTO_TARJETA', { siniestroId: siniestro.id });
     return {
       messages: [
         {
           kind: 'text',
           body:
             `✅ Registré tu denuncia (N° interno *${siniestro.id}*).\n` +
-            `La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.\n\n` +
-            `📸 *Importante:* si tenés *fotos del daño*, mandámelas *ahora* por este chat (podés enviar varias) y las sumo automáticamente a la denuncia.`,
+            `La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.`,
+        },
+        {
+          kind: 'text',
+          body:
+            'Ahora sumemos algunas *fotos* a tu reclamo 📎.\n\n' +
+            'Mandame una *foto de la tarjeta verde* (cédula del vehículo). ' +
+            'Si no la tenés a mano, escribí *no la tengo* y seguimos.',
+        },
+      ],
+    };
+  }
+
+  // ─── Siniestro: captura guiada de fotos ───────────────────
+
+  /** True when the user is skipping a photo step ("no", "no la tengo", "saltar"). */
+  private isPhotoSkip(text: string): boolean {
+    return /^(no|no la tengo|no las? tengo|no tengo|salt(ar|o|á)|omitir|siguiente|despu[eé]s|listo)\b/i.test(
+      text.trim(),
+    );
+  }
+
+  /** A photo step advances on a received photo (synthetic id) or an explicit skip. */
+  private photoAdvances(input: UserInput): boolean {
+    return (
+      input.selectionId === PHOTO_RECEIVED ||
+      (!input.selectionId && this.isPhotoSkip(input.text))
+    );
+  }
+
+  private askPhoto(key: string, step: FlowStep, body: string): FlowResult {
+    this.setState(key, step);
+    return { messages: [{ kind: 'text', body }] };
+  }
+
+  private retryPhoto(): FlowResult {
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Mandame la *foto* 📷, o escribí *no la tengo* para saltar este paso.',
+        },
+      ],
+    };
+  }
+
+  private handleSinFotoTarjeta(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askPhoto(
+      key,
+      'SINIESTRO_FOTO_CARNET',
+      'Perfecto. Ahora una *foto de tu carnet de conducir*. (si no la tenés, escribí *no la tengo*)',
+    );
+  }
+
+  private handleSinFotoCarnet(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    this.setState(key, 'SINIESTRO_TERCERO');
+    return {
+      messages: [
+        {
+          kind: 'buttons',
+          body: '¿Hubo un *tercero involucrado* en el siniestro?',
+          buttons: [
+            { id: TERCERO_SI, title: 'Sí, hubo' },
+            { id: TERCERO_NO, title: 'No' },
+          ],
+        },
+      ],
+    };
+  }
+
+  private handleSinTercero(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    const t = input.text.trim().toLowerCase();
+    const yes =
+      input.selectionId === TERCERO_SI ||
+      /^s[ií]\b/.test(t) ||
+      /\bhubo\b/.test(t);
+    const no = input.selectionId === TERCERO_NO || /^no\b/.test(t);
+
+    if (yes) {
+      return this.askPhoto(
+        key,
+        'SINIESTRO_TERCERO_TARJETA',
+        'Mandame la *foto de la tarjeta verde del tercero* (si la tenés). (o *no la tengo*)',
+      );
+    }
+    if (no) return this.askDanio(key);
+
+    return this.retry(key, state, [
+      {
+        kind: 'buttons',
+        body: 'Decime si hubo un tercero involucrado:',
+        buttons: [
+          { id: TERCERO_SI, title: 'Sí, hubo' },
+          { id: TERCERO_NO, title: 'No' },
+        ],
+      },
+    ]);
+  }
+
+  private handleSinTerceroTarjeta(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askPhoto(
+      key,
+      'SINIESTRO_TERCERO_CARNET',
+      'Y por último, la *foto del carnet de conducir del tercero*. (o *no la tengo*)',
+    );
+  }
+
+  private handleSinTerceroCarnet(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askDanio(key);
+  }
+
+  /** Asks for the incident/damage photos (multiple allowed), the last photo step. */
+  private askDanio(key: string): FlowResult {
+    this.setState(key, 'SINIESTRO_FOTO_DANIO');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            'Por último, mandame *fotos del siniestro* 📸 (los daños del vehículo, el lugar, lo que tengas). ' +
+            'Podés enviar varias. Cuando termines, escribí *listo*. Si no tenés, escribí *no tengo*.',
+        },
+      ],
+    };
+  }
+
+  private handleSinFotoDanio(input: UserInput, key: string): FlowResult {
+    // A photo arrived → attach it (done by the media handler) and stay here so the
+    // user can keep sending more of the incident.
+    if (input.selectionId === PHOTO_RECEIVED) {
+      this.setState(key, 'SINIESTRO_FOTO_DANIO');
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: '📎 Recibí la foto y la sumé a tu denuncia. Si tenés *más fotos del siniestro*, mandámelas. Cuando termines, escribí *listo*.',
+          },
+        ],
+      };
+    }
+    // "listo" / "no tengo" → close the claim capture.
+    if (!input.selectionId && this.isPhotoSkip(input.text)) {
+      return this.finishSiniestroPhotos(key);
+    }
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Mandame las *fotos del siniestro* (los daños, el lugar), o escribí *listo* cuando termines.',
+        },
+      ],
+    };
+  }
+
+  private finishSiniestroPhotos(key: string): FlowResult {
+    this.setState(key, 'CLIENT_MENU');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te contacta a la brevedad. ¿Necesitás algo más?',
         },
         clientMenu(),
       ],
@@ -945,7 +1219,11 @@ export class FlowService {
     }
 
     if (COTIZAR_ONLINE.has(opt)) {
-      return this.startCotizacion(key, opt === OPT.cotMoto ? 'moto' : 'auto');
+      return this.startCotizacion(
+        key,
+        opt === OPT.cotMoto ? 'moto' : 'auto',
+        input,
+      );
     }
 
     const productType = COTIZAR_PRODUCT_TYPE[opt];
@@ -976,13 +1254,12 @@ export class FlowService {
   }
 
   /** Handles the fixed-price plan selection (bolso/hogar). */
-  private handleCotPlan(
+  private async handleCotPlan(
     state: FlowState,
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult {
-    void ctx;
+  ): Promise<FlowResult> {
     const productType = state.data.productType as string;
     const productLabel =
       (state.data.productLabel as string | undefined) ?? 'Planes';
@@ -991,8 +1268,29 @@ export class FlowService {
     const plan = plans.find((p) => p.id === planId);
 
     if (!plan) {
-      // Couldn't resolve the plan — re-show the picker instead of leaking to the FAQ.
-      return { messages: [planPicker(productLabel, plans)] };
+      // The user named a *different* risk instead of picking a plan ("quiero un
+      // seguro para mi monopatín" while the bolso picker is on screen). Switch
+      // to that category — re-showing the same picker traps them in a loop.
+      const other = input.selectionId
+        ? null
+        : this.matchCotizarCategory(input.text);
+      if (other && COTIZAR_PRODUCT_TYPE[other] !== productType) {
+        this.setState(key, 'COTIZAR_TIPO');
+        return this.handleCotizarTipo(
+          { text: input.text, selectionId: other },
+          ctx,
+          key,
+        );
+      }
+      // Couldn't resolve the plan — re-show the picker (never leaking to the
+      // FAQ), but say so and offer the way out so it isn't a silent repeat.
+      return this.retry(key, state, [
+        planPicker(
+          productLabel,
+          plans,
+          'No reconocí ese plan 🙈 Elegilo de la lista, o escribí *menú* para volver.\n\n',
+        ),
+      ]);
     }
 
     this.setState(key, 'COT_LEAD_NOMBRE', {
@@ -1119,22 +1417,25 @@ export class FlowService {
     if (value === null) {
       // Couldn't read a valid answer — re-ask the same field with a short,
       // kind correction so the user knows what to fix (no FAQ leak).
-      const retry =
+      const correction =
         field.type === 'select'
           ? 'Elegí una de las opciones de la lista 🙂 '
           : field.numeric
             ? 'Necesito un *número* (sin texto). '
             : 'No te llegué a entender 🙈 ';
-      return { messages: [this.fieldMessage(field, retry)] };
+      return this.retry(key, state, [this.fieldMessage(field, correction)]);
     }
     answers[field.label] = value;
 
     const nextIndex = index + 1;
     if (nextIndex < fields.length) {
+      // The step doesn't change between fields, so the retry counter has to be
+      // cleared by hand — it belongs to the field we just captured, not the next.
       this.setState(key, 'COT_LEAD_FIELDS', {
         ...state.data,
         answers,
         fieldIndex: nextIndex,
+        [RETRIES]: 0,
       });
       return { messages: [this.fieldMessage(fields[nextIndex])] };
     }
@@ -1203,14 +1504,12 @@ export class FlowService {
   ): FlowResult {
     const name = input.text.trim();
     if (name.length < 2) {
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body: 'Decime tu *nombre y apellido* para que el asesor te ubique.',
-          },
-        ],
-      };
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'Decime tu *nombre y apellido* para que el asesor te ubique.',
+        },
+      ]);
     }
     this.setState(key, 'COT_LEAD_TELEFONO', {
       ...state.data,
@@ -1234,14 +1533,12 @@ export class FlowService {
   ): Promise<FlowResult> {
     const phone = input.text.trim();
     if (phone.replace(/\D/g, '').length < 8) {
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body: 'No reconocí el teléfono. Pasámelo con característica, por ejemplo *341 555-0000*.',
-          },
-        ],
-      };
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'No reconocí el teléfono. Pasámelo con característica, por ejemplo *341 555-0000*.',
+        },
+      ]);
     }
 
     const productType = state.data.productType as string;
@@ -1267,8 +1564,23 @@ export class FlowService {
     );
   }
 
-  private startCotizacion(key: string, vehiculo: 'auto' | 'moto'): FlowResult {
+  private startCotizacion(
+    key: string,
+    vehiculo: 'auto' | 'moto',
+    input?: UserInput,
+  ): FlowResult {
     this.setState(key, 'LLM_COTIZACION', { vehiculo });
+
+    // The user often names the vehicle in the very message that opens the flow
+    // ("Auto, tengo un peugeot 308 HDI feline 2020"). Answering with the canned
+    // "decime marca, modelo y año" throws that away and reads as if we weren't
+    // listening — one real chat replied "Ya te lo dije". When the message
+    // carries more than the bare category, hand it straight to the model, which
+    // reads it from the history and starts searching.
+    if (input && !input.selectionId && this.carriesVehicleData(input.text)) {
+      return { messages: [], handoff: 'cotizacion' };
+    }
+
     const noun = vehiculo === 'moto' ? 'tu moto' : 'tu auto';
     return {
       messages: [
@@ -1283,12 +1595,27 @@ export class FlowService {
     };
   }
 
+  /**
+   * Whether a message says more than just which category to quote. A digit
+   * (year, displacement) or a handful of words means there is a brand/model in
+   * there worth passing to the model; "auto" or "una moto" does not.
+   */
+  private carriesVehicleData(text: string): boolean {
+    const t = text.trim();
+    if (!t) return false;
+    if (/\d/.test(t)) return true;
+    return t.split(/\s+/).length >= 4;
+  }
+
   /** Keyword routing so typed text (not just taps) reaches a quote category. */
   private matchCotizarCategory(text: string): string | null {
     const t = text.toLowerCase();
+    // Checked before auto/moto: a "monopatín eléctrico" must not be read as a
+    // moto, and the category row is literally "Bici / Monopatín".
+    if (/bici|bicicleta|mtb|rodado|monopat[ií]n|patineta/.test(t))
+      return OPT.cotBici;
     if (/auto|coche|veh[ií]culo|camioneta|pick/.test(t)) return OPT.cotAuto;
     if (/moto|scooter|ciclomotor/.test(t)) return OPT.cotMoto;
-    if (/bici|bicicleta|mtb|rodado/.test(t)) return OPT.cotBici;
     if (/bolso|cartera|mochila|notebook|celular/.test(t)) return OPT.cotBolso;
     if (/comercio|local|negocio|industria|dep[oó]sito/.test(t))
       return OPT.cotComercio;
@@ -1462,6 +1789,48 @@ export class FlowService {
    * on ordinary text — note "ahora" is not matched (no word boundary before
    * "hora").
    */
+  /**
+   * Detects clearly off-domain requests (programming, math, recipes, translations,
+   * jokes, write-this-for-me, general trivia) so the bot refuses deterministically
+   * instead of letting the LLM wander. Tight patterns to avoid false positives on
+   * real insurance questions.
+   */
+  private isOffTopic(text: string): boolean {
+    const t = text.toLowerCase();
+    return (
+      // Programming / tech
+      /\b(javascript|typescript|python|java|kotlin|c\+\+|c#|php|html|css|sql|node|react|bash|powershell)\b/.test(
+        t,
+      ) ||
+      /\b(hello world|console\.log|c[oó]digo|codigo|programar|programaci[oó]n|funci[oó]n|algoritmo|script|compilar|debug)\b/.test(
+        t,
+      ) ||
+      // Math / homework
+      /\b(ecuaci[oó]n|integral|derivada|factoriz|teorema|resolv[eé] (este|el) (c[aá]lculo|problema))\b/.test(
+        t,
+      ) ||
+      // Creative / generic assistant abuse
+      /\b(receta|cocinar|poema|poes[ií]a|chiste|cuento|ensayo|redact[aá]|traduc[ií]|traducci[oó]n)\b/.test(
+        t,
+      ) ||
+      /\b(qui[eé]n (es|fue|gan[oó])|capital de|cu[aá]nto es \d)\b/.test(t)
+    );
+  }
+
+  /** Fixed refusal for off-domain messages + the current menu (no LLM, no cost). */
+  private offTopicReply(key: string, ctx: FlowContext): FlowResult {
+    const menu = this.toMainMenu(key, ctx);
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Disculpá, soy el asistente de *JPMG* y solo puedo ayudarte con *seguros* y trámites de la productora 🙂. ¿Te doy una mano con eso?',
+        },
+        ...menu.messages,
+      ],
+    };
+  }
+
   private isHoursQuestion(text: string): boolean {
     const t = text.toLowerCase();
     return (
@@ -1484,7 +1853,13 @@ export class FlowService {
       step === 'LEAD_CONTACT' ||
       step === 'COT_LEAD_FIELDS' ||
       step === 'COT_LEAD_NOMBRE' ||
-      step === 'COT_LEAD_TELEFONO'
+      step === 'COT_LEAD_TELEFONO' ||
+      step === 'SINIESTRO_FOTO_TARJETA' ||
+      step === 'SINIESTRO_FOTO_CARNET' ||
+      step === 'SINIESTRO_TERCERO' ||
+      step === 'SINIESTRO_TERCERO_TARJETA' ||
+      step === 'SINIESTRO_TERCERO_CARNET' ||
+      step === 'SINIESTRO_FOTO_DANIO'
     );
   }
 
@@ -1682,8 +2057,34 @@ export class FlowService {
   ): void {
     // Carry the declared audience forward unless this call sets a new one, so it
     // survives every step transition without having to be threaded explicitly.
-    const prev = this.states.get(key)?.state.audience;
-    this.states.set(key, { state: { step, data, audience: audience ?? prev } });
+    const prev = this.states.get(key)?.state;
+    // Moving on means the user was understood: the retry counter belongs to the
+    // step we're leaving, and several handlers spread `...state.data` forward.
+    const next = { ...data };
+    if (prev?.step !== step) delete next[RETRIES];
+    this.states.set(key, {
+      state: { step, data: next, audience: audience ?? prev?.audience },
+    });
+  }
+
+  /**
+   * Re-asks the current step, counting the attempt. On the second consecutive
+   * miss it stops repeating and offers the escape buttons instead — the step is
+   * kept, so a user who ignores them and answers properly still moves on.
+   */
+  private retry(
+    key: string,
+    state: FlowState,
+    messages: OutgoingMessage[],
+  ): FlowResult {
+    const attempts = ((state.data[RETRIES] as number | undefined) ?? 0) + 1;
+    this.setState(
+      key,
+      state.step,
+      { ...state.data, [RETRIES]: attempts },
+      state.audience,
+    );
+    return { messages: attempts >= MAX_RETRIES ? [stuckMenu()] : messages };
   }
 
   /**
