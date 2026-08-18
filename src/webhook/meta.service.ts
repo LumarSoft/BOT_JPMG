@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SentMessageRegistry } from './sent-message-registry.service';
+import { ApiService } from '../api/api.service';
 import axios from 'axios';
 
 /** Trims a string to Meta's per-field limit, adding an ellipsis when cut. */
@@ -15,7 +17,11 @@ function truncate(text: string, max: number): string {
 export class MetaService {
   private readonly logger = new Logger(MetaService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly sent: SentMessageRegistry,
+    private readonly api: ApiService,
+  ) {}
 
   async sendText(
     to: string,
@@ -128,11 +134,11 @@ export class MetaService {
     phoneNumberId: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    const token = this.config.get<string>('WHATSAPP_TOKEN');
     const url = `https://graph.facebook.com/v25.0/${phoneNumberId}/messages`;
 
     try {
-      await axios.post(
+      const token = await this.resolveToken(phoneNumberId);
+      const { data } = await axios.post<{ messages?: { id: string }[] }>(
         url,
         { messaging_product: 'whatsapp', ...payload },
         {
@@ -142,6 +148,11 @@ export class MetaService {
           },
         },
       );
+      // On a Coexistence number Meta may echo our own API sends back as
+      // `smb_message_echoes`. Remembering the id lets the webhook tell "an
+      // employee is answering" apart from "this is my own reply bouncing back"
+      // — without it the bot would pause itself in every conversation.
+      this.sent.remember(data?.messages?.[0]?.id);
       this.logger.log(`✅ Mensaje enviado a ${payload.to as string}`);
     } catch (error) {
       this.logger.error(
@@ -158,10 +169,10 @@ export class MetaService {
    */
   async downloadMedia(
     mediaId: string,
+    phoneNumberId: string,
   ): Promise<{ buffer: Buffer; mimeType: string } | null> {
-    const token = this.config.get<string>('WHATSAPP_TOKEN');
-
     try {
+      const token = await this.resolveToken(phoneNumberId);
       const { data: media } = await axios.get<{
         url: string;
         mime_type: string;
@@ -183,6 +194,25 @@ export class MetaService {
       );
       return null;
     }
+  }
+
+  /**
+   * Embedded Signup produces one business token per customer WABA. The global
+   * env token remains only as a compatibility fallback for the legacy test
+   * number, which has no WabaAccount relation yet.
+   */
+  private async resolveToken(phoneNumberId: string): Promise<string> {
+    const customerToken = await this.api
+      .getWhatsappAccessToken(phoneNumberId)
+      .catch((error: Error) => {
+        this.logger.warn(
+          `No se pudo resolver el token de ${phoneNumberId} desde la API: ${error.message}`,
+        );
+        return null;
+      });
+    const token = customerToken ?? this.config.get<string>('WHATSAPP_TOKEN');
+    if (!token) throw new Error(`No hay token de Meta para ${phoneNumberId}`);
+    return token;
   }
 
   /** WhatsApp Argentina reports 549...; Meta's send API wants 54... (drops the extra 9). */

@@ -75,6 +75,7 @@ function buildMediaFilename(mimeType: string): string {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
   private readonly openai: OpenAI;
+  private readonly autoReplyEnabled: boolean;
 
   /**
    * Per-conversation serial queue. WhatsApp users routinely fire several short
@@ -111,6 +112,11 @@ export class WebhookService {
     this.openai = new OpenAI({
       apiKey: this.config.get('OPENAI_API_KEY'),
     });
+    // Operational kill switch for onboarding/cutover: keep ingesting and
+    // storing messages while staff answers from WhatsApp Business, but send no
+    // automated replies until smoke tests are complete.
+    this.autoReplyEnabled =
+      this.config.get<string>('BOT_AUTOREPLY_ENABLED') !== 'false';
   }
 
   /**
@@ -237,7 +243,12 @@ export class WebhookService {
 
       // A human agent has taken over this conversation — store the message so
       // the agent can see it in the inbox, but do not run the bot for this turn.
-      if (conversation.botPaused) {
+      if (conversation.botPaused || !this.autoReplyEnabled) {
+        if (!this.autoReplyEnabled) {
+          this.logger.warn(
+            `BOT_AUTOREPLY_ENABLED=false — mensaje de ${from} guardado sin responder`,
+          );
+        }
         await this.api
           .saveMessage(conversation.conversationId, 'user', text)
           .catch(() => undefined);
@@ -467,7 +478,7 @@ export class WebhookService {
       return;
     }
 
-    const media = await this.meta.downloadMedia(mediaId);
+    const media = await this.meta.downloadMedia(mediaId, phoneNumberId);
     if (!media) {
       await this.meta.sendText(
         to,

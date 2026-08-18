@@ -1,3 +1,10 @@
+import type {
+  WhatsAppAccountUpdate,
+  WhatsAppAppStateSyncItem,
+  WhatsAppHistoryChunk,
+  WhatsAppMessageEcho,
+} from './coexistence.types';
+
 export interface WhatsAppTextMessage {
   from: string;
   id: string;
@@ -85,7 +92,19 @@ export interface WhatsAppWebhookBody {
         metadata: WhatsAppMetadata;
         messages?: WhatsAppMessage[];
         statuses?: WhatsAppStatus[];
+        // ── Coexistence only (see coexistence.types.ts) ──
+        /** Messages an employee sent from the WhatsApp Business app. */
+        message_echoes?: WhatsAppMessageEcho[];
+        /** Chunks of the 180-day historical sync fired right after onboarding. */
+        history?: WhatsAppHistoryChunk[];
+        /** Address-book changes on the business phone. */
+        /** Meta names the payload array state_sync for this webhook field. */
+        state_sync?: WhatsAppAppStateSyncItem[];
+        /** WABA lifecycle notices, e.g. PARTNER_REMOVED. */
+        event?: string;
+        disconnection_info?: WhatsAppAccountUpdate['disconnection_info'];
       };
+      /** Which subscription produced this change: "messages", "smb_message_echoes", "history", … */
       field: string;
     }>;
   }>;

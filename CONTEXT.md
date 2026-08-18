@@ -34,6 +34,7 @@ El `.env` está ignorado por git (`.gitignore` lo incluye). Las variables requer
 WEBHOOK_VERIFY_TOKEN=   # token para verificar el webhook con Meta
 WHATSAPP_TOKEN=         # token de acceso de la API de WhatsApp Business
 PHONE_NUMBER_ID=        # ID del número de teléfono en Meta (no se usa en código, viene del payload)
+BOT_AUTOREPLY_ENABLED=true # false durante un alta/cutover: ingiere y guarda, pero no responde
 OPENAI_API_KEY=         # clave de API de OpenAI
 ```
 

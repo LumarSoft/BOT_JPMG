@@ -158,7 +158,8 @@ describe('FlowService', () => {
           descripcion: 'choqué contra un árbol de frente',
         }),
       );
-      expect(done.state?.step).toBe('CLIENT_MENU');
+      // The claim is created first, then the guided evidence upload begins.
+      expect(done.state?.step).toBe('SINIESTRO_FOTO_TARJETA');
     });
 
     it('re-asks the date instead of leaking to the FAQ model when it is unreadable', async () => {

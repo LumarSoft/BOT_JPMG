@@ -212,13 +212,14 @@ describe('WebhookService', () => {
 
       await service.handleMedia('5491155556666', 'media-1', 'P1', 'wm1');
 
-      expect(meta.downloadMedia).toHaveBeenCalledWith('media-1');
+      expect(meta.downloadMedia).toHaveBeenCalledWith('media-1', 'P1');
       expect(api.attachAdjunto).toHaveBeenCalledWith(
         7,
         expect.objectContaining({ mimeType: 'image/jpeg' }),
+        undefined,
       );
       const reply = (meta.sendText.mock.calls as string[][])[0][1];
-      expect(reply).toContain('adjunté');
+      expect(reply).toContain('sumé');
     });
 
     it('guides the user when there is no open claim (404)', async () => {

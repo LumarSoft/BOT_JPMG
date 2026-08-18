@@ -41,6 +41,12 @@ const HOURS_TTL_MS = 60 * 1000;
 export class ApiService {
   private readonly http: AxiosInstance;
 
+  /** Customer-scoped Meta tokens change rarely; avoid one API hop per reply. */
+  private readonly whatsappTokenCache = new Map<
+    string,
+    { token: string | null; fetchedAt: number }
+  >();
+
   /** In-memory cache of the public product catalog (static marketing copy). */
   private catalogCache?: { items: ProductCatalogItem[]; fetchedAt: number };
 
@@ -62,6 +68,22 @@ export class ApiService {
       `/bot/context/${phoneNumberId}`,
     );
     return data;
+  }
+
+  async getWhatsappAccessToken(phoneNumberId: string): Promise<string | null> {
+    const cached = this.whatsappTokenCache.get(phoneNumberId);
+    if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+      return cached.token;
+    }
+
+    const { data } = await this.http.get<{ accessToken: string | null }>(
+      `/bot/access-token/${phoneNumberId}`,
+    );
+    this.whatsappTokenCache.set(phoneNumberId, {
+      token: data.accessToken,
+      fetchedAt: Date.now(),
+    });
+    return data.accessToken;
   }
 
   /**
@@ -88,6 +110,24 @@ export class ApiService {
     costUsd?: number;
   }): Promise<void> {
     await this.http.post('/bot/usage/meta', input).catch(() => undefined);
+  }
+
+  /**
+   * Reports a message an employee sent from the WhatsApp Business app so the API
+   * stores it in the transcript and PAUSES the bot in that conversation.
+   * Coexistence only — no other mode produces these.
+   */
+  async recordAgentEcho(input: {
+    phoneNumberId: string;
+    waId: string;
+    content: string;
+    waMessageId?: string;
+  }): Promise<void> {
+    await this.http.post('/bot/agent-echo', input);
+  }
+
+  async markWabaDisconnected(wabaId: string, reason?: string): Promise<void> {
+    await this.http.post(`/bot/waba/${wabaId}/disconnected`, { reason });
   }
 
   async getConversation(
