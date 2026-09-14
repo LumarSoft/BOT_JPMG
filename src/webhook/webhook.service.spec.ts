@@ -14,6 +14,8 @@ describe('WebhookService', () => {
     resetSession: jest.Mock;
     saveFlowState: jest.Mock;
     attachAdjunto: jest.Mock;
+    getProducts: jest.Mock;
+    reportOpenAiUsage: jest.Mock;
   };
   let meta: {
     sendText: jest.Mock;
@@ -32,6 +34,8 @@ describe('WebhookService', () => {
       resetSession: jest.fn().mockResolvedValue(undefined),
       saveFlowState: jest.fn().mockResolvedValue(undefined),
       attachAdjunto: jest.fn(),
+      getProducts: jest.fn().mockResolvedValue([]),
+      reportOpenAiUsage: jest.fn().mockResolvedValue(undefined),
     };
     meta = {
       sendText: jest.fn().mockResolvedValue(undefined),
@@ -53,7 +57,13 @@ describe('WebhookService', () => {
         WebhookService,
         {
           provide: ConfigService,
-          useValue: { get: jest.fn().mockReturnValue('test-value') },
+          useValue: {
+            get: jest.fn((key: string) => {
+              if (key === 'OPENAI_API_KEY') return 'test-value';
+              if (key === 'BOT_AUTOREPLY_ENABLED') return 'true';
+              return undefined;
+            }),
+          },
         },
         { provide: ApiService, useValue: api },
         { provide: MetaService, useValue: meta },
@@ -79,6 +89,45 @@ describe('WebhookService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('uses GPT-5.6 Luna with reasoning-compatible Chat Completions parameters', async () => {
+    const create = stubOpenAi();
+    api.getContext.mockResolvedValue({
+      producerName: 'John',
+      botName: 'Nico',
+      attentionHours: 'Lunes a viernes',
+      systemPrompt: 'x',
+      llmEnabled: true,
+    });
+    api.getConversation.mockResolvedValue({
+      conversationId: 1,
+      client: null,
+      newSession: false,
+      messages: [],
+      botPaused: false,
+      flowState: null,
+    });
+    api.saveMessage.mockResolvedValue({});
+    flow.handle.mockResolvedValueOnce({
+      messages: [],
+      state: null,
+      handoff: 'faq',
+    });
+
+    await service.handleMessage('5491155556666', 'consulta', 'P1', 'luna-1');
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.6-luna',
+        reasoning_effort: 'none',
+        max_completion_tokens: 350,
+      }),
+    );
+    const request = create.mock.calls[0][0];
+    expect(request).not.toHaveProperty('temperature');
+    expect(request).not.toHaveProperty('top_p');
+    expect(request).not.toHaveProperty('max_tokens');
   });
 
   describe('/reset secret command', () => {

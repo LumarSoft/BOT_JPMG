@@ -112,4 +112,34 @@ describe('WebhookController', () => {
       waMessageId: 'echo1',
     });
   });
+
+  it('records Meta disconnection_info.reason from an account update', () => {
+    controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'account_update',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                event: 'PARTNER_REMOVED',
+                disconnection_info: {
+                  reason: 'INACTIVE',
+                  initiated_by: 'META',
+                },
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(api.markWabaDisconnected).toHaveBeenCalledWith('W1', 'INACTIVE');
+  });
 });

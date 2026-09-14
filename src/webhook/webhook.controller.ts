@@ -219,7 +219,9 @@ export class WebhookController {
   private handleAccountUpdate(
     wabaId: string,
     event: string | undefined,
-    info: { disconnect_reason?: string; initiated_by?: string } | undefined,
+    info:
+      | { reason?: string; disconnect_reason?: string; initiated_by?: string }
+      | undefined,
     phoneNumberId: string | undefined,
   ): void {
     if (event !== 'PARTNER_REMOVED') {
@@ -228,13 +230,12 @@ export class WebhookController {
       );
       return;
     }
+    const reason = info?.reason ?? info?.disconnect_reason;
     console.error(
-      `🚨 DESCONEXIÓN de ${phoneNumberId ?? 'sin número'} · motivo: ${info?.disconnect_reason ?? 'desconocido'} ` +
+      `🚨 DESCONEXIÓN de ${phoneNumberId ?? 'sin número'} · motivo: ${reason ?? 'desconocido'} ` +
         `· iniciada por: ${info?.initiated_by ?? 'desconocido'}. El número dejó de recibir mensajes.`,
     );
-    void this.api
-      .markWabaDisconnected(wabaId, info?.disconnect_reason)
-      .catch(console.error);
+    void this.api.markWabaDisconnected(wabaId, reason).catch(console.error);
   }
 
   /**

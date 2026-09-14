@@ -1,6 +1,6 @@
 # whatsapp-bot-seguros — Contexto del proyecto
 
-Bot de WhatsApp para una aseguradora argentina. Recibe mensajes via webhook de Meta, los procesa con OpenAI (GPT-4o-mini) y responde directamente al usuario por WhatsApp.
+Bot de WhatsApp para una aseguradora argentina. Recibe mensajes via webhook de Meta, los procesa con OpenAI (GPT-5.6 Luna) y responde directamente al usuario por WhatsApp.
 
 Stack: **NestJS 11 + TypeScript + OpenAI SDK + Axios**
 
@@ -36,6 +36,7 @@ WHATSAPP_TOKEN=         # token de acceso de la API de WhatsApp Business
 PHONE_NUMBER_ID=        # ID del número de teléfono en Meta (no se usa en código, viene del payload)
 BOT_AUTOREPLY_ENABLED=true # false durante un alta/cutover: ingiere y guarda, pero no responde
 OPENAI_API_KEY=         # clave de API de OpenAI
+OPENAI_MODEL=gpt-5.6-luna
 ```
 
 ---
@@ -183,8 +184,9 @@ export class WebhookService {
     console.log(`🤖 Procesando mensaje de ${from}...`);
 
     const completion = await this.openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      max_tokens: 500,
+      model: 'gpt-5.6-luna',
+      reasoning_effort: 'none',
+      max_completion_tokens: 500,
       messages: [
         { role: 'system', content: INSURANCE_ASSISTANT_PROMPT },
         { role: 'user', content: text },
@@ -401,7 +403,7 @@ POST /webhook  (WebhookController)
 WebhookService.handleMessage()
       |
       |-- normalizePhone()  (549xxxxxxxx → 54xxxxxxxx)
-      |-- OpenAI GPT-4o-mini con INSURANCE_ASSISTANT_PROMPT
+      |-- OpenAI GPT-5.6 Luna con INSURANCE_ASSISTANT_PROMPT
       |
       v
 WebhookService.sendMessage()  (privado)

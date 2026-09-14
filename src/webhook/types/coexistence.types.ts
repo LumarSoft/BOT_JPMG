@@ -66,6 +66,8 @@ export interface WhatsAppAccountUpdate {
   event?: string;
   phone_number?: string;
   disconnection_info?: {
+    reason?: string;
+    /** Kept for backwards compatibility with early payload examples. */
     disconnect_reason?: string;
     initiated_by?: string;
   };

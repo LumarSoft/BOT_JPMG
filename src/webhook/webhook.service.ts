@@ -22,7 +22,6 @@ import {
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
-const MODEL = 'gpt-4o-mini';
 const MAX_TOOL_ROUNDS = 6;
 
 /** Output token caps per sub-flow. Cotización needs room to list coverages;
@@ -32,10 +31,9 @@ const MAX_TOKENS: Record<'cotizacion' | 'faq', number> = {
   faq: 350,
 };
 
-/** gpt-4o-mini list price (USD per 1M tokens), for cost logging only.
- * Update if the model or pricing changes. */
-const PRICE_IN_PER_1M = 0.15;
-const PRICE_OUT_PER_1M = 0.6;
+const DEFAULT_MODEL = 'gpt-5.6-luna';
+const DEFAULT_PRICE_IN_PER_1M = 0.2;
+const DEFAULT_PRICE_OUT_PER_1M = 1.2;
 
 /** Soft backstop against runaway OpenAI cost: max LLM hand-offs per sender per
  * rolling hour. A normal user never reaches this; it caps a single number from
@@ -76,6 +74,9 @@ export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
   private readonly openai: OpenAI;
   private readonly autoReplyEnabled: boolean;
+  private readonly model: string;
+  private readonly priceInPer1M: number;
+  private readonly priceOutPer1M: number;
 
   /**
    * Per-conversation serial queue. WhatsApp users routinely fire several short
@@ -112,6 +113,15 @@ export class WebhookService {
     this.openai = new OpenAI({
       apiKey: this.config.get('OPENAI_API_KEY'),
     });
+    this.model = this.config.get<string>('OPENAI_MODEL') || DEFAULT_MODEL;
+    this.priceInPer1M = this.readPositiveNumber(
+      'OPENAI_PRICE_IN_PER_1M',
+      DEFAULT_PRICE_IN_PER_1M,
+    );
+    this.priceOutPer1M = this.readPositiveNumber(
+      'OPENAI_PRICE_OUT_PER_1M',
+      DEFAULT_PRICE_OUT_PER_1M,
+    );
     // Operational kill switch for onboarding/cutover: keep ingesting and
     // storing messages while staff answers from WhatsApp Business, but send no
     // automated replies until smoke tests are complete.
@@ -645,14 +655,11 @@ export class WebhookService {
           `[4/5] OpenAI ronda ${round + 1}/${MAX_TOOL_ROUNDS} — enviando ${messages.length} msgs`,
         );
         const completion = await this.openai.chat.completions.create({
-          model: MODEL,
-          // Low temperature = the model sticks to the instructions and stops
-          // wandering off-topic. This is the main "no te vayas por las ramas"
-          // lever; the apparent concurrency issue was really high-temperature
-          // creativity surfacing more often when more messages hit the LLM.
-          temperature: 0.2,
-          top_p: 1,
-          max_tokens: MAX_TOKENS[handoff],
+          model: this.model,
+          // This flow is tightly specified and tool-driven. Disabling reasoning
+          // preserves the output budget and minimizes latency/cost on WhatsApp.
+          reasoning_effort: 'none',
+          max_completion_tokens: MAX_TOKENS[handoff],
           messages,
           ...(tools ? { tools } : {}),
         });
@@ -711,7 +718,7 @@ export class WebhookService {
       if (promptTokens > 0 || completionTokens > 0) {
         void this.api.reportOpenAiUsage({
           phoneNumberId,
-          model: MODEL,
+          model: this.model,
           inputTokens: promptTokens,
           outputTokens: completionTokens,
         });
@@ -748,13 +755,18 @@ export class WebhookService {
   ): void {
     if (promptTokens === 0 && completionTokens === 0) return;
     const cost =
-      (promptTokens / 1_000_000) * PRICE_IN_PER_1M +
-      (completionTokens / 1_000_000) * PRICE_OUT_PER_1M;
+      (promptTokens / 1_000_000) * this.priceInPer1M +
+      (completionTokens / 1_000_000) * this.priceOutPer1M;
     this.llmCostUsd += cost;
     this.logger.log(
       `💸 OpenAI ${handoff}: ${promptTokens} in + ${completionTokens} out tokens ` +
         `≈ USD ${cost.toFixed(5)} — acumulado proceso: USD ${this.llmCostUsd.toFixed(4)}`,
     );
+  }
+
+  private readPositiveNumber(key: string, fallback: number): number {
+    const parsed = Number(this.config.get<string>(key));
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
   }
 
   /** Maps a tool call to its ApiService method. Always returns a JSON string for the model. */
