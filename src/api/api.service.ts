@@ -384,13 +384,14 @@ export class ApiService {
   async getModels(
     vehicleType: VehicleTypeParam,
     brandId: number,
-    groupId: number,
+    groupId?: number,
     query?: string,
   ): Promise<InfoAutoModel[]> {
-    return this.getAllInfoAutoPages<InfoAutoModel>(
-      `/infoauto/${vehicleType}/brands/${brandId}/groups/${groupId}/models`,
-      query,
-    );
+    const path =
+      vehicleType === 'moto'
+        ? `/infoauto/${vehicleType}/brands/${brandId}/models`
+        : `/infoauto/${vehicleType}/brands/${brandId}/groups/${groupId}/models`;
+    return this.getAllInfoAutoPages<InfoAutoModel>(path, query);
   }
 
   async quoteVehicle(

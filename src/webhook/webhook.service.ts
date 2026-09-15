@@ -830,7 +830,7 @@ export class WebhookService {
           const models = await this.api.getModels(
             vehicleType,
             Number(args.brandId),
-            Number(args.groupId),
+            args.groupId === undefined ? undefined : Number(args.groupId),
             args.query as string | undefined,
           );
           return JSON.stringify(

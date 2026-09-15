@@ -33,4 +33,25 @@ describe('ApiService InfoAuto pagination', () => {
       params: { query_string: 'a', page: 2, page_size: 100 },
     });
   });
+
+  it('loads motorcycle models directly from the brand', async () => {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new ApiService(config);
+    const http = (service as any).http;
+    http.get = jest.fn().mockResolvedValue({
+      data: {
+        data: [{ codia: 8810215, description: 'NAVI 110' }],
+        pagination: null,
+      },
+    });
+
+    await expect(
+      service.getModels('moto', 881, undefined, 'NAVI'),
+    ).resolves.toEqual([{ codia: 8810215, description: 'NAVI 110' }]);
+    expect(http.get).toHaveBeenCalledWith('/infoauto/moto/brands/881/models', {
+      params: { query_string: 'NAVI', page: 1, page_size: 100 },
+    });
+  });
 });

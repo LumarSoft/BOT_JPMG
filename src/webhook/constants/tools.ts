@@ -143,7 +143,7 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'get_vehicle_models',
       description:
-        'Lista las versiones de un grupo con su código CODIA. Tercer paso para cotizar: el CODIA elegido es el "model" de quote_vehicle.',
+        'Lista modelos/versiones con su código CODIA. Para motos alcanza con la marca; para autos también requiere groupId.',
       parameters: {
         type: 'object',
         properties: {
@@ -151,14 +151,15 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           brandId: { type: 'integer' },
           groupId: {
             type: 'integer',
-            description: 'ID del grupo (de get_vehicle_groups)',
+            description:
+              'ID del grupo (obligatorio para autos; no se usa para motos)',
           },
           query: {
             type: 'string',
             description: 'Filtro opcional por versión, ej: "1.3 gse"',
           },
         },
-        required: ['vehicleType', 'brandId', 'groupId'],
+        required: ['vehicleType', 'brandId'],
       },
     },
   },
