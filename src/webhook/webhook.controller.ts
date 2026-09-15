@@ -47,7 +47,8 @@ export class WebhookController {
   }
 
   @Post()
-  receiveMessage(@Body() body: WhatsAppWebhookBody) {
+  async receiveMessage(@Body() body: WhatsAppWebhookBody) {
+    const persistence: Promise<void>[] = [];
     // Meta batches: one delivery can carry several entries, each with several
     // changes, and on a Coexistence number those changes are of DIFFERENT kinds
     // (a live message, an echo of what an employee typed, a chunk of history).
@@ -64,14 +65,14 @@ export class WebhookController {
             break;
 
           case 'history':
-            this.absorbHistory(value.history ?? [], phoneNumberId);
+            persistence.push(
+              this.persistHistory(value.history ?? [], phoneNumberId),
+            );
             break;
 
           case 'smb_app_state_sync':
-            // Address-book changes. Nothing consumes them yet; logged so the
-            // volume is visible before deciding whether to sync contacts.
-            console.log(
-              `📇 ${value.state_sync?.length ?? 0} cambio(s) de contactos en ${phoneNumberId ?? 'sin número'}`,
+            persistence.push(
+              this.persistContacts(value.state_sync ?? [], phoneNumberId),
             );
             break;
 
@@ -96,6 +97,9 @@ export class WebhookController {
       }
     }
 
+    // A failed persistence request must fail the webhook delivery so Meta retries
+    // it. The API de-duplicates both messages and contacts, making retries safe.
+    await Promise.all(persistence);
     return { status: 'ok' };
   }
 
@@ -187,15 +191,15 @@ export class WebhookController {
    * The 180-day historical sync that lands right after onboarding, in three
    * phases (0-1 day, 1-90, 90-180).
    *
-   * Absorbed on purpose and NOT routed through handleMessage: these are old
+   * Persisted through the API but NOT routed through handleMessage: these are old
    * conversations, and feeding them to the flow would have the bot answering
-   * messages from months ago. Only progress is logged — enough to confirm all
-   * three phases arrived inside the 24 h window Meta gives to sync.
+   * messages from months ago. Progress is also logged so all three phases can be
+   * confirmed inside the 24 h window Meta gives to sync.
    */
-  private absorbHistory(
+  private persistHistory(
     chunks: WhatsAppHistoryChunk[],
     phoneNumberId: string | undefined,
-  ): void {
+  ): Promise<void> {
     for (const chunk of chunks) {
       const threads = chunk.threads?.length ?? 0;
       const messages = (chunk.threads ?? []).reduce(
@@ -208,6 +212,26 @@ export class WebhookController {
           `· ${threads} chat(s), ${messages} mensaje(s)`,
       );
     }
+
+    if (!phoneNumberId) {
+      console.warn('⚠️ Historial sin phone_number_id — no se puede persistir');
+      return Promise.resolve();
+    }
+    return this.api.persistCoexistenceHistory({ phoneNumberId, chunks });
+  }
+
+  private persistContacts(
+    contacts: import('./types/coexistence.types').WhatsAppAppStateSyncItem[],
+    phoneNumberId: string | undefined,
+  ): Promise<void> {
+    console.log(
+      `📇 ${contacts.length} cambio(s) de contactos en ${phoneNumberId ?? 'sin número'}`,
+    );
+    if (!phoneNumberId) {
+      console.warn('⚠️ Contactos sin phone_number_id — no se pueden persistir');
+      return Promise.resolve();
+    }
+    return this.api.persistCoexistenceContacts({ phoneNumberId, contacts });
   }
 
   /**

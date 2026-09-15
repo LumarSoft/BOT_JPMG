@@ -10,6 +10,8 @@ describe('WebhookController', () => {
   let webhookService: { handleMessage: jest.Mock };
   let api: {
     recordAgentEcho: jest.Mock;
+    persistCoexistenceHistory: jest.Mock;
+    persistCoexistenceContacts: jest.Mock;
     reportMetaUsage: jest.Mock;
     markWabaDisconnected: jest.Mock;
   };
@@ -18,6 +20,8 @@ describe('WebhookController', () => {
     webhookService = { handleMessage: jest.fn().mockResolvedValue(undefined) };
     api = {
       recordAgentEcho: jest.fn().mockResolvedValue(undefined),
+      persistCoexistenceHistory: jest.fn().mockResolvedValue(undefined),
+      persistCoexistenceContacts: jest.fn().mockResolvedValue(undefined),
       reportMetaUsage: jest.fn().mockResolvedValue(undefined),
       markWabaDisconnected: jest.fn().mockResolvedValue(undefined),
     };
@@ -141,5 +145,78 @@ describe('WebhookController', () => {
     } as any);
 
     expect(api.markWabaDisconnected).toHaveBeenCalledWith('W1', 'INACTIVE');
+  });
+
+  it('forwards historical chunks to the API for durable persistence', async () => {
+    const chunks = [
+      {
+        metadata: { phase: '0', chunk_order: 1, progress: 100 },
+        threads: [{ id: '5493412345678', messages: [] }],
+      },
+    ];
+
+    await controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'history',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                history: chunks,
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(api.persistCoexistenceHistory).toHaveBeenCalledWith({
+      phoneNumberId: 'P1',
+      chunks,
+    });
+  });
+
+  it('forwards contact changes to the API for durable persistence', async () => {
+    const contacts = [
+      {
+        type: 'contact',
+        action: 'add',
+        contact: { phone_number: '5493412345678', full_name: 'Ana Pérez' },
+      },
+    ];
+
+    await controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'smb_app_state_sync',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                state_sync: contacts,
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(api.persistCoexistenceContacts).toHaveBeenCalledWith({
+      phoneNumberId: 'P1',
+      contacts,
+    });
   });
 });
