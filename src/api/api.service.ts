@@ -342,28 +342,43 @@ export class ApiService {
 
   // ─── Public endpoints (infoauto + cotizador) ───────────
 
+  private async getAllInfoAutoPages<T>(
+    path: string,
+    query?: string,
+  ): Promise<T[]> {
+    const items: T[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.http.get<{
+        data: T[];
+        pagination: { next_page: number | null } | null;
+      }>(path, {
+        params: { query_string: query || undefined, page, page_size: 100 },
+      });
+      items.push(...data.data);
+      const nextPage = data.pagination?.next_page;
+      if (!nextPage || nextPage <= page) return items;
+      page = nextPage;
+    }
+  }
+
   async searchBrands(
     vehicleType: VehicleTypeParam,
     query?: string,
   ): Promise<InfoAutoBrand[]> {
-    const { data } = await this.http.get<{ data: InfoAutoBrand[] }>(
+    return this.getAllInfoAutoPages<InfoAutoBrand>(
       `/infoauto/${vehicleType}/brands`,
-      {
-        params: { query_string: query || undefined, page_size: 20 },
-      },
+      query,
     );
-    return data.data;
   }
 
   async getGroups(
     vehicleType: VehicleTypeParam,
     brandId: number,
   ): Promise<InfoAutoGroup[]> {
-    const { data } = await this.http.get<{ data: InfoAutoGroup[] }>(
+    return this.getAllInfoAutoPages<InfoAutoGroup>(
       `/infoauto/${vehicleType}/brands/${brandId}/groups`,
-      { params: { page_size: 50 } },
     );
-    return data.data;
   }
 
   async getModels(
@@ -372,11 +387,10 @@ export class ApiService {
     groupId: number,
     query?: string,
   ): Promise<InfoAutoModel[]> {
-    const { data } = await this.http.get<{ data: InfoAutoModel[] }>(
+    return this.getAllInfoAutoPages<InfoAutoModel>(
       `/infoauto/${vehicleType}/brands/${brandId}/groups/${groupId}/models`,
-      { params: { query_string: query || undefined, page_size: 30 } },
+      query,
     );
-    return data.data;
   }
 
   async quoteVehicle(
