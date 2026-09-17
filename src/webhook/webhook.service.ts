@@ -369,12 +369,19 @@ export class WebhookService {
       }
 
       this.logger.log(`[5/5] Handoff al LLM (${result.handoff})`);
+      const stateVehicleType = result.state?.data.vehiculo;
+      const vehicleType =
+        result.state?.step === 'LLM_COTIZACION' &&
+        (stateVehicleType === 'auto' || stateVehicleType === 'moto')
+          ? stateVehicleType
+          : undefined;
       const raw = await this.generateReply(
         context,
         conversation,
         text,
         result.handoff,
         phoneNumberId,
+        vehicleType,
       );
       // The model writes standard markdown; WhatsApp speaks its own dialect.
       const reply = toWhatsAppMarkdown(raw);
@@ -605,6 +612,7 @@ export class WebhookService {
     text: string,
     handoff: 'cotizacion' | 'faq',
     phoneNumberId: string,
+    vehicleType?: 'auto' | 'moto',
   ): Promise<string> {
     const today = new Date().toLocaleDateString('es-AR', {
       weekday: 'long',
@@ -627,6 +635,7 @@ export class WebhookService {
             attentionHours: context.attentionHours,
             today,
             client: conversation.client,
+            vehicleType,
           })
         : buildFaqPrompt({
             botName: context.botName,

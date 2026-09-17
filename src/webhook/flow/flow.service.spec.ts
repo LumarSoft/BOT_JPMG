@@ -175,6 +175,32 @@ describe('FlowService', () => {
   });
 
   describe('greeting', () => {
+    it('does not answer the same standalone greeting twice within 15 seconds', async () => {
+      const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+
+      const first = await send({ text: 'Hola' });
+      expect(first.messages.length).toBeGreaterThan(0);
+
+      now.mockReturnValue(1_005_000);
+      const repeated = await send({ text: 'hola!' });
+
+      expect(repeated.messages).toEqual([]);
+      expect(repeated.handoff).toBeUndefined();
+      expect(repeated.state?.step).toBe('ROOT');
+      now.mockRestore();
+    });
+
+    it('answers the same greeting again after the debounce window', async () => {
+      const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      await send({ text: 'Hola' });
+
+      now.mockReturnValue(1_016_000);
+      const later = await send({ text: 'hola' });
+
+      expect(later.messages.length).toBeGreaterThan(0);
+      now.mockRestore();
+    });
+
     it('returns to the menu on a standalone greeting (no FAQ handoff)', async () => {
       await send({ text: 'hola' }); // ROOT welcome
       await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' }); // CLIENT_MENU

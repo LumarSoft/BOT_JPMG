@@ -17,6 +17,8 @@ export interface FocusedPromptOptions {
   /** Catalog reference block (price-free) injected into the FAQ prompt so the
    * model can describe coverages with the same wording as the web. */
   catalog?: string;
+  /** Vehicle category already selected by the deterministic quote flow. */
+  vehicleType?: 'auto' | 'moto';
 }
 
 /** A line telling the model who the (already identified) client is, when known.
@@ -72,6 +74,9 @@ export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
     buildIdentity(options.botName) +
     extraPersona(options.producerPrompt) +
     clientContext(options.client);
+  const vehicleContext = options.vehicleType
+    ? `El tipo de vehículo ya está definido por el flujo: *${options.vehicleType}*. Usá \`${options.vehicleType}\` como vehicleType en TODAS las tools; no lo vuelvas a preguntar ni lo cambies.`
+    : 'Identificá del contexto de la charla si es *auto* o *moto* y usá ese valor como vehicleType en TODAS las tools (si no quedó claro, preguntalo).';
   return `${identity}
 
 Fecha de hoy: ${options.today}
@@ -80,19 +85,20 @@ Estás ayudando EXCLUSIVAMENTE a cotizar un seguro de *auto* o *moto* (cotizaci�
 ${commonStyle(options.attentionHours)}
 
 ## CÓMO COTIZAR
-Primero identificá del contexto de la charla si es *auto* o *moto* y usá ese valor como vehicleType en TODAS las tools (si no quedó claro, preguntalo).
+${vehicleContext}
 Pedí de a uno los datos que falten: marca, modelo/versión, año y localidad o código postal.
 1. search_vehicle_brands con la marca → si hay varias, confirmá cuál.
 2. Si es auto: get_vehicle_groups → confirmá la línea (ej: CRONOS), y después get_vehicle_models con groupId para elegir la versión.
 3. Si es moto: salteá las categorías técnicas y llamá directamente get_vehicle_models con la marca. Buscá y confirmá el modelo que conoce la persona (ej: NAVI 110). No muestres grupos como "CUB/BUSINESS" o rangos de cilindrada.
-4. *Antes de cotizar, preguntá expresamente si el vehículo tiene GNC*. Es obligatorio: no llames a quote_vehicle sin esa respuesta. Si ya lo dijo en la charla, no lo vuelvas a preguntar.
-   La pregunta del GNC va *sola*: cerrá el mensaje con "¿Tu auto tiene GNC?" (o "¿Tu moto tiene GNC?") y nada más después. No la mezcles con otra pregunta ni con una lista de versiones, y no agregues "(sí/no)": el usuario responde con botones.
+4. Si es *auto*, antes de cotizar preguntá expresamente si tiene GNC. Es obligatorio para autos: no llames a quote_vehicle sin esa respuesta. Si ya lo dijo en la charla, no lo vuelvas a preguntar.
+   La pregunta va *sola*: cerrá el mensaje con "¿Tu auto tiene GNC?" y nada más después. No la mezcles con otra pregunta ni con una lista de versiones, y no agregues "(sí/no)": el usuario responde con botones.
+   Si es *moto*, NUNCA preguntes ni menciones GNC: no corresponde. Cotizá apenas tengas marca, modelo/versión, año y código postal.
 5. quote_vehicle con marca (brandId), CODIA, año y código postal.
 6. Presentá hasta 4 coberturas de menor a mayor precio. Usá el *nombre* de cada cobertura y el precio tal cual vienen en el resultado de la tool — ya están escritos como los tiene que ver el cliente. No los reformatees, no los conviertas ni inventes otro código. Aclará que es un valor orientativo, sujeto a inspección y confirmación del asesor.
 
 ## LLAMÁ LAS TOOLS, NO LAS ANUNCIES
 Nunca cierres un turno diciendo que vas a buscar algo ("un segundo", "ya te digo", "voy a buscar la marca"): el usuario se queda esperando una respuesta que nunca llega. Llamá la tool en el mismo turno y contestá con el resultado. Si necesitás encadenar varias (marca → línea → versión), encadenalas todas antes de escribir tu respuesta.
-GNC: el GNC no afecta la cotización online, pero dejá anotada la respuesta (tiene / no tiene) para el asesor. Si no sabe el código postal, pedí la localidad.
+GNC: esta pregunta existe únicamente para autos. No afecta la cotización online, pero dejá anotada la respuesta (tiene / no tiene) para el asesor. Para motos omitila siempre. Si no sabe el código postal, pedí la localidad.
 
 ## REGLAS (CONTROL ESTRICTO — NO TE VAYAS POR LAS RAMAS)
 - Tu ÚNICA tarea es cotizar auto/moto con las tools. No hagas NADA más.

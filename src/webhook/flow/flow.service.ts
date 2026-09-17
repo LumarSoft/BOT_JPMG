@@ -59,6 +59,14 @@ import { attentionHoursOf } from '../constants/business';
 const GREETING_RE =
   /^(?:hola+s?|holis|buenas|buen(?:os|as)?\s*(?:d[ií]as?|tardes?|noches?)?|buen\s*d[ií]a|hey+|qu[eé]\s+tal|saludos)[\s!.,¡?]*$/i;
 
+/** A quick double-send of the same greeting is usually a user tap/retry, not a
+ * request for another copy of the menu. Keep this narrow: only standalone
+ * greetings in menu states are suppressed, never ordinary repeated answers. */
+const GREETING_DEBOUNCE_MS = 15_000;
+const LAST_GREETING_TEXT = 'lastGreetingText';
+const LAST_GREETING_AT = 'lastGreetingAt';
+const MENU_STEPS = new Set<FlowStep>(['ROOT', 'CLIENT_MENU', 'LEAD_MENU']);
+
 /** Synthetic selectionId the media handler feeds in when a photo was received,
  * so the deterministic claim-photo steps advance without the user typing. */
 export const PHOTO_RECEIVED = '__photo_received__';
@@ -251,7 +259,12 @@ export class FlowService {
             ),
           );
         }
-        return { messages: [{ kind: 'text', body: hello }, clientMenu()] };
+        return this.rememberGreeting(
+          key,
+          input.text,
+          { messages: [{ kind: 'text', body: hello }, clientMenu()] },
+          !sel && GREETING_RE.test(input.text.trim()),
+        );
       }
       this.setState(key, 'ROOT');
       // Same for someone we can't identify: a tap on "Sí, soy cliente" /
@@ -260,7 +273,12 @@ export class FlowService {
       if (sel && ROOT_OPTS.has(sel)) {
         return this.handleRoot(input, ctx, key);
       }
-      return { messages: [welcomeMenu(undefined, ctx.botName)] };
+      return this.rememberGreeting(
+        key,
+        input.text,
+        { messages: [welcomeMenu(undefined, ctx.botName)] },
+        !sel && GREETING_RE.test(input.text.trim()),
+      );
     }
 
     // Global escape hatch: "menú" / the back option returns to the main menu.
@@ -310,9 +328,20 @@ export class FlowService {
 
     // A standalone greeting mid-session means "take me back to the menu", not a
     // FAQ chat — deterministic and free, and honoring the declared audience.
+    // A repeated copy sent within a few seconds while the menu is already open
+    // is recorded by the webhook but intentionally receives no second reply.
     // Skipped for taps (selectionId) since those are never typed greetings.
     if (!sel && GREETING_RE.test(input.text.trim())) {
-      return this.toMainMenu(key, ctx);
+      if (this.isRepeatedGreeting(existing.state, input.text)) {
+        this.logger.log('Saludo repetido en menú ignorado');
+        return { messages: [] };
+      }
+      return this.rememberGreeting(
+        key,
+        input.text,
+        this.toMainMenu(key, ctx),
+        true,
+      );
     }
 
     // Global "finalizar" command: end the chat from anywhere (button tap sends
@@ -1724,6 +1753,49 @@ export class FlowService {
   }
 
   // ─── Shared helpers ───────────────────────────────────────
+
+  private normalizeGreeting(text: string): string {
+    return text
+      .trim()
+      .toLocaleLowerCase('es-AR')
+      .replace(/[\s!.,¡¿?]+$/g, '')
+      .replace(/\s+/g, ' ');
+  }
+
+  private isRepeatedGreeting(state: FlowState, text: string): boolean {
+    if (!MENU_STEPS.has(state.step)) return false;
+    const previousText = state.data[LAST_GREETING_TEXT];
+    const previousAt = state.data[LAST_GREETING_AT];
+    return (
+      typeof previousText === 'string' &&
+      typeof previousAt === 'number' &&
+      previousText === this.normalizeGreeting(text) &&
+      Date.now() - previousAt <= GREETING_DEBOUNCE_MS
+    );
+  }
+
+  /** Adds short-lived greeting metadata to the durable menu snapshot. */
+  private rememberGreeting(
+    key: string,
+    text: string,
+    result: FlowResult,
+    shouldRemember: boolean,
+  ): FlowResult {
+    if (!shouldRemember) return result;
+    const current = this.load(key)?.state;
+    if (!current || !MENU_STEPS.has(current.step)) return result;
+    this.setState(
+      key,
+      current.step,
+      {
+        ...current.data,
+        [LAST_GREETING_TEXT]: this.normalizeGreeting(text),
+        [LAST_GREETING_AT]: Date.now(),
+      },
+      current.audience,
+    );
+    return result;
+  }
 
   private toMainMenu(key: string, ctx: FlowContext): FlowResult {
     // Respect the branch the user already declared so "menú" doesn't bounce a
