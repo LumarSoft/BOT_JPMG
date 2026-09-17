@@ -198,6 +198,11 @@ export interface QuotePaymentOption {
 
 export interface QuoteCoverage {
   code: string;
+  /** Commercial copy resolved by the API from the producer's coverage settings. */
+  name: string;
+  tagline: string | null;
+  benefits: string[];
+  highlighted: boolean;
   paymentOptions: QuotePaymentOption[];
 }
 

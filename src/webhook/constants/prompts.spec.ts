@@ -33,4 +33,18 @@ describe('buildCotizacionPrompt', () => {
     expect(prompt).toContain('Es obligatorio para autos');
     expect(prompt).toContain('¿Tu auto tiene GNC?');
   });
+
+  it('requires quote details and exact benefits in results and follow-ups', () => {
+    const prompt = buildCotizacionPrompt({
+      ...base,
+      vehicleType: 'moto',
+    });
+
+    expect(prompt).toContain('*código + nombre*');
+    expect(prompt).toContain('los puntos de "incluye"');
+    expect(prompt).toContain(
+      'respondé con la descripción y los beneficios EXACTOS de quote_vehicle',
+    );
+    expect(prompt).toContain('reconstruí la cotización con las tools');
+  });
 });

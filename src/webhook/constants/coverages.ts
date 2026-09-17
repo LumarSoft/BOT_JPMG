@@ -41,6 +41,9 @@ interface RenderedOption {
 export interface RenderedCoverage {
   nombre: string;
   codigo: string;
+  descripcion: string | null;
+  incluye: string[];
+  recomendada: boolean;
   desde: string;
   opciones: RenderedOption[];
 }
@@ -72,8 +75,13 @@ export function renderQuote(quote: QuoteResult): {
   const coberturas = [...quote.coverages]
     .sort((a, b) => cheapest(a) - cheapest(b))
     .map((c) => ({
-      nombre: coverageName(c.code),
+      // The API applies the same producer-configured wording used by the web.
+      // Keep the prefix fallback only as protection against an older API.
+      nombre: c.name?.trim() || coverageName(c.code),
       codigo: c.code,
+      descripcion: c.tagline?.trim() || null,
+      incluye: Array.isArray(c.benefits) ? c.benefits : [],
+      recomendada: c.highlighted === true,
       desde: fmtArs(cheapest(c)),
       opciones: c.paymentOptions.map((o) => ({
         forma: o.name,

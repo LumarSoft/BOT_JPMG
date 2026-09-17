@@ -168,7 +168,7 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'quote_vehicle',
       description:
-        'Cotiza el seguro del vehículo en Triunfo en tiempo real y devuelve coberturas con precios. Requiere el CODIA del modelo (ya incluye la marca), año de fabricación y código postal.',
+        'Cotiza el seguro del vehículo en Triunfo en tiempo real y devuelve cada cobertura con código, nombre, descripción, beneficios incluidos y precios. Usar también para responder qué incluye o cuál es la diferencia entre opciones ya cotizadas. Requiere el CODIA del modelo (ya incluye la marca), año de fabricación y código postal.',
       parameters: {
         type: 'object',
         properties: {
