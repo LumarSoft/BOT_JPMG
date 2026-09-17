@@ -403,7 +403,11 @@ export class WebhookService {
       await this.dispatch(to, message, phoneNumberId);
     }
 
-    this.logger.log(`Mensaje(s) enviado(s) a ${to} ✓`);
+    if (result.messages.length > 0 || result.handoff) {
+      this.logger.log(`Mensaje(s) enviado(s) a ${to} ✓`);
+    } else {
+      this.logger.log(`Sin mensaje saliente para ${to} (evento ignorado)`);
+    }
   }
 
   /** Sends a flow message through the matching Meta endpoint. */

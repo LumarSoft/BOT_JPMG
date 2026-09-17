@@ -304,9 +304,7 @@ export class FlowService {
               `Listo, tomé nota ✍️. Un asesor te va a contactar a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
               (await this.closedNote()),
           },
-          existing.state.audience === 'lead'
-            ? leadMenu(ctx.botName)
-            : clientMenu(),
+          existing.state.audience === 'lead' ? leadMenu() : clientMenu(),
         ],
       };
     }
@@ -506,7 +504,7 @@ export class FlowService {
     }
     if (isLead) {
       this.setState(key, 'LEAD_MENU', {}, 'lead');
-      return { messages: [leadMenu(ctx.botName)] };
+      return { messages: [leadMenu()] };
     }
 
     // ── 2. Direct intent routing (before asking client/non-client) ──
@@ -1188,7 +1186,7 @@ export class FlowService {
             `¡Gracias! Tomé nota ✍️. Un representante de ventas te va a contactar a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
             (await this.closedNote()),
         },
-        leadMenu(ctx.botName),
+        leadMenu(),
       ],
     };
   }
@@ -1807,7 +1805,7 @@ export class FlowService {
     }
     if (audience === 'lead') {
       this.setState(key, 'LEAD_MENU', {}, 'lead');
-      return { messages: [leadMenu(ctx.botName)] };
+      return { messages: [leadMenu()] };
     }
     this.setState(key, 'ROOT');
     return { messages: [welcomeMenu(undefined, ctx.botName)] };

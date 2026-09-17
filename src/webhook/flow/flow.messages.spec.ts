@@ -3,10 +3,21 @@ import {
   displayName,
   formatEstadoCuenta,
   gncButtons,
+  leadMenu,
   polizaPicker,
   returningGreeting,
   toWhatsAppMarkdown,
 } from './flow.messages';
+
+describe('leadMenu', () => {
+  it('does not introduce the bot a second time after the welcome', () => {
+    const message = leadMenu();
+
+    expect(message.body).toBe('Perfecto, ¿con qué te puedo ayudar?');
+    expect(message.body).not.toContain('Soy');
+    expect(message.body).not.toContain('asistente');
+  });
+});
 
 const ranger: EstadoCuentaPoliza = {
   id: 2,

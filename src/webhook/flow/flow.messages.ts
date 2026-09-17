@@ -273,10 +273,10 @@ export function clientMenu(): OutgoingMessage {
   };
 }
 
-export function leadMenu(botName?: string | null): OutgoingMessage {
+export function leadMenu(): OutgoingMessage {
   return {
     kind: 'buttons',
-    body: `¡Gracias por escribirnos! ${botIntro(botName)} 👋 ¿Con qué te puedo ayudar?`,
+    body: 'Perfecto, ¿con qué te puedo ayudar?',
     buttons: [
       { id: OPT.leadCotizar, title: 'Cotizar un seguro' },
       { id: OPT.leadVendedor, title: 'Que me llamen' },
