@@ -10,6 +10,18 @@ function truncate(text: string, max: number): string {
 }
 
 /**
+ * Serializes exactly the message content sent to Meta, excluding the recipient
+ * (logged separately) and, importantly, any authorization data. Keeping it as
+ * one JSON line makes multiline WhatsApp messages easy to copy from PM2 logs.
+ */
+export function outboundContentForLog(
+  payload: Record<string, unknown>,
+): string {
+  const { to: _recipient, ...content } = payload;
+  return JSON.stringify(content);
+}
+
+/**
  * Thin wrapper over the Meta Cloud API send endpoint, shared by the webhook
  * (replies) and the inactivity job (warnings).
  */
@@ -153,7 +165,9 @@ export class MetaService {
       // employee is answering" apart from "this is my own reply bouncing back"
       // — without it the bot would pause itself in every conversation.
       this.sent.remember(data?.messages?.[0]?.id);
-      this.logger.log(`✅ Mensaje enviado a ${payload.to as string}`);
+      this.logger.log(
+        `📤 Para: ${payload.to as string} → ${outboundContentForLog(payload)}`,
+      );
     } catch (error) {
       this.logger.error(
         `❌ Error Meta: ${JSON.stringify(axios.isAxiosError(error) ? error.response?.data : error)}`,

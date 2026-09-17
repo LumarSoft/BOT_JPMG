@@ -214,7 +214,7 @@ export class WebhookService {
     selectionId?: string,
   ) {
     this.logger.log(
-      `[1/5] Mensaje entrante de ${from}: "${text.slice(0, 80)}${text.length > 80 ? '…' : ''}"`,
+      `[1/5] Mensaje entrante de ${from}: ${JSON.stringify(text)}`,
     );
 
     let context: BotContext;
