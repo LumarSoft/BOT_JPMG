@@ -67,6 +67,33 @@ const LAST_GREETING_TEXT = 'lastGreetingText';
 const LAST_GREETING_AT = 'lastGreetingAt';
 const MENU_STEPS = new Set<FlowStep>(['ROOT', 'CLIENT_MENU', 'LEAD_MENU']);
 
+/**
+ * Steps where the user is not in the middle of answering something, so a
+ * deterministic off-topic refusal can't swallow real data. Everywhere else the
+ * text is an answer (a picker, a capture step, or the quote conversation — whose
+ * prompt already refuses off-topic requests without losing the collected data).
+ * A real conversation lost its quote here: "2000 es el codigo postal" matched
+ * the programming pattern "código" and was bounced to the main menu.
+ */
+const OPEN_STEPS = new Set<FlowStep>([
+  'ROOT',
+  'CLIENT_MENU',
+  'LEAD_MENU',
+  'LLM_FAQ',
+]);
+
+/**
+ * Lowercases and strips diacritics so keyword patterns match "código" and
+ * "codigo" alike. JS `\b` treats accented letters as non-word characters, so
+ * patterns run against raw text silently miss or split on them.
+ */
+function fold(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 /** Synthetic selectionId the media handler feeds in when a photo was received,
  * so the deterministic claim-photo steps advance without the user typing. */
 export const PHOTO_RECEIVED = '__photo_received__';
@@ -368,11 +395,12 @@ export class FlowService {
     // Hard topic guard (deterministic, NO LLM): if the user clearly asks about
     // something off-domain (programming, math, recipes, general chatter), we
     // refuse and steer back to the menu BEFORE any model call. This is the
-    // bulletproof "no te vayas por las ramas" — it never reaches the LLM.
+    // bulletproof "no te vayas por las ramas" — it never reaches the LLM. Only
+    // on open steps: mid-flow, the text is the user's answer (see OPEN_STEPS).
     if (
       !sel &&
-      this.isOffTopic(input.text) &&
-      !this.isCapturingData(existing.state.step)
+      OPEN_STEPS.has(existing.state.step) &&
+      this.isOffTopic(input.text)
     ) {
       return this.offTopicReply(key, ctx);
     }
@@ -1724,29 +1752,48 @@ export class FlowService {
     | 'asesor'
     | 'cotizar'
     | null {
-    const t = text.toLowerCase();
-    if (/\bgr[uú]a\b|\bauxilio\b|\bremolque\b/.test(t)) return 'grua';
-    if (
-      /\bsiniestro\b|\bdenuncia\b|\bdenunciar\b|\bme chocaron\b|\bme robaron\b/.test(
+    const t = fold(text);
+    // A question *about* a coverage ("¿incluye grúa?", "¿qué pasa si me
+    // roban?", "¿cubre granizo?") belongs to the quote/FAQ model, not to the
+    // transactional flow that shares the keyword.
+    const asksAboutCoverage =
+      /\b(incluye|incluyen|cubre|cubren|coberturas?|viene con|trae)\b/.test(
         t,
+      ) ||
+      /\bque (pasa|hago|sucede) si\b/.test(t) ||
+      /\bsi (tengo|tuviera|tuviese|hay|me (roban|chocan|pasa))\b/.test(t) ||
+      /\ben caso de\b/.test(t);
+    if (!asksAboutCoverage) {
+      if (/\bgrua\b|\bauxilio\b|\bremolque\b/.test(t)) return 'grua';
+      if (
+        /\bsiniestro\b|\bdenuncia\b|\bdenunciar\b|\bme (chocaron|robaron)\b/.test(
+          t,
+        )
       )
-    )
-      return 'siniestro';
-    if (/\bpagar\b|\bpagos?\b|\bcuota\b|\bdeuda\b|\bvencimiento\b/.test(t))
-      return 'pago';
-    if (
-      /\btarjeta\b|\bcertificad|\bcup[oó]n\b|\bdocumentaci[oó]n\b|\bdocumentos?\b/.test(
-        t,
+        return 'siniestro';
+      // Paying is ordinary quote talk ("¿cuánto sale la cuota?", "¿puedo
+      // pagar con tarjeta?"): only the user's own account/debt counts.
+      if (
+        /\b(mis?) (cuotas?|pagos?|deudas?|vencimientos?)\b|\bpagar (mi|mis)\b|\bestado de (cuenta|pagos?)\b|\bcuanto debo\b|\bdeuda\b|\bcupon de pago\b/.test(
+          t,
+        )
       )
-    )
-      return 'documentos';
+        return 'pago';
+      if (
+        /\btarjeta verde\b|\btarjeta de circulacion\b|\bcertificado de cobertura\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?)\b|\b(descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis) (poliza|certificado|tarjeta|cupon|documentacion)\b/.test(
+          t,
+        )
+      )
+        return 'documentos';
+    }
     if (
-      /\basesor\b|\brepresentante\b|\bhablar con (alguien|una persona|un asesor)\b/.test(
+      /^(un |el |al )?asesor\b/.test(t.trim()) ||
+      /\b(hablar|comunicar\w*|contactar\w*|quiero|queria|necesito|pasame|pasas|derivame)\b.*\b(asesor|representante|humano|persona real)\b/.test(
         t,
       )
     )
       return 'asesor';
-    if (/\bcotizar\b|\bcotizaci[oó]n\b|\bpresupuest/.test(t)) return 'cotizar';
+    if (/\bcotizar\b|\bcotizacion\b|\bpresupuest/.test(t)) return 'cotizar';
     return null;
   }
 
@@ -1854,36 +1901,39 @@ export class FlowService {
   // ─── Intent / keyword helpers ─────────────────────────────
 
   /**
-   * Detects a question about opening hours ("¿qué horario tienen?", "¿están
-   * abiertos?", "¿a qué hora abren?"). Deliberately specific so it doesn't fire
-   * on ordinary text — note "ahora" is not matched (no word boundary before
-   * "hora").
-   */
-  /**
    * Detects clearly off-domain requests (programming, math, recipes, translations,
-   * jokes, write-this-for-me, general trivia) so the bot refuses deterministically
-   * instead of letting the LLM wander. Tight patterns to avoid false positives on
-   * real insurance questions.
+   * jokes, general trivia) so the bot refuses deterministically instead of
+   * letting the LLM wander. A false positive throws away what the user was
+   * doing, so only unambiguous *requests* count — never lone words that also
+   * show up in insurance talk: "código" (postal, de seguridad), "integral"
+   * (a coverage), "cuento" ("te cuento que…"), "receta" (médica), "capital de"
+   * (suma asegurada), "quién es" (el titular), "función", "script", "node".
+   * Anything this lets through is still refused by the LLM prompts.
    */
   private isOffTopic(text: string): boolean {
-    const t = text.toLowerCase();
+    const t = fold(text);
     return (
-      // Programming / tech
-      /\b(javascript|typescript|python|java|kotlin|c\+\+|c#|php|html|css|sql|node|react|bash|powershell)\b/.test(
+      // Programming: an unambiguous language name, or explicitly asking for code.
+      /\b(javascript|typescript|python|kotlin|php|html|css|sql|powershell|hello world|console\.log)\b/.test(
         t,
       ) ||
-      /\b(hello world|console\.log|c[oó]digo|codigo|programar|programaci[oó]n|funci[oó]n|algoritmo|script|compilar|debug)\b/.test(
+      /\b(programar|programacion|algoritmo|compilar)\b/.test(t) ||
+      /\b(escribi|escribime|hace|haceme|arma|armame|pasame|dame)( un| el| este)? (codigo|script|programa) (en|de|que|para)\b/.test(
         t,
       ) ||
-      // Math / homework
-      /\b(ecuaci[oó]n|integral|derivada|factoriz|teorema|resolv[eé] (este|el) (c[aá]lculo|problema))\b/.test(
+      // Math / homework.
+      /\b(ecuacion|ecuaciones|derivada|teorema|factoriza\w*)\b/.test(t) ||
+      /\bresolve\w* (este|el|esta|la) (calculo|ejercicio|ecuacion)\b/.test(t) ||
+      /\bcuanto (es|da) \d+ ?[-+x*/] ?\d+/.test(t) ||
+      // Creative / general-assistant requests.
+      /\breceta (de|para)\b|\bcomo (se )?cocina/.test(t) ||
+      /\b(poema|poesia|chiste|ensayo)\b/.test(t) ||
+      /\b(escribi|escribime|contame|inventa|inventame) (un|una) (cuento|historia|cancion)\b/.test(
         t,
       ) ||
-      // Creative / generic assistant abuse
-      /\b(receta|cocinar|poema|poes[ií]a|chiste|cuento|ensayo|redact[aá]|traduc[ií]|traducci[oó]n)\b/.test(
-        t,
-      ) ||
-      /\b(qui[eé]n (es|fue|gan[oó])|capital de|cu[aá]nto es \d)\b/.test(t)
+      /\b(traduci|traducime|traducir|traduccion)\b/.test(t) ||
+      // General trivia.
+      /\bcual es la capital de\b|\bquien gano (el|la|los|las)\b/.test(t)
     );
   }
 
@@ -1901,15 +1951,24 @@ export class FlowService {
     };
   }
 
+  /**
+   * Detects a question about opening hours ("¿qué horario tienen?", "¿están
+   * abiertos?", "¿a qué hora abren?", "¿atienden los sábados?"). A bare
+   * "atienden"/"abren" is not enough — "¿atienden motos?" is about coverage —
+   * so those verbs need a time word next to them. Misses fall through to the
+   * LLM, which knows the attention hours from its prompt.
+   */
   private isHoursQuestion(text: string): boolean {
-    const t = text.toLowerCase();
+    const t = fold(text);
     return (
       /\bhorarios?\b/.test(t) ||
-      /\b(a|hasta)\s+qu[eé]\s+hora\b/.test(t) ||
-      /\bqu[eé]\s+hora\b/.test(t) ||
-      /\best[aá]n?\s+abiert/.test(t) ||
-      /\babren\b|\bcierran\b|\batienden\b/.test(t) ||
-      /\bqu[eé]\s+d[ií]as?\s+(abren|atienden|trabajan)/.test(t)
+      /\b(a|hasta|desde) que hora\b/.test(t) ||
+      /\bque hora (abren|cierran|atienden|trabajan)\b/.test(t) ||
+      /\bestan? (abiertos?|atendiendo)\b/.test(t) ||
+      /\b(abren|cierran|atienden|trabajan) (hoy|manana|ahora|(los|el) (sabados?|domingos?|feriados?|fines? de semana))\b/.test(
+        t,
+      ) ||
+      /\bque dias? (abren|atienden|trabajan)\b/.test(t)
     );
   }
 
@@ -1966,15 +2025,24 @@ export class FlowService {
 
   /** Keyword routing so typed text (not just taps) reaches the right flow. */
   private matchClientIntent(text: string): string | null {
-    const t = text.toLowerCase();
-    if (/siniestro|denuncia|choque|accidente|rob/.test(t))
+    const t = fold(text);
+    // Quoting first: "cotizar un seguro contra robo" is a quote, not a claim.
+    if (/cotiz|presupuest|seguro nuevo/.test(t)) return OPT.cotizacion;
+    // Whole-word robo/robaron: a bare "rob" matched "problema" and "aprobado".
+    // "accidentes personales" is a product, not an accident.
+    if (
+      /siniestro|denuncia|choque|\bme chocaron\b|\brob(o|os|aron|ado|ada)\b|\baccidente(?!s? personal)/.test(
+        t,
+      )
+    )
       return OPT.siniestros;
-    if (/cotiz|precio|presupuesto|seguro nuevo/.test(t)) return OPT.cotizacion;
-    if (/pago|cuota|deuda|deb[ií]to|cobr|rechaz/.test(t)) return OPT.pagos;
-    if (/document|p[oó]liza|tarjeta|certificado|cup[oó]n/.test(t))
+    if (/precio/.test(t)) return OPT.cotizacion;
+    if (/pago|cuota|deuda|debito|cobr|rechaz/.test(t)) return OPT.pagos;
+    if (/document|poliza|tarjeta|certificado|cupon/.test(t))
       return OPT.documentos;
-    if (/gr[uú]a|auxilio|remolque|asistencia/.test(t)) return OPT.grua;
-    if (/asesor|humano|persona|hablar|representante/.test(t)) return OPT.asesor;
+    if (/grua|auxilio|remolque|asistencia/.test(t)) return OPT.grua;
+    if (/asesor|humano|\bpersona\b|hablar|representante/.test(t))
+      return OPT.asesor;
     return null;
   }
 

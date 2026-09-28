@@ -568,4 +568,119 @@ describe('FlowService', () => {
       expect((res.messages[0] as { body: string }).body).toContain('tomé nota');
     });
   });
+
+  /**
+   * A real conversation lost its quote: the user answered "CHEVROLET, anio 2010,
+   * 2000 es el codigo postal" and the off-topic guard read "codigo" as a
+   * programming request, refused and dumped them on the main menu.
+   */
+  describe('keyword guards never hijack a real answer', () => {
+    const REFUSAL = 'solo puedo ayudarte';
+    const bodies = (res: { messages: unknown[] }) =>
+      JSON.stringify(res.messages);
+
+    it.each([
+      'CHEVROLET, anio 2010, 2000 es el codigo postal',
+      'el código postal es 2000',
+      '¿La cobertura integral qué incluye?',
+      'te cuento que es un Corsa 2010',
+      '¿cuánto sale la cuota? ¿puedo pagar con tarjeta?',
+      '¿incluye grúa?',
+      '¿qué pasa si me roban el auto?',
+      '¿qué documentos necesito para contratar?',
+      'escribime un código en python', // the quote prompt refuses it itself
+    ])('keeps quoting on "%s"', async (text) => {
+      await enterCotizacion();
+      const res = await send({ text });
+
+      expect(res.handoff).toBe('cotizacion');
+      expect(stored?.step).toBe('LLM_COTIZACION');
+      expect(bodies(res)).not.toContain(REFUSAL);
+    });
+
+    it('still leaves the quote when the user clearly asks for another flow', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      await send({ selectionId: OPT.cotizacion, text: '' });
+      await send({ selectionId: OPT.cotAuto, text: '' });
+      const res = await send({ text: 'necesito hablar con un asesor' });
+
+      expect(res.handoff).toBeUndefined();
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+    });
+
+    it.each([
+      'escribime un código en python',
+      'contame un chiste',
+      '¿cuál es la capital de Francia?',
+      '¿cuánto es 25 x 4?',
+    ])('refuses "%s" from the menu without calling the LLM', async (text) => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      const res = await send({ text });
+
+      expect(res.handoff).toBeUndefined();
+      expect(bodies(res)).toContain(REFUSAL);
+    });
+
+    it.each([
+      '¿Qué cubre la cobertura integral?',
+      '¿quién es el titular de la póliza?',
+      'necesito el capital de la póliza de vida',
+    ])('does not refuse the insurance question "%s"', async (text) => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      const res = await send({ text });
+
+      expect(bodies(res)).not.toContain(REFUSAL);
+    });
+
+    it('does not answer the hours for "¿atienden motos?"', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      await send({ text: '¿atienden motos?' });
+
+      expect(api.getHours).not.toHaveBeenCalled();
+    });
+
+    it('answers the hours for "¿atienden los sábados?"', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      await send({ text: '¿atienden los sábados?' });
+
+      expect(api.getHours).toHaveBeenCalled();
+    });
+
+    describe('client menu keywords', () => {
+      const clientCtx: FlowContext = {
+        ...leadCtx,
+        client: {
+          firstName: 'Ana',
+          lastName: 'Gómez',
+          dni: '123',
+        } as FlowContext['client'],
+      };
+
+      it('reads "problema" as a payment issue, not a robbery', async () => {
+        await send({ text: 'hola' }, clientCtx);
+        await send({ text: 'tengo un problema con mi pago' }, clientCtx);
+
+        expect(stored?.step).not.toBe('SINIESTRO_TYPE');
+        expect(api.getEstadoCuenta).toHaveBeenCalled();
+      });
+
+      it('reads "accidentes personales" as a product, not a claim', async () => {
+        await send({ text: 'hola' }, clientCtx);
+        await send(
+          { text: 'quiero un seguro de accidentes personales' },
+          clientCtx,
+        );
+
+        expect(stored?.step).not.toBe('SINIESTRO_TYPE');
+      });
+
+      it('still opens a claim for "me robaron el auto"', async () => {
+        await send({ text: 'hola' }, clientCtx);
+        await send({ text: 'me robaron el auto' }, clientCtx);
+
+        expect(stored?.step).toBe('SINIESTRO_TYPE');
+      });
+    });
+  });
 });
