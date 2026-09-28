@@ -13,6 +13,7 @@ import type {
   UserInput,
 } from './flow.types';
 import {
+  botIntro,
   clientMenu,
   CLIENT_MENU_OPTS,
   cotizarMenu,
@@ -49,6 +50,7 @@ import type {
   ProductPlanSummary,
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
+import { fold } from '../text';
 
 /**
  * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
@@ -63,6 +65,32 @@ const GREETING_RE =
  * request for another copy of the menu. Keep this narrow: only standalone
  * greetings in menu states are suppressed, never ordinary repeated answers. */
 const GREETING_DEBOUNCE_MS = 15_000;
+
+/** Words of a bare quote request — anything else is vehicle data. */
+const QUOTE_FILLER = new Set(
+  (
+    'hola buenas buen buenos dia dias tardes noches quiero queria quisiera ' +
+    'necesito me gustaria cotizar cotizame cotizacion cotiza cotizo un una ' +
+    'el la lo mi mis los las del de para por favor seguro seguros poliza ' +
+    'auto autos coche vehiculo moto motos camioneta precio presupuesto ' +
+    'cuanto sale cuesta que con tengo es gracias info informacion saber ' +
+    'hacer sacar al y o'
+  ).split(' '),
+);
+
+/** A message that asks for a quote. Run against folded text (see `fold`). */
+const QUOTE_INTENT_RE =
+  /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
+
+/**
+ * Brands that only make cars / only make motorcycles, so "quiero cotizar mi
+ * gol trend… vw" is known to be a car without the word "auto". Brands that
+ * make both (Honda, Suzuki) are left to the quote model.
+ */
+const CAR_BRAND_RE =
+  /\b(chevrolet|chevy|ford|fiat|volkswagen|vw|renault|peugeot|citroen|toyota|nissan|jeep|kia|hyundai|chery|audi|bmw|mercedes|dodge|mitsubishi|subaru|volvo|alfa romeo|baic|jac|geely|byd|haval|great wall|lifan|iveco)\b/;
+const MOTO_BRAND_RE =
+  /\b(motomel|gilera|zanella|corven|keller|mondial|guerrero|bajaj|kawasaki|ktm|benelli|harley|royal enfield|siam|appia|okinoi|kymco|sym|voge|cfmoto|rouser|yamaha)\b/;
 const LAST_GREETING_TEXT = 'lastGreetingText';
 const LAST_GREETING_AT = 'lastGreetingAt';
 const MENU_STEPS = new Set<FlowStep>(['ROOT', 'CLIENT_MENU', 'LEAD_MENU']);
@@ -81,18 +109,6 @@ const OPEN_STEPS = new Set<FlowStep>([
   'LEAD_MENU',
   'LLM_FAQ',
 ]);
-
-/**
- * Lowercases and strips diacritics so keyword patterns match "código" and
- * "codigo" alike. JS `\b` treats accented letters as non-word characters, so
- * patterns run against raw text silently miss or split on them.
- */
-function fold(text: string): string {
-  return text
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-}
 
 /** Synthetic selectionId the media handler feeds in when a photo was received,
  * so the deterministic claim-photo steps advance without the user typing. */
@@ -299,6 +315,17 @@ export class FlowService {
       // question it just answered.
       if (sel && ROOT_OPTS.has(sel)) {
         return this.handleRoot(input, ctx, key);
+      }
+      // The very first message already asks for a quote ("hola, quiero cotizar
+      // mi auto"): a quote doesn't need "¿ya sos cliente?", and every extra
+      // round-trip is one more billed message and one more wait. Introduce
+      // ourselves in the same message — or let the quote model do it when it
+      // answers directly (its prompt introduces itself on a first message).
+      if (!sel && QUOTE_INTENT_RE.test(fold(input.text))) {
+        const result = await this.enterCotizar(input, ctx, key);
+        return result.handoff
+          ? result
+          : this.prepend(`¡Hola! ${botIntro(ctx.botName)} 👋`, result);
       }
       return this.rememberGreeting(
         key,
@@ -538,7 +565,7 @@ export class FlowService {
     // ── 2. Direct intent routing (before asking client/non-client) ──
     // Cotizar doesn't need identification → go straight to the quote flow
     // (jumping to the named category when the message already specifies one).
-    if (/\bcotiz|\bpresupuest|\bcu[aá]nto.*seguro|\bprecio.*seguro/.test(t)) {
+    if (QUOTE_INTENT_RE.test(fold(input.text))) {
       return this.enterCotizar(input, ctx, key);
     }
 
@@ -1244,6 +1271,17 @@ export class FlowService {
     const category = input.selectionId
       ? null
       : this.matchCotizarCategory(input.text);
+    // Auto/moto go straight to the online quote with the typed text intact, so
+    // "quiero cotizar mi corsa 2010" reaches the model instead of the canned
+    // "decime marca, modelo y año" (routing through the category picker turned
+    // the text into a tap and threw the vehicle away).
+    if (category === OPT.cotAuto || category === OPT.cotMoto) {
+      return this.startCotizacion(
+        key,
+        category === OPT.cotMoto ? 'moto' : 'auto',
+        input,
+      );
+    }
     if (category) {
       this.setState(key, 'COTIZAR_TIPO');
       return this.handleCotizarTipo(
@@ -1251,6 +1289,12 @@ export class FlowService {
         ctx,
         key,
       );
+    }
+    // No category word but a vehicle in the text ("cotizar mi honda wave 2020"):
+    // the quote model works out auto vs moto — showing the category list would
+    // make them repeat themselves.
+    if (!input.selectionId && this.carriesVehicleData(input.text)) {
+      return this.startCotizacion(key, undefined, input);
     }
     return this.showCotizarMenu(key);
   }
@@ -1269,6 +1313,10 @@ export class FlowService {
   ): Promise<FlowResult> {
     const opt = input.selectionId ?? this.matchCotizarCategory(input.text);
     if (!opt || !COTIZAR_LABEL[opt]) {
+      // Typed a vehicle instead of picking ("el gol trend 1.6 2015"): quote it.
+      if (!input.selectionId && this.carriesVehicleData(input.text)) {
+        return this.startCotizacion(key, undefined, input);
+      }
       // Category not recognised — LLM helps clarify; state stays COTIZAR_TIPO.
       return { messages: [], handoff: 'faq' };
     }
@@ -1619,12 +1667,18 @@ export class FlowService {
     );
   }
 
+  /**
+   * Opens the conversational quote. `vehiculo` is unknown when the user named
+   * a vehicle without saying car or moto; the model then infers it (its prompt
+   * covers that case), which is why that path always hands off.
+   */
   private startCotizacion(
     key: string,
-    vehiculo: 'auto' | 'moto',
+    vehiculo: 'auto' | 'moto' | undefined,
     input?: UserInput,
   ): FlowResult {
-    this.setState(key, 'LLM_COTIZACION', { vehiculo });
+    this.setState(key, 'LLM_COTIZACION', vehiculo ? { vehiculo } : {});
+    if (!vehiculo) return { messages: [], handoff: 'cotizacion' };
 
     // The user often names the vehicle in the very message that opens the flow
     // ("Auto, tengo un peugeot 308 HDI feline 2020"). Answering with the canned
@@ -1652,14 +1706,14 @@ export class FlowService {
 
   /**
    * Whether a message says more than just which category to quote. A digit
-   * (year, displacement) or a handful of words means there is a brand/model in
-   * there worth passing to the model; "auto" or "una moto" does not.
+   * (year, displacement) or any word beyond the request itself means there is a
+   * brand/model in there worth passing to the model; "auto", "una moto" or
+   * "quiero cotizar el auto" do not.
    */
   private carriesVehicleData(text: string): boolean {
-    const t = text.trim();
-    if (!t) return false;
+    const t = fold(text);
     if (/\d/.test(t)) return true;
-    return t.split(/\s+/).length >= 4;
+    return t.split(/[^a-z]+/).some((w) => w.length > 1 && !QUOTE_FILLER.has(w));
   }
 
   /** Keyword routing so typed text (not just taps) reaches a quote category. */
@@ -1671,6 +1725,8 @@ export class FlowService {
       return OPT.cotBici;
     if (/auto|coche|veh[ií]culo|camioneta|pick/.test(t)) return OPT.cotAuto;
     if (/moto|scooter|ciclomotor/.test(t)) return OPT.cotMoto;
+    if (CAR_BRAND_RE.test(fold(text))) return OPT.cotAuto;
+    if (MOTO_BRAND_RE.test(fold(text))) return OPT.cotMoto;
     if (/bolso|cartera|mochila|notebook|celular/.test(t)) return OPT.cotBolso;
     if (/comercio|local|negocio|industria|dep[oó]sito/.test(t))
       return OPT.cotComercio;
@@ -2027,7 +2083,8 @@ export class FlowService {
   private matchClientIntent(text: string): string | null {
     const t = fold(text);
     // Quoting first: "cotizar un seguro contra robo" is a quote, not a claim.
-    if (/cotiz|presupuest|seguro nuevo/.test(t)) return OPT.cotizacion;
+    if (/cotiz|presupuest|seguro nuevo|\basegurar\b/.test(t))
+      return OPT.cotizacion;
     // Whole-word robo/robaron: a bare "rob" matched "problema" and "aprobado".
     // "accidentes personales" is a product, not an accident.
     if (
@@ -2048,7 +2105,10 @@ export class FlowService {
 
   private matchLeadIntent(text: string): string | null {
     const t = text.toLowerCase();
-    if (/\bcotiz|\bpresupuest|\bseguro|\bp[oó]liza|\bcobertura/.test(t))
+    if (
+      QUOTE_INTENT_RE.test(fold(text)) ||
+      /\bcotiz|\bpresupuest|\bseguro|\bp[oó]liza|\bcobertura/.test(t)
+    )
       return OPT.leadCotizar;
     if (
       /\bvendedor|\brepresentante|\bllam[ae]r?\b|\bcontactar|\bcomunic/.test(t)

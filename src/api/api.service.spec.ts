@@ -54,4 +54,52 @@ describe('ApiService InfoAuto pagination', () => {
       params: { query_string: 'NAVI', page: 1, page_size: 100 },
     });
   });
+
+  function serviceWith(get: jest.Mock) {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new ApiService(config);
+    (service as unknown as { http: { get: jest.Mock } }).http.get = get;
+    return service;
+  }
+
+  const page = {
+    data: { data: [{ id: 12, name: 'CHEVROLET' }], pagination: null },
+  };
+
+  it('reuses a catalog read instead of asking InfoAuto again', async () => {
+    const get = jest.fn().mockResolvedValue(page);
+    const service = serviceWith(get);
+
+    await service.searchBrands('auto', 'chevrolet');
+    await service.searchBrands('auto', 'chevrolet');
+    await service.searchBrands('auto', 'fiat');
+
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries once when InfoAuto answers 5xx', async () => {
+    const get = jest
+      .fn()
+      .mockRejectedValueOnce({ isAxiosError: true, response: { status: 502 } })
+      .mockResolvedValueOnce(page);
+    const service = serviceWith(get);
+
+    await expect(service.searchBrands('auto', 'x')).resolves.toEqual([
+      { id: 12, name: 'CHEVROLET' },
+    ]);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a timeout', async () => {
+    const get = jest.fn().mockRejectedValue({
+      isAxiosError: true,
+      code: 'ECONNABORTED',
+    });
+    const service = serviceWith(get);
+
+    await expect(service.searchBrands('auto', 'y')).rejects.toBeDefined();
+    expect(get).toHaveBeenCalledTimes(1);
+  });
 });

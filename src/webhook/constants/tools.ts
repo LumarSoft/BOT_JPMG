@@ -103,6 +103,38 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'find_vehicle',
+      description:
+        'Busca el vehículo en el catálogo InfoAuto en UN solo paso: resuelve la marca, la línea del modelo y devuelve las versiones que coinciden (con su CODIA), ya filtradas por año si lo pasás. Es el primer paso para cotizar: usalo apenas tengas marca y modelo. Si no encuentra el modelo, devuelve los modelos disponibles de la marca.',
+      parameters: {
+        type: 'object',
+        properties: {
+          vehicleType: { type: 'string', enum: ['auto', 'moto'] },
+          brand: {
+            type: 'string',
+            description: 'Marca tal como la dijo la persona, ej: "chevrolet"',
+          },
+          model: {
+            type: 'string',
+            description: 'Modelo o línea, ej: "corsa", "cronos", "wave"',
+          },
+          year: {
+            type: 'integer',
+            description: 'Año del vehículo, si ya lo sabés (filtra versiones)',
+          },
+          version: {
+            type: 'string',
+            description:
+              'Datos de la versión si los dio, ej: "1.4 gl 5p" (opcional)',
+          },
+        },
+        required: ['vehicleType', 'brand', 'model'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_vehicle_brands',
       description:
         'Busca marcas de vehículos en el catálogo InfoAuto por nombre. Primer paso para cotizar.',
@@ -195,6 +227,7 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
 
 /** Tool names safe to expose during the conversational quote sub-flow. */
 const COTIZADOR_TOOL_NAMES = [
+  'find_vehicle',
   'search_vehicle_brands',
   'get_vehicle_groups',
   'get_vehicle_models',

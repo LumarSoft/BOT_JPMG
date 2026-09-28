@@ -15,6 +15,8 @@ import { gncButtons, toWhatsAppMarkdown } from './flow/flow.messages';
 import { renderQuote } from './constants/coverages';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS } from './constants/tools';
+import { compactMessages } from './compact-messages';
+import { findVehicle } from './vehicle-finder';
 import {
   DEFAULT_ATTENTION_HOURS,
   renderCatalogForPrompt,
@@ -22,7 +24,10 @@ import {
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
-const MAX_TOOL_ROUNDS = 6;
+/** Tool rounds per reply. A car quote legitimately chains several lookups;
+ * when the cap is hit the model still gets one last call, without tools, to
+ * answer with what it has (instead of the generic error reply). */
+const MAX_TOOL_ROUNDS = 8;
 
 /** Output token caps per sub-flow. Cotización needs room to list coverages;
  * FAQ replies are short by design. Lower caps = lower cost and tighter answers. */
@@ -142,7 +147,7 @@ export class WebhookService {
     selectionId?: string,
   ): Promise<void> {
     return this.enqueue(from, phoneNumberId, messageId, () =>
-      this.processMessage(from, text, phoneNumberId, selectionId),
+      this.processMessage(from, text, phoneNumberId, selectionId, messageId),
     );
   }
 
@@ -212,6 +217,7 @@ export class WebhookService {
     text: string,
     phoneNumberId: string,
     selectionId?: string,
+    messageId?: string,
   ) {
     this.logger.log(
       `[1/5] Mensaje entrante de ${from}: ${JSON.stringify(text)}`,
@@ -280,6 +286,10 @@ export class WebhookService {
         return;
       }
 
+      // The bot will answer this turn: show "escribiendo…" right away so the
+      // wait for the reply (a model call can take seconds) doesn't feel dead.
+      if (messageId) this.meta.showTyping(messageId, phoneNumberId);
+
       await this.api.saveMessage(conversation.conversationId, 'user', text);
     } catch (error) {
       this.logger.error(
@@ -321,7 +331,7 @@ export class WebhookService {
         this.logger.error(`No se pudo guardar el flowState: ${error.message}`),
       );
 
-    for (const message of result.messages) {
+    for (const message of compactMessages(result.messages)) {
       await this.dispatch(to, message, phoneNumberId);
       await this.api
         .saveMessage(
@@ -569,7 +579,7 @@ export class WebhookService {
             `No se pudo guardar el flowState: ${error.message}`,
           ),
         );
-      for (const message of result.messages) {
+      for (const message of compactMessages(result.messages)) {
         await this.dispatch(to, message, phoneNumberId);
         await this.api
           .saveMessage(
@@ -653,8 +663,14 @@ export class WebhookService {
 
     const messages: ChatMessageParam[] = [
       { role: 'system', content: system },
+      // Anything that isn't the user is our side of the chat. A human agent's
+      // inbox reply is stored as role "agent", which OpenAI rejects (400) —
+      // that used to turn every later model reply into the error message.
       ...conversation.messages.map(
-        (m): ChatMessageParam => ({ role: m.role, content: m.content }),
+        (m): ChatMessageParam => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: m.content,
+        }),
       ),
       { role: 'user', content: text },
     ];
@@ -701,25 +717,42 @@ export class WebhookService {
           `[4/5] Ronda ${round + 1}: ${toolCalls.length} tool call(s): ${toolCalls.map((tc) => tc.function.name).join(', ')}`,
         );
         messages.push(message);
-        for (const toolCall of toolCalls) {
-          const result = await this.executeTool(
-            toolCall.function.name,
-            toolCall.function.arguments,
-            conversation.conversationId,
-          );
+        // Independent lookups run in parallel; results keep the call order.
+        const results = await Promise.all(
+          toolCalls.map((toolCall) =>
+            this.executeTool(
+              toolCall.function.name,
+              toolCall.function.arguments,
+              conversation.conversationId,
+            ),
+          ),
+        );
+        toolCalls.forEach((toolCall, i) => {
           this.logger.log(
-            `   🔧 ${toolCall.function.name}(${toolCall.function.arguments.slice(0, 100)}) → ${result.slice(0, 200)}`,
+            `   🔧 ${toolCall.function.name}(${toolCall.function.arguments.slice(0, 100)}) → ${results[i].slice(0, 200)}`,
           );
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: result,
+            content: results[i],
           });
-        }
+        });
       }
+
       this.logger.warn(
-        `[4/5] Se alcanzó el límite de ${MAX_TOOL_ROUNDS} rondas — usando fallback`,
+        `[4/5] Se alcanzó el límite de ${MAX_TOOL_ROUNDS} rondas — pido respuesta final sin tools`,
       );
+      const final = await this.openai.chat.completions.create({
+        model: this.model,
+        reasoning_effort: 'none',
+        max_completion_tokens: MAX_TOKENS[handoff],
+        messages,
+        ...(tools ? { tools, tool_choice: 'none' as const } : {}),
+      });
+      promptTokens += final.usage?.prompt_tokens ?? 0;
+      completionTokens += final.usage?.completion_tokens ?? 0;
+      const content = final.choices[0]?.message?.content;
+      if (content) return content;
     } catch (error) {
       this.logger.error(
         `Error generando respuesta: ${(error as Error).message}`,
@@ -799,6 +832,19 @@ export class WebhookService {
 
     try {
       switch (name) {
+        case 'find_vehicle':
+          return JSON.stringify(
+            await findVehicle(this.api, {
+              vehicleType,
+              brand: typeof args.brand === 'string' ? args.brand : '',
+              model: typeof args.model === 'string' ? args.model : '',
+              year: Number.isInteger(Number(args.year))
+                ? Number(args.year)
+                : undefined,
+              version:
+                typeof args.version === 'string' ? args.version : undefined,
+            }),
+          );
         case 'identify_client':
           return JSON.stringify(
             await this.api.identifyClient(conversationId, {
@@ -877,12 +923,17 @@ export class WebhookService {
   private toolError(name: string, error: unknown): string {
     if (axios.isAxiosError(error)) {
       const status = error.response?.status;
-      const data = error.response?.data as
-        | { message?: string | string[] }
-        | undefined;
-      const message = Array.isArray(data?.message)
-        ? data.message.join('; ')
-        : (data?.message ?? error.message);
+      const data = error.response?.data as { message?: unknown } | undefined;
+      const raw = data?.message ?? error.message;
+      // Validation errors come back as arrays of objects — stringify them so
+      // the log shows the reason instead of "[object Object]".
+      const message = Array.isArray(raw)
+        ? raw
+            .map((m) => (typeof m === 'string' ? m : JSON.stringify(m)))
+            .join('; ')
+        : typeof raw === 'string'
+          ? raw
+          : JSON.stringify(raw);
       this.logger.warn(`Tool ${name} falló (${status ?? '?'}): ${message}`);
       return JSON.stringify({ error: message, status });
     }

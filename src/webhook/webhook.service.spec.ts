@@ -23,6 +23,7 @@ describe('WebhookService', () => {
     sendList: jest.Mock;
     normalizePhone: jest.Mock;
     downloadMedia: jest.Mock;
+    showTyping: jest.Mock;
   };
   let flow: { handle: jest.Mock; reset: jest.Mock };
 
@@ -43,6 +44,7 @@ describe('WebhookService', () => {
       sendList: jest.fn().mockResolvedValue(undefined),
       normalizePhone: jest.fn((p: string) => p),
       downloadMedia: jest.fn(),
+      showTyping: jest.fn(),
     };
     // By default the flow replies with a single text message and no LLM handoff.
     flow = {
@@ -128,6 +130,163 @@ describe('WebhookService', () => {
     expect(request).not.toHaveProperty('temperature');
     expect(request).not.toHaveProperty('top_p');
     expect(request).not.toHaveProperty('max_tokens');
+  });
+
+  describe('LLM turn', () => {
+    beforeEach(() => {
+      api.getContext.mockResolvedValue({
+        systemPrompt: 'x',
+        llmEnabled: true,
+      });
+      api.saveMessage.mockResolvedValue({});
+      flow.handle.mockResolvedValue({
+        messages: [],
+        state: null,
+        handoff: 'faq',
+      });
+    });
+
+    it('sends a human agent\'s inbox reply to OpenAI as "assistant"', async () => {
+      const create = stubOpenAi();
+      api.getConversation.mockResolvedValue({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [
+          { role: 'user', content: 'hola' },
+          { role: 'agent', content: 'Hola, soy Juan de la oficina' },
+        ],
+      });
+
+      await service.handleMessage('5491155556666', 'gracias', 'P1', 'ag-1');
+
+      const [request] = create.mock.calls[0] as [
+        { messages: { role: string }[] },
+      ];
+      const sent = request.messages;
+      expect(sent.map((m) => m.role)).toEqual([
+        'system',
+        'user',
+        'assistant',
+        'user',
+      ]);
+      expect(meta.sendText).toHaveBeenCalledWith(
+        '5491155556666',
+        'reply',
+        'P1',
+      );
+    });
+
+    it('asks for a final answer without tools when the rounds run out', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [],
+      });
+      flow.handle.mockResolvedValue({
+        messages: [],
+        state: { step: 'LLM_COTIZACION', data: { vehiculo: 'auto' } },
+        handoff: 'cotizacion',
+      });
+      const toolTurn = {
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 't1',
+                  type: 'function',
+                  function: { name: 'unknown_tool', arguments: '{}' },
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const create = jest.fn().mockImplementation((req: object) =>
+        Promise.resolve(
+          'tool_choice' in req
+            ? {
+                choices: [{ message: { content: 'Estas son las versiones' } }],
+              }
+            : toolTurn,
+        ),
+      );
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+
+      await service.handleMessage('5491155556666', 'un 308', 'P1', 'cap-1');
+
+      const [last] = create.mock.calls[create.mock.calls.length - 1] as [
+        { tool_choice?: string },
+      ];
+      expect(last.tool_choice).toBe('none');
+      expect(meta.sendText).toHaveBeenCalledWith(
+        '5491155556666',
+        'Estas son las versiones',
+        'P1',
+      );
+    });
+  });
+
+  describe('outgoing messages', () => {
+    beforeEach(() => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [],
+      });
+      api.saveMessage.mockResolvedValue({});
+    });
+
+    it('sends a greeting and its menu as one WhatsApp message', async () => {
+      flow.handle.mockResolvedValue({
+        messages: [
+          { kind: 'text', body: '¡Hola de nuevo, Ana!' },
+          {
+            kind: 'list',
+            body: '¿En qué te ayudo?',
+            button: 'Ver opciones',
+            rows: [{ id: 'a', title: 'A' }],
+          },
+        ],
+        state: null,
+      });
+
+      await service.handleMessage('5491155556666', 'hola', 'P1', 'cm-1');
+
+      expect(meta.sendText).not.toHaveBeenCalled();
+      expect(meta.sendList).toHaveBeenCalledTimes(1);
+      expect((meta.sendList.mock.calls as string[][])[0][1]).toBe(
+        '¡Hola de nuevo, Ana!\n\n¿En qué te ayudo?',
+      );
+    });
+
+    it('shows "escribiendo…" for the message it is about to answer', async () => {
+      await service.handleMessage('5491155556666', 'hola', 'P1', 'wamid-9');
+
+      expect(meta.showTyping).toHaveBeenCalledWith('wamid-9', 'P1');
+    });
+
+    it('does not show "escribiendo…" when a human owns the chat', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: true,
+      });
+
+      await service.handleMessage('5491155556666', 'hola', 'P1', 'wamid-10');
+
+      expect(meta.showTyping).not.toHaveBeenCalled();
+    });
   });
 
   describe('/reset secret command', () => {

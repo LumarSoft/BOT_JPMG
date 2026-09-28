@@ -93,6 +93,60 @@ describe('FlowService', () => {
     await send({ selectionId: OPT.cotAuto, text: '' }); // LLM_COTIZACION
   }
 
+  describe('first message that already asks for a quote', () => {
+    it('skips "¿ya sos cliente?" and introduces itself with the category menu', async () => {
+      const res = await send({ text: 'Hola, quiero cotizar un seguro' });
+
+      expect(stored?.step).toBe('COTIZAR_TIPO');
+      expect((res.messages[0] as { body: string }).body).toContain(
+        'Soy *Nico*',
+      );
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
+    });
+
+    it('hands straight to the quote model when the vehicle is in the message', async () => {
+      const res = await send({ text: 'quiero cotizar mi auto, corsa 2010' });
+
+      expect(stored?.step).toBe('LLM_COTIZACION');
+      expect(res.handoff).toBe('cotizacion');
+    });
+
+    it('knows a VW is a car without the word "auto"', async () => {
+      const res = await send({
+        text: 'Hola! quiero cotizar un seguro para mi vw gol trend 2015',
+      });
+
+      expect(res.handoff).toBe('cotizacion');
+      expect(stored?.data.vehiculo).toBe('auto');
+    });
+
+    it('lets the model sort out auto/moto for a brand that makes both', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      const res = await send({
+        text: 'cuanto sale asegurar una honda wave 110 2020? cp 2000',
+      });
+
+      expect(res.handoff).toBe('cotizacion');
+      expect(stored?.step).toBe('LLM_COTIZACION');
+      expect(stored?.data.vehiculo).toBeUndefined();
+    });
+
+    it('quotes a vehicle typed on the category list instead of bouncing to FAQ', async () => {
+      await send({ text: 'quiero cotizar' }); // category list
+      const res = await send({ text: 'el gol trend 1.6 5 puertas 2015' });
+
+      expect(res.handoff).toBe('cotizacion');
+      expect(stored?.step).toBe('LLM_COTIZACION');
+    });
+
+    it('still greets with "¿ya sos cliente?" on a plain hello', async () => {
+      const res = await send({ text: 'hola' });
+
+      expect(stored?.step).toBe('ROOT');
+      expect(JSON.stringify(res.messages)).toContain('¿ya sos cliente');
+    });
+  });
+
   describe('durable state', () => {
     it('persists the step across turns (state survives a restart)', async () => {
       await send({ text: 'hola' });

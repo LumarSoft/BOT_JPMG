@@ -179,6 +179,9 @@ export interface InfoAutoBrand {
 export interface InfoAutoGroup {
   id: number;
   name: string;
+  /** Model years the line was sold in (null when InfoAuto has no prices). */
+  prices_from?: number | null;
+  prices_to?: number | null;
 }
 
 export interface InfoAutoModel {

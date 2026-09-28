@@ -141,6 +141,43 @@ export class MetaService {
     });
   }
 
+  /**
+   * Marks the inbound message as read and shows "escribiendo…" until our reply
+   * lands (Meta hides it on send, or after 25 s). Not a message, so not billed.
+   * Opt-in with WHATSAPP_TYPING_INDICATOR=true: on a Coexistence number it also
+   * marks the chat as read in the WhatsApp Business app, which staff may rely
+   * on to spot new messages. Fire-and-forget — never delays or breaks a reply.
+   */
+  showTyping(messageId: string, phoneNumberId: string): void {
+    if (this.config.get<string>('WHATSAPP_TYPING_INDICATOR') !== 'true') return;
+    void this.resolveToken(phoneNumberId)
+      .then((token) =>
+        axios.post(
+          `https://graph.facebook.com/v25.0/${phoneNumberId}/messages`,
+          {
+            messaging_product: 'whatsapp',
+            status: 'read',
+            message_id: messageId,
+            typing_indicator: { type: 'text' },
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: 5000,
+          },
+        ),
+      )
+      .catch((error: unknown) =>
+        this.logger.warn(
+          `No se pudo mostrar "escribiendo": ${JSON.stringify(
+            axios.isAxiosError(error) ? error.response?.data : String(error),
+          )}`,
+        ),
+      );
+  }
+
   /** Posts a message payload to the Meta Cloud API, swallowing errors (logged). */
   private async send(
     phoneNumberId: string,

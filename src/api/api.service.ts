@@ -32,6 +32,11 @@ const CATALOG_TTL_MS = 60 * 60 * 1000;
  * with the clock — but enough to coalesce a burst of messages. */
 const HOURS_TTL_MS = 60 * 1000;
 
+/** InfoAuto catalog cache: it changes a few times a year; a price update
+ * reaches the bot within this window. */
+const INFOAUTO_TTL_MS = 6 * 60 * 60 * 1000;
+const INFOAUTO_CACHE_MAX = 500;
+
 /**
  * Single point of access to john-api. The bot never touches the database:
  * /bot/* endpoints are authenticated with the shared BOT_SECRET header, and
@@ -52,6 +57,16 @@ export class ApiService {
 
   /** In-memory cache of the live hours status (short TTL — see HOURS_TTL_MS). */
   private hoursCache?: { status: HoursStatus; fetchedAt: number };
+
+  /**
+   * InfoAuto catalog pages (brands, lines, versions) by path + query. The
+   * catalog changes a few times a year, while a quote re-reads the same
+   * vehicle on every turn — each read is 0.5–2 s the user waits for.
+   */
+  private readonly infoAutoCache = new Map<
+    string,
+    { items: unknown[]; fetchedAt: number }
+  >();
 
   constructor(config: ConfigService) {
     this.http = axios.create({
@@ -360,19 +375,65 @@ export class ApiService {
     path: string,
     query?: string,
   ): Promise<T[]> {
+    const key = `${path}?${query ?? ''}`;
+    const cached = this.infoAutoCache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < INFOAUTO_TTL_MS) {
+      return cached.items as T[];
+    }
+    const items = await this.fetchInfoAutoPages<T>(path, query);
+    if (this.infoAutoCache.size >= INFOAUTO_CACHE_MAX) {
+      // Oldest first (Map keeps insertion order).
+      const oldest = this.infoAutoCache.keys().next().value;
+      if (oldest !== undefined) this.infoAutoCache.delete(oldest);
+    }
+    this.infoAutoCache.set(key, { items, fetchedAt: Date.now() });
+    return items;
+  }
+
+  private async fetchInfoAutoPages<T>(
+    path: string,
+    query?: string,
+  ): Promise<T[]> {
     const items: T[] = [];
     let page = 1;
     while (true) {
-      const { data } = await this.http.get<{
-        data: T[];
-        pagination: { next_page: number | null } | null;
-      }>(path, {
-        params: { query_string: query || undefined, page, page_size: 100 },
-      });
+      const { data } = await this.withRetry(() =>
+        this.http.get<{
+          data: T[];
+          pagination: { next_page: number | null } | null;
+        }>(path, {
+          params: { query_string: query || undefined, page, page_size: 100 },
+        }),
+      );
       items.push(...data.data);
       const nextPage = data.pagination?.next_page;
       if (!nextPage || nextPage <= page) return items;
       page = nextPage;
+    }
+  }
+
+  /**
+   * Retries a read once when InfoAuto hiccups (5xx, dropped connection) — real
+   * quotes failed on a single 502/503. Timeouts are not retried: a second 20 s
+   * wait is worse than telling the user right away.
+   */
+  private async withRetry<R>(call: () => Promise<R>): Promise<R> {
+    try {
+      return await call();
+    } catch (error) {
+      const status = axios.isAxiosError(error)
+        ? error.response?.status
+        : undefined;
+      const dropped =
+        axios.isAxiosError(error) &&
+        !error.response &&
+        error.code !== 'ECONNABORTED' &&
+        error.code !== 'ETIMEDOUT';
+      if ((status !== undefined && status >= 500) || dropped) {
+        await new Promise((r) => setTimeout(r, 300));
+        return call();
+      }
+      throw error;
     }
   }
 

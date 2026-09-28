@@ -43,4 +43,29 @@ describe('InactivityWarningService', () => {
     resolveClaim([]);
     await first;
   });
+
+  it('claims but sends nothing when INACTIVITY_WARNING_ENABLED=false', async () => {
+    const api = {
+      claimPendingWarnings: jest
+        .fn()
+        .mockResolvedValue([
+          { conversationId: 1, waId: 'w1', phoneNumberId: 'p1' },
+        ]),
+    };
+    const meta = {
+      sendText: jest.fn(),
+      normalizePhone: jest.fn((p: string) => p),
+    };
+    const config = { get: jest.fn().mockReturnValue('false') };
+
+    const service = new InactivityWarningService(
+      api as any,
+      meta as any,
+      config as any,
+    );
+    await service.sweep();
+
+    expect(api.claimPendingWarnings).toHaveBeenCalledTimes(1);
+    expect(meta.sendText).not.toHaveBeenCalled();
+  });
 });

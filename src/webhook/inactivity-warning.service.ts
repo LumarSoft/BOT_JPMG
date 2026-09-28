@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
@@ -38,10 +39,21 @@ export class InactivityWarningService {
   private readonly logger = new Logger(InactivityWarningService.name);
   private running = false;
 
+  /**
+   * INACTIVITY_WARNING_ENABLED=false stops sending the goodbye (Meta bills every
+   * message since October 2026). Sessions still close on the API side, so the
+   * next message starts fresh either way.
+   */
+  private readonly enabled: boolean;
+
   constructor(
     private readonly api: ApiService,
     private readonly meta: MetaService,
-  ) {}
+    config?: ConfigService,
+  ) {
+    this.enabled =
+      config?.get<string>('INACTIVITY_WARNING_ENABLED') !== 'false';
+  }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async sweep(): Promise<void> {
@@ -50,6 +62,7 @@ export class InactivityWarningService {
 
     try {
       const pending = await this.api.claimPendingWarnings();
+      if (!this.enabled) return;
       for (const c of pending) {
         await this.meta.sendText(
           this.meta.normalizePhone(c.waId),
