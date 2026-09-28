@@ -102,4 +102,17 @@ describe('ApiService InfoAuto pagination', () => {
     await expect(service.searchBrands('auto', 'y')).rejects.toBeDefined();
     expect(get).toHaveBeenCalledTimes(1);
   });
+
+  it('does not cache an empty answer (may be a catalog hiccup)', async () => {
+    const get = jest
+      .fn()
+      .mockResolvedValueOnce({ data: { data: [], pagination: null } })
+      .mockResolvedValueOnce(page);
+    const service = serviceWith(get);
+
+    await expect(service.searchBrands('auto', 'z')).resolves.toEqual([]);
+    await expect(service.searchBrands('auto', 'z')).resolves.toEqual([
+      { id: 12, name: 'CHEVROLET' },
+    ]);
+  });
 });

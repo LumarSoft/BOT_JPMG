@@ -381,10 +381,14 @@ export class ApiService {
       return cached.items as T[];
     }
     const items = await this.fetchInfoAutoPages<T>(path, query);
+    // An empty answer may be a catalog hiccup — don't pin it for hours.
+    if (items.length === 0) return items;
     if (this.infoAutoCache.size >= INFOAUTO_CACHE_MAX) {
-      // Oldest first (Map keeps insertion order).
-      const oldest = this.infoAutoCache.keys().next().value;
-      if (oldest !== undefined) this.infoAutoCache.delete(oldest);
+      // Drop the oldest entry (a Map iterates in insertion order).
+      for (const oldest of this.infoAutoCache.keys()) {
+        this.infoAutoCache.delete(oldest);
+        break;
+      }
     }
     this.infoAutoCache.set(key, { items, fetchedAt: Date.now() });
     return items;

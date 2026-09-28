@@ -89,6 +89,10 @@ const QUOTE_INTENT_RE =
  */
 const CAR_BRAND_RE =
   /\b(chevrolet|chevy|ford|fiat|volkswagen|vw|renault|peugeot|citroen|toyota|nissan|jeep|kia|hyundai|chery|audi|bmw|mercedes|dodge|mitsubishi|subaru|volvo|alfa romeo|baic|jac|geely|byd|haval|great wall|lifan|iveco)\b/;
+/** Brands that make both cars and motorcycles: a vehicle, type unknown. */
+const DUAL_BRAND_RE = /\b(honda|suzuki)\b/;
+/** A model year ("2010", "1998"): a strong sign the text describes a vehicle. */
+const MODEL_YEAR_RE = /\b(19[5-9]\d|20[0-4]\d)\b/;
 const MOTO_BRAND_RE =
   /\b(motomel|gilera|zanella|corven|keller|mondial|guerrero|bajaj|kawasaki|ktm|benelli|harley|royal enfield|siam|appia|okinoi|kymco|sym|voge|cfmoto|rouser|yamaha)\b/;
 const LAST_GREETING_TEXT = 'lastGreetingText';
@@ -565,7 +569,10 @@ export class FlowService {
     // ── 2. Direct intent routing (before asking client/non-client) ──
     // Cotizar doesn't need identification → go straight to the quote flow
     // (jumping to the named category when the message already specifies one).
-    if (QUOTE_INTENT_RE.test(fold(input.text))) {
+    if (
+      QUOTE_INTENT_RE.test(fold(input.text)) ||
+      /\bcotiz|\bpresupuest|\bcu[aá]nto.*seguro|\bprecio.*seguro/.test(t)
+    ) {
       return this.enterCotizar(input, ctx, key);
     }
 
@@ -1290,10 +1297,10 @@ export class FlowService {
         key,
       );
     }
-    // No category word but a vehicle in the text ("cotizar mi honda wave 2020"):
+    // No category word but clearly a vehicle ("cotizar mi honda wave 2020"):
     // the quote model works out auto vs moto — showing the category list would
     // make them repeat themselves.
-    if (!input.selectionId && this.carriesVehicleData(input.text)) {
+    if (!input.selectionId && this.namesVehicle(input.text)) {
       return this.startCotizacion(key, undefined, input);
     }
     return this.showCotizarMenu(key);
@@ -1314,7 +1321,7 @@ export class FlowService {
     const opt = input.selectionId ?? this.matchCotizarCategory(input.text);
     if (!opt || !COTIZAR_LABEL[opt]) {
       // Typed a vehicle instead of picking ("el gol trend 1.6 2015"): quote it.
-      if (!input.selectionId && this.carriesVehicleData(input.text)) {
+      if (!input.selectionId && this.namesVehicle(input.text)) {
         return this.startCotizacion(key, undefined, input);
       }
       // Category not recognised — LLM helps clarify; state stays COTIZAR_TIPO.
@@ -1716,6 +1723,17 @@ export class FlowService {
     return t.split(/[^a-z]+/).some((w) => w.length > 1 && !QUOTE_FILLER.has(w));
   }
 
+  /**
+   * Whether text with no category word still clearly describes a vehicle: a
+   * model year or a brand that makes both cars and motos. Anything vaguer
+   * ("un seguro de caución", "para mi empresa") keeps the category list — the
+   * quote model only handles cars and motos.
+   */
+  private namesVehicle(text: string): boolean {
+    const t = fold(text);
+    return MODEL_YEAR_RE.test(t) || DUAL_BRAND_RE.test(t);
+  }
+
   /** Keyword routing so typed text (not just taps) reaches a quote category. */
   private matchCotizarCategory(text: string): string | null {
     const t = text.toLowerCase();
@@ -1766,7 +1784,7 @@ export class FlowService {
   ): FlowResult | Promise<FlowResult> | null {
     if (step !== 'LLM_COTIZACION' && step !== 'LLM_FAQ') return null;
 
-    const intent = this.matchGlobalIntent(input.text);
+    const intent = this.matchGlobalIntent(input.text, step);
     if (!intent) return null;
     // "cotizar" is the cotización flow itself — not a topic change when we're
     // already in it (e.g. "quiero cotizar otro auto" stays with the model).
@@ -1800,6 +1818,7 @@ export class FlowService {
    */
   private matchGlobalIntent(
     text: string,
+    step: FlowStep,
   ):
     | 'grua'
     | 'siniestro'
@@ -1809,13 +1828,43 @@ export class FlowService {
     | 'cotizar'
     | null {
     const t = fold(text);
-    // A question *about* a coverage ("¿incluye grúa?", "¿qué pasa si me
-    // roban?", "¿cubre granizo?") belongs to the quote/FAQ model, not to the
-    // transactional flow that shares the keyword.
-    const asksAboutCoverage =
-      /\b(incluye|incluyen|cubre|cubren|coberturas?|viene con|trae)\b/.test(
+    if (step === 'LLM_COTIZACION') return this.matchQuoteExit(t);
+    if (/\bgrua\b|\bauxilio\b|\bremolque\b/.test(t)) return 'grua';
+    if (
+      /\bsiniestro\b|\bdenuncia\b|\bdenunciar\b|\bme chocaron\b|\bme robaron\b/.test(
         t,
-      ) ||
+      )
+    )
+      return 'siniestro';
+    if (/\bpagar\b|\bpagos?\b|\bcuota\b|\bdeuda\b|\bvencimiento\b/.test(t))
+      return 'pago';
+    if (
+      /\btarjeta\b|\bcertificad|\bcupon\b|\bdocumentacion\b|\bdocumentos?\b/.test(
+        t,
+      )
+    )
+      return 'documentos';
+    if (
+      /\basesor\b|\brepresentante\b|\bhablar con (alguien|una persona|un asesor)\b/.test(
+        t,
+      )
+    )
+      return 'asesor';
+    if (/\bcotizar\b|\bcotizacion\b|\bpresupuest/.test(t)) return 'cotizar';
+    return null;
+  }
+
+  /**
+   * Stricter version of `matchGlobalIntent` for the quote conversation, where
+   * cuotas, pagos, tarjeta, grúa or robo are ordinary quote questions ("¿cuánto
+   * sale la cuota?", "¿incluye grúa?"). Only an explicit request about the
+   * user's own account, documents or a claim leaves the quote. `t` is folded.
+   */
+  private matchQuoteExit(
+    t: string,
+  ): ReturnType<FlowService['matchGlobalIntent']> {
+    const asksAboutCoverage =
+      /\b(incluye|incluyen|cubre|cubren|viene con|trae)\b/.test(t) ||
       /\bque (pasa|hago|sucede) si\b/.test(t) ||
       /\bsi (tengo|tuviera|tuviese|hay|me (roban|chocan|pasa))\b/.test(t) ||
       /\ben caso de\b/.test(t);
@@ -1827,8 +1876,6 @@ export class FlowService {
         )
       )
         return 'siniestro';
-      // Paying is ordinary quote talk ("¿cuánto sale la cuota?", "¿puedo
-      // pagar con tarjeta?"): only the user's own account/debt counts.
       if (
         /\b(mis?) (cuotas?|pagos?|deudas?|vencimientos?)\b|\bpagar (mi|mis)\b|\bestado de (cuenta|pagos?)\b|\bcuanto debo\b|\bdeuda\b|\bcupon de pago\b/.test(
           t,
@@ -1836,7 +1883,7 @@ export class FlowService {
       )
         return 'pago';
       if (
-        /\btarjeta verde\b|\btarjeta de circulacion\b|\bcertificado de cobertura\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?)\b|\b(descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis) (poliza|certificado|tarjeta|cupon|documentacion)\b/.test(
+        /\btarjeta (verde|de circulacion|del seguro)\b|\bcertificado de cobertura\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?)\b|\b(necesito|quiero|descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis) (poliza|certificado|tarjeta|cupon|documentacion)\b/.test(
           t,
         )
       )
@@ -1844,7 +1891,7 @@ export class FlowService {
     }
     if (
       /^(un |el |al )?asesor\b/.test(t.trim()) ||
-      /\b(hablar|comunicar\w*|contactar\w*|quiero|queria|necesito|pasame|pasas|derivame)\b.*\b(asesor|representante|humano|persona real)\b/.test(
+      /\b(hablar|comunic\w*|contact\w*|llam\w*|quiero|queria|necesito|pasame|pasas|derivame)\b.*\b(asesor|representante|humano|persona real)\b/.test(
         t,
       )
     )

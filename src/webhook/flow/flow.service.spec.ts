@@ -652,6 +652,47 @@ describe('FlowService', () => {
       expect(bodies(res)).not.toContain(REFUSAL);
     });
 
+    it('leaves the quote for "necesito el certificado de cobertura"', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      await send({ selectionId: OPT.cotizacion, text: '' });
+      await send({ selectionId: OPT.cotAuto, text: '' });
+      const res = await send({ text: 'necesito el certificado de cobertura' });
+
+      expect(res.handoff).not.toBe('cotizacion');
+      expect(stored?.step).not.toBe('LLM_COTIZACION');
+    });
+
+    it.each(['quiero pagar la cuota', 'necesito la tarjeta del seguro'])(
+      'still leaves "otras consultas" for "%s" (unchanged behaviour)',
+      async (text) => {
+        await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+        await send({ selectionId: OPT.leadConsultas, text: 'Otras consultas' });
+        expect(stored?.step).toBe('LLM_FAQ');
+
+        await send({ text });
+
+        // Same as before today: the keyword breaks out of the FAQ model.
+        expect(stored?.step).not.toBe('LLM_FAQ');
+      },
+    );
+
+    it('keeps the category list for a quote that is not a vehicle', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      const res = await send({ text: 'quiero cotizar un seguro de caución' });
+
+      expect(stored?.step).toBe('COTIZAR_TIPO');
+      expect(res.handoff).toBeUndefined();
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
+    });
+
+    it('still reads "¿cuánto es el seguro de un auto?" as a quote from ROOT', async () => {
+      await send({ text: 'hola' });
+      await send({ text: '¿cuánto es el seguro de un auto?' });
+
+      expect(stored?.step).toBe('LLM_COTIZACION');
+    });
+
     it('still leaves the quote when the user clearly asks for another flow', async () => {
       await send({ text: 'hola' });
       await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
