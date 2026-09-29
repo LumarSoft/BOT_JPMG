@@ -216,6 +216,68 @@ describe('FlowService', () => {
       expect(done.state?.step).toBe('SINIESTRO_FOTO_TARJETA');
     });
 
+    /** Drives an identified client to the date question of a new claim. */
+    async function toDateStep() {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
+      await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx);
+      await send({ selectionId: 'pol_833', text: '' }, clientCtx);
+    }
+
+    function isoDaysAgo(days: number) {
+      const d = new Date();
+      d.setDate(d.getDate() - days);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    it.each([
+      ['Antes de ayer', 2],
+      ['anteayer a la noche', 2],
+      ['ayer', 1],
+    ])('reads "%s" as %i day(s) ago', async (text, days) => {
+      await toDateStep();
+      await send({ text }, clientCtx);
+      await send({ text: 'me rompieron el vidrio' }, clientCtx);
+      await send({ text: 'dale' }, clientCtx);
+
+      expect(api.createSiniestro).toHaveBeenCalledWith(
+        clientCtx.conversationId,
+        expect.objectContaining({ fecha: isoDaysAgo(days) }),
+      );
+    });
+
+    it.each(['Listooo', 'listo!', 'ya está', 'eso es todo'])(
+      'closes the damage photos on "%s"',
+      async (text) => {
+        await toDateStep();
+        await send({ text: 'hoy' }, clientCtx);
+        await send({ text: 'me rompieron el vidrio' }, clientCtx);
+        await send({ text: 'dale' }, clientCtx); // SINIESTRO_FOTO_TARJETA
+        await send({ text: 'no la tengo' }, clientCtx); // SINIESTRO_FOTO_CARNET
+        await send({ text: 'no la tengo' }, clientCtx); // SINIESTRO_TERCERO
+        await send({ selectionId: 'sin_tercero_no', text: 'No' }, clientCtx);
+        expect(stored?.step).toBe('SINIESTRO_FOTO_DANIO');
+
+        await send({ text }, clientCtx);
+
+        expect(stored?.step).toBe('CLIENT_MENU');
+      },
+    );
+
+    it('does not file "Hi" as the reason for an advisor request', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { selectionId: OPT.asesor, text: 'Hablar con un asesor' },
+        clientCtx,
+      );
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+
+      await send({ text: 'Hi' }, clientCtx);
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
     it('re-asks the date instead of leaking to the FAQ model when it is unreadable', async () => {
       await send({ text: 'hola' }, clientCtx);
       await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);

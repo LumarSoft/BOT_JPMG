@@ -59,7 +59,7 @@ import { fold } from '../text';
  * still routes to its intent.
  */
 const GREETING_RE =
-  /^(?:hola+s?|holis|buenas|buen(?:os|as)?\s*(?:d[ií]as?|tardes?|noches?)?|buen\s*d[ií]a|hey+|qu[eé]\s+tal|saludos)[\s!.,¡?]*$/i;
+  /^(?:hola+s?|holi+s?|ola+s?|hi+|hello|holis|buenas|buen(?:os|as)?\s*(?:d[ií]as?|tardes?|noches?)?|buen\s*d[ií]a|hey+|qu[eé]\s+tal|saludos)[\s!.,¡?]*$/i;
 
 /** A quick double-send of the same greeting is usually a user tap/retry, not a
  * request for another copy of the menu. Keep this narrow: only standalone
@@ -170,14 +170,16 @@ function parseFecha(text: string): { iso: string; display: string } | null {
   // Accept the keywords anywhere in a longer sentence ("me choqué hoy a la
   // mañana"), not only as the entire message — users rarely send just "hoy".
   if (/\bhoy\b/.test(t)) return fromDate(new Date());
+  // Before "ayer": "antes de ayer" contains it, and a real claim was filed a
+  // day late because the shorter word matched first.
+  if (/\b(anteayer|antes de ayer|antier)\b/.test(t)) {
+    const d = new Date();
+    d.setDate(d.getDate() - 2);
+    return fromDate(d);
+  }
   if (/\bayer\b/.test(t)) {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return fromDate(d);
-  }
-  if (/\b(anteayer|antes de ayer)\b/.test(t)) {
-    const d = new Date();
-    d.setDate(d.getDate() - 2);
     return fromDate(d);
   }
 
@@ -973,10 +975,12 @@ export class FlowService {
 
   // ─── Siniestro: captura guiada de fotos ───────────────────
 
-  /** True when the user is skipping a photo step ("no", "no la tengo", "saltar"). */
+  /** True when the user is skipping a photo step or done sending ("no la
+   * tengo", "saltar", "listo", and the way people actually type it: "listooo",
+   * "ya está", "eso es todo"). */
   private isPhotoSkip(text: string): boolean {
-    return /^(no|no la tengo|no las? tengo|no tengo|salt(ar|o|á)|omitir|siguiente|despu[eé]s|listo)\b/i.test(
-      text.trim(),
+    return /^(no+|nop|no la tengo|no las? tengo|no tengo|salt(ar|o|a)|omitir|siguiente|despues|list[oa]+|ya (esta|fue|termine)|termine|eso es todo|nada mas|fin)\b/.test(
+      fold(text).trim(),
     );
   }
 
