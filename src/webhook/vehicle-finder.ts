@@ -64,6 +64,12 @@ function tokens(text: string): string[] {
     .map((t) => VERSION_SYNONYMS[t] ?? t);
 }
 
+/**
+ * Whether a version can be the user's `year`. InfoAuto lags on the newest
+ * model year: a Honda NAVI still on sale is listed "2024-2025" while it is
+ * sold — and quoted by Triunfo and the web — as a 2026. So a version sold up to
+ * last year also counts for the current and next year.
+ */
 function inYears(
   item: { prices_from?: number | null; prices_to?: number | null },
   year: number,
@@ -71,7 +77,12 @@ function inYears(
   const from = item.prices_from;
   const to = item.prices_to;
   if (typeof from !== 'number' || typeof to !== 'number') return true;
-  return year >= from && year <= to;
+  if (year < from) return false;
+  return year <= to || stillOnSale(to);
+}
+
+function stillOnSale(to: number): boolean {
+  return to >= new Date().getFullYear() - 1;
 }
 
 /** Keeps the items matching `keep`, unless that would leave nothing. */
@@ -179,7 +190,7 @@ export async function findVehicle(
       const forYear = models.filter((m) => inYears(m, year));
       if (forYear.length > 0) models = forYear;
       else
-        note = `Ninguna versión figura para el año ${year}; revisá el año con la persona.`;
+        note = `El catálogo no lista estas versiones para ${year}. Igual cotizá con el año ${year} que dijo la persona (el cotizador lo acepta); solo preguntá si el año parece un error de tipeo.`;
     }
     return {
       brand: { id: brand.id, name: brand.name },
@@ -189,7 +200,9 @@ export async function findVehicle(
         description: m.description.replace(/\s+/g, ' ').trim(),
         years:
           typeof m.prices_from === 'number' && typeof m.prices_to === 'number'
-            ? `${m.prices_from}-${m.prices_to}`
+            ? stillOnSale(m.prices_to)
+              ? `${m.prices_from} en adelante`
+              : `${m.prices_from}-${m.prices_to}`
             : undefined,
       })),
       ...(models.length > MAX_CANDIDATES

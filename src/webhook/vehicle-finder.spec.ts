@@ -221,4 +221,72 @@ describe('findVehicle', () => {
       460717,
     ]);
   });
+
+  describe('the newest model year', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-09-28T12:00:00Z') });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('keeps a version still on sale for this year (InfoAuto lags a year)', async () => {
+      const a = {
+        searchBrands: jest.fn().mockResolvedValue([{ id: 881, name: 'HONDA' }]),
+        getGroups: jest.fn(),
+        getModels: jest.fn().mockResolvedValue([
+          {
+            codia: 8810215,
+            description: 'NAVI 110',
+            prices_from: 2024,
+            prices_to: 2025,
+          },
+        ]),
+      };
+      const res = await findVehicle(a, {
+        vehicleType: 'moto',
+        brand: 'honda',
+        model: 'navi',
+        year: 2026,
+      });
+
+      expect(res.note).toBeUndefined();
+      expect(res.versions).toEqual([
+        { codia: 8810215, description: 'NAVI 110', years: '2024 en adelante' },
+      ]);
+    });
+
+    it('still drops a version that stopped selling years ago', async () => {
+      const a = {
+        searchBrands: jest
+          .fn()
+          .mockResolvedValue([{ id: 12, name: 'CHEVROLET' }]),
+        getGroups: jest.fn().mockResolvedValue([{ id: 11, name: 'CORSA' }]),
+        getModels: jest.fn().mockResolvedValue([
+          {
+            codia: 1,
+            description: 'CORSA OLD',
+            prices_from: 2000,
+            prices_to: 2010,
+          },
+          {
+            codia: 2,
+            description: 'CORSA NEW',
+            prices_from: 2020,
+            prices_to: 2025,
+          },
+        ]),
+      };
+      const res = await findVehicle(a, {
+        vehicleType: 'auto',
+        brand: 'chevrolet',
+        model: 'corsa',
+        year: 2026,
+      });
+
+      expect((res.versions as { codia: number }[]).map((v) => v.codia)).toEqual(
+        [2],
+      );
+    });
+  });
 });
