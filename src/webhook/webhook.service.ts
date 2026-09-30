@@ -20,12 +20,28 @@ import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS, REQUEST_COVERAGE_TOOL } from './constants/tools';
 import { compactMessages } from './compact-messages';
 import { findVehicle } from './vehicle-finder';
+import { fold } from './text';
 import {
   DEFAULT_ATTENTION_HOURS,
   renderCatalogForPrompt,
 } from './constants/business';
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+
+interface QuoteVehicleCandidate {
+  codia: number;
+  description: string;
+}
+
+interface QuoteVehicleMemory {
+  vehicleType: 'auto' | 'moto';
+  brandId?: number;
+  brandName?: string;
+  candidates: QuoteVehicleCandidate[];
+  selected?: QuoteVehicleCandidate;
+}
+
+const QUOTE_VEHICLE_MEMORY = 'quoteVehicle';
 
 /** Tool rounds per reply. A car quote legitimately chains several lookups;
  * when the cap is hit the model still gets one last call, without tools, to
@@ -388,7 +404,11 @@ export class WebhookService {
         (stateVehicleType === 'auto' || stateVehicleType === 'moto')
           ? stateVehicleType
           : undefined;
-      const { text: raw, coverageLeadId } = await this.generateReply(
+      const {
+        text: raw,
+        coverageLeadId,
+        quoteVehicleMemory,
+      } = await this.generateReply(
         context,
         conversation,
         text,
@@ -396,7 +416,31 @@ export class WebhookService {
         phoneNumberId,
         from,
         vehicleType,
+        this.readQuoteVehicleMemory(result.state),
       );
+      let effectiveState = result.state;
+      if (effectiveState?.step === 'LLM_COTIZACION' && quoteVehicleMemory) {
+        effectiveState = {
+          ...effectiveState,
+          data: {
+            ...effectiveState.data,
+            [QUOTE_VEHICLE_MEMORY]: quoteVehicleMemory,
+          },
+        };
+        // Tool results are not transcript messages. Persist the verified
+        // vehicle candidates/selection explicitly so the following GNC turn
+        // still has the exact CODIA, including after a bot restart.
+        await this.api
+          .saveFlowState(
+            conversation.conversationId,
+            JSON.stringify(effectiveState),
+          )
+          .catch((error: Error) =>
+            this.logger.error(
+              `No se pudo guardar el vehículo de la cotización: ${error.message}`,
+            ),
+          );
+      }
       // The model writes standard markdown; WhatsApp speaks its own dialect.
       const reply = toWhatsAppMarkdown(raw);
       // The quote sub-flow's GNC question goes out as buttons instead of text.
@@ -411,7 +455,7 @@ export class WebhookService {
         await this.api
           .saveFlowState(
             conversation.conversationId,
-            JSON.stringify(takeOutDocsState(result.state, coverageLeadId)),
+            JSON.stringify(takeOutDocsState(effectiveState, coverageLeadId)),
           )
           .catch((error: Error) =>
             this.logger.error(
@@ -663,6 +707,168 @@ export class WebhookService {
     return 'No pude adjuntar la imagen en este momento. Probá de nuevo en un rato o comunicate con la oficina.';
   }
 
+  private readQuoteVehicleMemory(
+    state: FlowState | null,
+  ): QuoteVehicleMemory | undefined {
+    const raw = state?.data[QUOTE_VEHICLE_MEMORY];
+    if (!raw || typeof raw !== 'object') return undefined;
+    const value = raw as Partial<QuoteVehicleMemory>;
+    if (value.vehicleType !== 'auto' && value.vehicleType !== 'moto') {
+      return undefined;
+    }
+    if (!Array.isArray(value.candidates)) return undefined;
+    const candidates = value.candidates
+      .filter(
+        (candidate): candidate is QuoteVehicleCandidate =>
+          !!candidate &&
+          Number.isInteger(candidate.codia) &&
+          candidate.codia > 10_000 &&
+          typeof candidate.description === 'string' &&
+          candidate.description.trim().length > 0,
+      )
+      .slice(0, 8);
+    if (candidates.length === 0) return undefined;
+
+    const selected = candidates.find(
+      (candidate) => candidate.codia === value.selected?.codia,
+    );
+    return {
+      vehicleType: value.vehicleType,
+      ...(Number.isInteger(value.brandId) && Number(value.brandId) > 0
+        ? { brandId: Number(value.brandId) }
+        : {}),
+      ...(typeof value.brandName === 'string' && value.brandName.trim()
+        ? { brandName: value.brandName.trim() }
+        : {}),
+      candidates,
+      ...(selected ? { selected } : {}),
+    };
+  }
+
+  /** Resolves a numeric/version answer against the last verified InfoAuto list. */
+  private selectRememberedVehicle(
+    memory: QuoteVehicleMemory | undefined,
+    text: string,
+    previousAssistantText?: string,
+  ): QuoteVehicleMemory | undefined {
+    if (!memory || memory.candidates.length === 0) return memory;
+    const normalized = fold(text)
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    const numbered = normalized.match(/^(?:opcion )?([1-8])$/);
+    if (numbered) {
+      const position = Number(numbered[1]);
+      const numberedLine = previousAssistantText
+        ?.split('\n')
+        .map((line) => line.match(/^\s*(\d+)[.)-]\s*(.+)$/))
+        .find((match) => Number(match?.[1]) === position)?.[2];
+      const normalizedLine = numberedLine
+        ? fold(numberedLine)
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim()
+        : '';
+      const lineMatches = normalizedLine
+        ? memory.candidates.filter((candidate) => {
+            const description = fold(candidate.description)
+              .replace(/[^a-z0-9]+/g, ' ')
+              .trim();
+            return normalizedLine.includes(description);
+          })
+        : [];
+      const selected =
+        lineMatches.length === 1
+          ? lineMatches[0]
+          : memory.candidates[position - 1];
+      if (selected) return { ...memory, selected };
+    }
+
+    const matches = memory.candidates.filter((candidate) => {
+      const description = fold(candidate.description)
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+      return description.length > 0 && normalized.includes(description);
+    });
+    if (matches.length === 1) return { ...memory, selected: matches[0] };
+    if (memory.candidates.length === 1) {
+      return { ...memory, selected: memory.candidates[0] };
+    }
+    return memory;
+  }
+
+  private renderRememberedVehicle(
+    memory: QuoteVehicleMemory | undefined,
+  ): string {
+    const selected = memory?.selected;
+    if (!selected) return '';
+    const brand = memory.brandName ? `${memory.brandName} ` : '';
+    return (
+      '\n\n## VEHÍCULO VERIFICADO POR EL SISTEMA\n' +
+      `La persona ya eligió *${brand}${selected.description}*. Su CODIA verificado es \`${selected.codia}\`. ` +
+      'Usá exactamente ese CODIA en quote_vehicle; nunca envíes 0 ni inventes otro código. No vuelvas a pedir la versión.'
+    );
+  }
+
+  /** Extracts and keeps the latest verified candidates returned by find_vehicle. */
+  private rememberVehicleSearch(
+    previous: QuoteVehicleMemory | undefined,
+    rawResult: string,
+    rawArgs: string,
+    fallbackType?: 'auto' | 'moto',
+  ): QuoteVehicleMemory | undefined {
+    try {
+      const result = JSON.parse(rawResult) as {
+        brand?: { id?: unknown; name?: unknown };
+        versions?: Array<{ codia?: unknown; description?: unknown }>;
+      };
+      const args = rawArgs
+        ? (JSON.parse(rawArgs) as Record<string, unknown>)
+        : {};
+      const vehicleType =
+        args.vehicleType === 'moto'
+          ? 'moto'
+          : args.vehicleType === 'auto'
+            ? 'auto'
+            : (fallbackType ?? previous?.vehicleType);
+      if (!vehicleType || !Array.isArray(result.versions)) return previous;
+
+      const candidates = result.versions
+        .map((version) => ({
+          codia: Number(version.codia),
+          description:
+            typeof version.description === 'string'
+              ? version.description.trim()
+              : '',
+        }))
+        .filter(
+          (candidate) =>
+            Number.isInteger(candidate.codia) &&
+            candidate.codia > 10_000 &&
+            candidate.description.length > 0,
+        )
+        .slice(0, 8);
+      if (candidates.length === 0) return previous;
+
+      const priorSelected = candidates.find(
+        (candidate) => candidate.codia === previous?.selected?.codia,
+      );
+      const selected = candidates.length === 1 ? candidates[0] : priorSelected;
+      return {
+        vehicleType,
+        ...(Number.isInteger(Number(result.brand?.id)) &&
+        Number(result.brand?.id) > 0
+          ? { brandId: Number(result.brand?.id) }
+          : {}),
+        ...(typeof result.brand?.name === 'string' && result.brand.name.trim()
+          ? { brandName: result.brand.name.trim() }
+          : {}),
+        candidates,
+        ...(selected ? { selected } : {}),
+      };
+    } catch {
+      return previous;
+    }
+  }
+
   /**
    * Runs the OpenAI tool-calling loop for an LLM sub-flow until the model
    * produces a final text reply. The prompt and tools are scoped to the
@@ -678,7 +884,12 @@ export class WebhookService {
     phoneNumberId: string,
     from: string,
     vehicleType?: 'auto' | 'moto',
-  ): Promise<{ text: string; coverageLeadId?: number }> {
+    rememberedVehicle?: QuoteVehicleMemory,
+  ): Promise<{
+    text: string;
+    coverageLeadId?: number;
+    quoteVehicleMemory?: QuoteVehicleMemory;
+  }> {
     const today = new Date().toLocaleDateString('es-AR', {
       weekday: 'long',
       day: 'numeric',
@@ -692,7 +903,14 @@ export class WebhookService {
       handoff === 'faq'
         ? renderCatalogForPrompt(await this.api.getProducts().catch(() => []))
         : undefined;
-    const system =
+    let quoteVehicleMemory = this.selectRememberedVehicle(
+      rememberedVehicle,
+      text,
+      [...conversation.messages]
+        .reverse()
+        .find((message) => message.role !== 'user')?.content,
+    );
+    const baseSystem =
       handoff === 'cotizacion'
         ? buildCotizacionPrompt({
             botName: context.botName,
@@ -710,6 +928,10 @@ export class WebhookService {
             client: conversation.client,
             catalog,
           });
+    const system =
+      handoff === 'cotizacion'
+        ? baseSystem + this.renderRememberedVehicle(quoteVehicleMemory)
+        : baseSystem;
     const tools = handoff === 'cotizacion' ? COTIZADOR_TOOLS : undefined;
 
     const messages: ChatMessageParam[] = [
@@ -760,10 +982,18 @@ export class WebhookService {
         );
 
         if (toolCalls.length === 0) {
+          quoteVehicleMemory = this.selectRememberedVehicle(
+            quoteVehicleMemory,
+            message.content ?? '',
+          );
           this.logger.log(
             `[4/5] Modelo respondió con texto final en ronda ${round + 1}`,
           );
-          return { text: message.content ?? FALLBACK_REPLY, coverageLeadId };
+          return {
+            text: message.content ?? FALLBACK_REPLY,
+            coverageLeadId,
+            quoteVehicleMemory,
+          };
         }
 
         this.logger.log(
@@ -778,6 +1008,7 @@ export class WebhookService {
                 toolCall.function.name,
                 toolCall.function.arguments,
                 conversation.conversationId,
+                quoteVehicleMemory,
               );
             }
             // One request per turn even if the model repeats the call.
@@ -800,6 +1031,14 @@ export class WebhookService {
             tool_call_id: toolCall.id,
             content: results[i],
           });
+          if (toolCall.function.name === 'find_vehicle') {
+            quoteVehicleMemory = this.rememberVehicleSearch(
+              quoteVehicleMemory,
+              results[i],
+              toolCall.function.arguments,
+              vehicleType,
+            );
+          }
         });
       }
 
@@ -816,7 +1055,13 @@ export class WebhookService {
       promptTokens += final.usage?.prompt_tokens ?? 0;
       completionTokens += final.usage?.completion_tokens ?? 0;
       const content = final.choices[0]?.message?.content;
-      if (content) return { text: content, coverageLeadId };
+      if (content) {
+        quoteVehicleMemory = this.selectRememberedVehicle(
+          quoteVehicleMemory,
+          content,
+        );
+        return { text: content, coverageLeadId, quoteVehicleMemory };
+      }
     } catch (error) {
       this.logger.error(
         `Error generando respuesta: ${(error as Error).message}`,
@@ -835,7 +1080,7 @@ export class WebhookService {
       }
     }
 
-    return { text: FALLBACK_REPLY, coverageLeadId };
+    return { text: FALLBACK_REPLY, coverageLeadId, quoteVehicleMemory };
   }
 
   /**
@@ -946,6 +1191,7 @@ export class WebhookService {
     name: string,
     rawArgs: string,
     conversationId: number,
+    rememberedVehicle?: QuoteVehicleMemory,
   ): Promise<string> {
     let args: Record<string, unknown>;
     try {
@@ -1026,7 +1272,24 @@ export class WebhookService {
           // The InfoAuto codia encodes the Triunfo brand: codia = brand * 10000 + model.
           // Extract brand from the codia directly — never trust the LLM's brandId, which
           // can be wrong if it browsed models across mismatched brand/group combinations.
-          const codiaNum = Number(args.codia);
+          const requestedCodia = Number(args.codia);
+          const codiaNum =
+            Number.isSafeInteger(requestedCodia) && requestedCodia > 10_000
+              ? requestedCodia
+              : rememberedVehicle?.vehicleType === vehicleType
+                ? rememberedVehicle.selected?.codia
+                : undefined;
+          if (!codiaNum) {
+            return JSON.stringify({
+              error:
+                'CODIA inválido o ausente. No se cotizó. Volvé a llamar find_vehicle con la marca, modelo, versión y año de la charla; después usá el CODIA positivo que devuelva.',
+            });
+          }
+          if (codiaNum !== requestedCodia) {
+            this.logger.warn(
+              `quote_vehicle recibió CODIA inválido (${String(args.codia)}); uso el CODIA verificado ${codiaNum}`,
+            );
+          }
           const brandFromCodia = Math.floor(codiaNum / 10000);
           const quote = await this.api.quoteVehicle(vehicleType, {
             brand: String(brandFromCodia),

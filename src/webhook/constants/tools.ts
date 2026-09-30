@@ -252,8 +252,9 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           vehicleType: { type: 'string', enum: ['auto', 'moto'] },
           codia: {
             type: 'integer',
+            minimum: 10001,
             description:
-              'CODIA del modelo obtenido de get_vehicle_models. El CODIA ya codifica la marca (codia = marca * 10000 + modelo), por lo que NO hace falta pasar brandId.',
+              'CODIA positivo del modelo obtenido de find_vehicle o get_vehicle_models. El CODIA ya codifica la marca (codia = marca * 10000 + modelo), por lo que NO hace falta pasar brandId. Nunca usar 0.',
           },
           manufactureYear: {
             type: 'integer',

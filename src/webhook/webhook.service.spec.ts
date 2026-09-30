@@ -19,6 +19,7 @@ describe('WebhookService', () => {
     createLead: jest.Mock;
     requestHandoff: jest.Mock;
     attachLeadAdjunto: jest.Mock;
+    quoteVehicle: jest.Mock;
   };
   let meta: {
     sendText: jest.Mock;
@@ -45,6 +46,13 @@ describe('WebhookService', () => {
       attachLeadAdjunto: jest
         .fn()
         .mockResolvedValue({ leadId: 42, adjuntosCount: 1 }),
+      quoteVehicle: jest.fn().mockResolvedValue({
+        quoteNumber: '123',
+        validUntil: '2026-10-30',
+        vehicleValue: '20000000',
+        coverages: [],
+        messages: [],
+      }),
     };
     meta = {
       sendText: jest.fn().mockResolvedValue(undefined),
@@ -134,7 +142,7 @@ describe('WebhookService', () => {
         max_completion_tokens: 350,
       }),
     );
-    const request = create.mock.calls[0][0];
+    const [[request]] = create.mock.calls as Array<[Record<string, unknown>]>;
     expect(request).not.toHaveProperty('temperature');
     expect(request).not.toHaveProperty('top_p');
     expect(request).not.toHaveProperty('max_tokens');
@@ -239,6 +247,153 @@ describe('WebhookService', () => {
         'Estas son las versiones',
         'P1',
       );
+    });
+  });
+
+  describe('quote vehicle safety', () => {
+    const memory = {
+      vehicleType: 'auto' as const,
+      brandId: 12,
+      brandName: 'CHEVROLET',
+      candidates: [
+        { codia: 120581, description: 'ONIX 1.0T PREMIER II AT L/19' },
+        { codia: 120632, description: 'ONIX 1.0T PREMIER II AT L/24' },
+      ],
+    };
+
+    beforeEach(() => {
+      api.saveMessage.mockResolvedValue({});
+    });
+
+    it('persists the CODIA selected by its list number across the GNC turn', async () => {
+      const create = jest.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content:
+                'Perfecto, tomo el ONIX 1.0T PREMIER II AT L/24. ¿Tu auto tiene GNC?',
+              tool_calls: [],
+            },
+          },
+        ],
+      });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+      api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+      api.getConversation.mockResolvedValue({
+        conversationId: 9,
+        client: null,
+        newSession: false,
+        messages: [
+          {
+            role: 'assistant',
+            content:
+              '1. ONIX 1.0T PREMIER II AT L/19\n2. ONIX 1.0T PREMIER II AT L/24',
+          },
+        ],
+      });
+      flow.handle.mockResolvedValue({
+        messages: [],
+        state: {
+          step: 'LLM_COTIZACION',
+          // Keep the candidates deliberately out of display order: selection
+          // must follow what the customer actually saw, not array position.
+          data: {
+            vehiculo: 'auto',
+            quoteVehicle: {
+              ...memory,
+              candidates: [memory.candidates[1], memory.candidates[0]],
+            },
+          },
+        },
+        handoff: 'cotizacion',
+      });
+
+      await service.handleMessage('5493416000599', '2', 'P1', 'onix-1');
+
+      const savedStates = (
+        api.saveFlowState.mock.calls as Array<[number, string | null]>
+      )
+        .map((call) => call[1])
+        .filter(Boolean)
+        .map((state) => JSON.parse(state as string) as unknown);
+      expect(savedStates.at(-1)).toMatchObject({
+        step: 'LLM_COTIZACION',
+        data: {
+          quoteVehicle: {
+            selected: {
+              codia: 120632,
+              description: 'ONIX 1.0T PREMIER II AT L/24',
+            },
+          },
+        },
+      });
+      const [[request]] = create.mock.calls as Array<
+        [{ messages: Array<{ content: string }> }]
+      >;
+      expect(request.messages[0].content).toContain(
+        'CODIA verificado es `120632`',
+      );
+    });
+
+    it('replaces codia 0 with the verified CODIA instead of calling Triunfo with zero', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+          remembered?: typeof memory & {
+            selected?: { codia: number; description: string };
+          },
+        ) => Promise<string>;
+      };
+
+      await privateService.executeTool(
+        'quote_vehicle',
+        JSON.stringify({
+          vehicleType: 'auto',
+          codia: 0,
+          manufactureYear: 2024,
+          postalCode: 2000,
+        }),
+        9,
+        { ...memory, selected: memory.candidates[1] },
+      );
+
+      expect(api.quoteVehicle).toHaveBeenCalledWith('auto', {
+        brand: '12',
+        model: '120632',
+        manufactureYear: 2024,
+        postalCode: 2000,
+      });
+    });
+
+    it('does not call the API when the CODIA is invalid and no verified selection exists', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+        ) => Promise<string>;
+      };
+
+      const result = await privateService.executeTool(
+        'quote_vehicle',
+        JSON.stringify({
+          vehicleType: 'auto',
+          codia: 0,
+          manufactureYear: 2024,
+          postalCode: 2000,
+        }),
+        9,
+      );
+
+      const parsed = JSON.parse(result) as { error?: unknown };
+      expect(parsed.error).toEqual(expect.any(String));
+      expect(api.quoteVehicle).not.toHaveBeenCalled();
     });
   });
 
