@@ -55,15 +55,9 @@ export interface WhatsAppMetadata {
   phone_number_id: string;
 }
 
-/**
- * Delivery status Meta sends back for each message we send. This is where the
- * billing information lives: `pricing.billable` says whether Meta charges for
- * it, and `conversation.id` groups messages into a single billable conversation.
- *
- * Meta does NOT include an amount, so the cost is derived on the API side from
- * META_COST_PER_CONVERSATION_USD. `pricing.category` is carried through so the
- * rate can be made per-category later without touching the bot.
- */
+/** Delivery callbacks include pricing category and whether this message is
+ * billable. Meta charges per delivered message; conversation ids are not a
+ * billing key. The API derives estimated USD cost from the official rate card. */
 export interface WhatsAppStatus {
   id: string;
   status: 'sent' | 'delivered' | 'read' | 'failed';

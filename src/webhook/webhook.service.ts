@@ -1056,6 +1056,7 @@ export class WebhookService {
           ...(tools ? { tools } : {}),
         });
 
+        await this.reportCompletionUsage(completion, phoneNumberId);
         promptTokens += completion.usage?.prompt_tokens ?? 0;
         completionTokens += completion.usage?.completion_tokens ?? 0;
 
@@ -1140,6 +1141,7 @@ export class WebhookService {
         messages,
         ...(tools ? { tools, tool_choice: 'none' as const } : {}),
       });
+      await this.reportCompletionUsage(final, phoneNumberId);
       promptTokens += final.usage?.prompt_tokens ?? 0;
       completionTokens += final.usage?.completion_tokens ?? 0;
       const content = final.choices[0]?.message?.content;
@@ -1156,19 +1158,32 @@ export class WebhookService {
       );
     } finally {
       this.logCost(handoff, promptTokens, completionTokens);
-      // Report token usage to the API for per-number monthly cost tracking and
-      // budget enforcement. Fire-and-forget — never blocks or breaks the reply.
-      if (promptTokens > 0 || completionTokens > 0) {
-        void this.api.reportOpenAiUsage({
-          phoneNumberId,
-          model: this.model,
-          inputTokens: promptTokens,
-          outputTokens: completionTokens,
-        });
-      }
     }
 
     return { text: FALLBACK_REPLY, coverageLeadId, quoteVehicleMemory };
+  }
+
+  private async reportCompletionUsage(
+    completion: OpenAI.Chat.Completions.ChatCompletion,
+    phoneNumberId: string,
+  ): Promise<void> {
+    if (!completion.usage) return;
+    try {
+      await this.api.reportOpenAiUsage({
+        phoneNumberId,
+        requestId: completion.id,
+        timestamp: completion.created,
+        model: this.model,
+        inputTokens: completion.usage.prompt_tokens,
+        outputTokens: completion.usage.completion_tokens,
+        cachedInputTokens:
+          completion.usage.prompt_tokens_details?.cached_tokens ?? 0,
+      });
+    } catch (error) {
+      this.logger.error(
+        `No se pudo registrar consumo OpenAI ${completion.id}: ${(error as Error).message}`,
+      );
+    }
   }
 
   /**

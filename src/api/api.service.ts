@@ -111,21 +111,34 @@ export class ApiService {
     model?: string;
     inputTokens: number;
     outputTokens: number;
+    cachedInputTokens?: number;
+    requestId?: string;
+    timestamp?: number;
   }): Promise<void> {
-    await this.http.post('/bot/usage/openai', input).catch(() => undefined);
+    await this.reportUsage('/bot/usage/openai', input);
   }
 
-  /**
-   * Reports a billable Meta conversation. Meta sends the cost in the `pricing`
-   * object of the *status* webhook, so this is called from there rather than
-   * when the message is sent. Fire-and-forget, same as the OpenAI report.
-   */
+  /** Delivered messages, including free ones. API deduplicates durably. */
   async reportMetaUsage(input: {
     phoneNumberId: string;
-    conversations?: number;
-    costUsd?: number;
+    messageId: string;
+    category: string;
+    billable: boolean;
+    recipient: string;
+    timestamp: number;
   }): Promise<void> {
-    await this.http.post('/bot/usage/meta', input).catch(() => undefined);
+    await this.reportUsage('/bot/usage/meta', input);
+  }
+
+  private async reportUsage(path: string, input: unknown): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.http.post(path, input);
+        return;
+      } catch (error) {
+        if (attempt >= 2) throw error;
+      }
+    }
   }
 
   /**
@@ -509,6 +522,17 @@ export class ApiService {
     return this.getAllInfoAutoPages<InfoAutoGroup>(
       `/infoauto/${vehicleType}/brands/${brandId}/groups`,
     );
+  }
+
+  async requestPolicyCancellation(
+    conversationId: number,
+    polizaId: number,
+  ): Promise<{ id: number }> {
+    const { data } = await this.http.post<{ id: number }>(
+      `/bot/conversation/${conversationId}/request-policy-cancellation`,
+      { polizaId },
+    );
+    return data;
   }
 
   async getModels(

@@ -220,3 +220,80 @@ describe('WebhookController', () => {
     });
   });
 });
+
+describe('Meta delivered-message accounting', () => {
+  function setup() {
+    const api = { reportMetaUsage: jest.fn().mockResolvedValue(undefined) };
+    const controller = new WebhookController(
+      {} as any,
+      {} as any,
+      api as any,
+      {} as any,
+    );
+    return { controller, api };
+  }
+
+  function payload(statuses: any[]) {
+    return {
+      entry: [
+        {
+          changes: [
+            {
+              field: 'messages',
+              value: { metadata: { phone_number_id: 'PN' }, statuses },
+            },
+          ],
+        },
+      ],
+    } as any;
+  }
+
+  it('reports each delivered message even when they share a conversation and includes free messages', async () => {
+    const { controller, api } = setup();
+    const base = {
+      timestamp: '1791000000',
+      recipient_id: '5493416000000',
+      conversation: { id: 'same-conversation' },
+      pricing: { billable: true, category: 'service' },
+    };
+    await controller.receiveMessage(
+      payload([
+        { ...base, id: 'one', status: 'sent' },
+        { ...base, id: 'one', status: 'delivered' },
+        { ...base, id: 'one', status: 'read' },
+        {
+          ...base,
+          id: 'two',
+          status: 'delivered',
+          pricing: { billable: false, category: 'service' },
+        },
+        { ...base, id: 'three', status: 'failed' },
+      ]),
+    );
+    expect(api.reportMetaUsage).toHaveBeenCalledTimes(2);
+    expect(api.reportMetaUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'one', billable: true }),
+    );
+    expect(api.reportMetaUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'two', billable: false }),
+    );
+  });
+
+  it('fails delivery when usage persistence fails so Meta retries', async () => {
+    const { controller, api } = setup();
+    api.reportMetaUsage.mockRejectedValue(new Error('API down'));
+    await expect(
+      controller.receiveMessage(
+        payload([
+          {
+            id: 'one',
+            status: 'delivered',
+            timestamp: '1791000000',
+            recipient_id: '5493416000000',
+            pricing: { billable: true, category: 'service' },
+          },
+        ]),
+      ),
+    ).rejects.toThrow('API down');
+  });
+});

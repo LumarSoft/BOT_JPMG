@@ -252,7 +252,8 @@ type ClientAction =
   | 'pagos'
   | 'documentos'
   | 'siniestro_nueva'
-  | 'siniestro_consultar';
+  | 'siniestro_consultar'
+  | 'baja_poliza';
 
 /**
  * Deterministic conversation engine. The bot's transactional flows (menus,
@@ -367,6 +368,8 @@ export class FlowService {
           ? result
           : this.prepend(`¡Hola! ${botIntro(ctx.botName)} 👋`, result);
       }
+      if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
+        return this.guard(ctx, key, 'baja_poliza');
       return this.rememberGreeting(
         key,
         input.text,
@@ -410,6 +413,7 @@ export class FlowService {
     // itself (it also confirms the denuncia was dropped), so it's excluded.
     if (
       existing.state.step !== 'SINIESTRO_CONFIRM' &&
+      existing.state.step !== 'BAJA_CONFIRM' &&
       (sel === OPT.cancelar ||
         /^(cancelar|cancelá|volver|atr[aá]s|olvidalo|dejalo)$/i.test(
           input.text.trim(),
@@ -521,6 +525,10 @@ export class FlowService {
         return this.handleLeadMenu(input, ctx, key);
       case 'IDENTIFY':
         return this.handleIdentify(state, input, ctx, key);
+      case 'BAJA_POLIZA':
+        return this.handleBajaPoliza(state, input, key);
+      case 'BAJA_CONFIRM':
+        return this.handleBajaConfirm(state, input, ctx, key);
       case 'SINIESTRO_TYPE':
         return this.handleSiniestroType(input, ctx, key);
       case 'SINIESTRO_POLIZA':
@@ -643,6 +651,13 @@ export class FlowService {
       return this.enterCotizar(input, ctx, key);
     }
 
+    if (
+      /\b(baja|darme de baja|cancelar (mi|el) seguro|cancelar (mi|la) poliza)\b/.test(
+        fold(input.text),
+      )
+    )
+      return this.guard(ctx, key, 'baja_poliza');
+
     // Client-scoped intents → acknowledge + re-ask with the welcome menu buttons.
     if (
       /\bsiniestro|\bdenuncia|\baccidente|\bchoque|\brob|\bp[oó]liza|\bpago|\bcuota|\bdocument|\btarjeta|\bgr[uú]a|\bauxilio|\bcobertura/.test(
@@ -679,6 +694,8 @@ export class FlowService {
         return this.enterCotizar(input, ctx, key);
       case OPT.pagos:
         return this.guard(ctx, key, 'pagos');
+      case OPT.bajaPoliza:
+        return this.guard(ctx, key, 'baja_poliza');
       case OPT.documentos:
         return this.guard(ctx, key, 'documentos');
       case OPT.grua:
@@ -711,6 +728,8 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): FlowResult | Promise<FlowResult> {
+    if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
+      return this.guard(ctx, key, 'baja_poliza');
     const opt = input.selectionId ?? this.matchLeadIntent(input.text);
 
     switch (opt) {
@@ -864,6 +883,16 @@ export class FlowService {
           ],
         };
       }
+      case 'baja_poliza': {
+        const polizas = await this.api.getPolizas(ctx.conversationId);
+        if (!polizas.length) return this.noPolizas(key);
+        this.setState(key, 'BAJA_POLIZA', { polizas });
+        return {
+          messages: [
+            polizaPicker(polizas, '¿De qué póliza querés solicitar la baja?'),
+          ],
+        };
+      }
       case 'documentos': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
         if (polizas.length === 0) return this.noPolizas(key);
@@ -875,6 +904,68 @@ export class FlowService {
         };
       }
     }
+  }
+
+  private handleBajaPoliza(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    const polizas = state.data.polizas as PolizaSummary[];
+    const id = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+    const poliza =
+      polizas.find((p) => p.id === id) ??
+      this.matchPolizaByText(input.text, polizas);
+    if (!poliza)
+      return this.retry(key, state, [
+        polizaPicker(polizas, 'Elegí la póliza para solicitar la baja.'),
+      ]);
+    this.setState(key, 'BAJA_CONFIRM', { ...state.data, polizaId: poliza.id });
+    return { messages: [this.bajaConfirmMessage(poliza)] };
+  }
+
+  private bajaConfirmMessage(poliza: PolizaSummary): OutgoingMessage {
+    return {
+      kind: 'buttons',
+      body: `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificado}*${poliza.vehiculo?.dominio ? ` (${poliza.vehiculo.dominio})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
+      buttons: [
+        { id: OPT.confirmar, title: 'Solicitar baja' },
+        { id: OPT.cancelar, title: 'Cancelar' },
+      ],
+    };
+  }
+
+  private async handleBajaConfirm(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const choice = input.selectionId ?? this.matchConfirmIntent(input.text);
+    if (choice === OPT.cancelar) {
+      this.setState(key, 'CLIENT_MENU');
+      return {
+        messages: [
+          { kind: 'text', body: 'Cancelé el pedido de baja.' },
+          clientMenu(),
+        ],
+      };
+    }
+    const poliza = (state.data.polizas as PolizaSummary[]).find(
+      (p) => p.id === state.data.polizaId,
+    )!;
+    if (choice !== OPT.confirmar)
+      return this.retry(key, state, [this.bajaConfirmMessage(poliza)]);
+    await this.api.requestPolicyCancellation(ctx.conversationId, poliza.id);
+    this.setState(key, 'CLIENT_MENU');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: `Registré tu solicitud de baja de la póliza *${poliza.certificado}*. La oficina recibió la notificación y te confirmará la gestión. La póliza todavía no fue dada de baja.`,
+        },
+      ],
+    };
   }
 
   // ─── Siniestros ───────────────────────────────────────────
@@ -1958,6 +2049,8 @@ export class FlowService {
   ): FlowResult | Promise<FlowResult> | null {
     if (step !== 'LLM_COTIZACION' && step !== 'LLM_FAQ') return null;
 
+    if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
+      return this.guard(ctx, key, 'baja_poliza');
     const intent = this.matchGlobalIntent(input.text, step);
     if (!intent) return null;
     // "cotizar" is the cotización flow itself — not a topic change when we're
@@ -2308,6 +2401,8 @@ export class FlowService {
   /** Keyword routing so typed text (not just taps) reaches the right flow. */
   private matchClientIntent(text: string): string | null {
     const t = fold(text);
+    if (/\bbaja\b|\bcancelar (mi |la |el )?(poliza|seguro)\b/.test(t))
+      return OPT.bajaPoliza;
     // Quoting first: "cotizar un seguro contra robo" is a quote, not a claim.
     if (/cotiz|presupuest|seguro nuevo|\basegurar\b/.test(t))
       return OPT.cotizacion;

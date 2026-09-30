@@ -221,14 +221,22 @@ describe('WebhookService', () => {
           },
         ],
       };
+      let completionIndex = 0;
       const create = jest.fn().mockImplementation((req: object) =>
-        Promise.resolve(
-          'tool_choice' in req
+        Promise.resolve({
+          id: `completion-${++completionIndex}`,
+          created: 1791000000,
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 100,
+            prompt_tokens_details: { cached_tokens: 500 },
+          },
+          ...('tool_choice' in req
             ? {
                 choices: [{ message: { content: 'Estas son las versiones' } }],
               }
-            : toolTurn,
-        ),
+            : toolTurn),
+        }),
       );
       (
         service as unknown as {
@@ -242,6 +250,22 @@ describe('WebhookService', () => {
         { tool_choice?: string },
       ];
       expect(last.tool_choice).toBe('none');
+      expect(api.reportOpenAiUsage).toHaveBeenCalledTimes(
+        create.mock.calls.length,
+      );
+      expect(
+        new Set(
+          api.reportOpenAiUsage.mock.calls.map(([input]) => input.requestId),
+        ).size,
+      ).toBe(create.mock.calls.length);
+      expect(api.reportOpenAiUsage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          phoneNumberId: 'P1',
+          cachedInputTokens: 500,
+          inputTokens: 1000,
+          outputTokens: 100,
+        }),
+      );
       expect(meta.sendText).toHaveBeenCalledWith(
         '5491155556666',
         'Estas son las versiones',

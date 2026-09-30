@@ -25,6 +25,7 @@ export const OPT = {
   cotizacion: 'm_cotizacion',
   pagos: 'm_pagos',
   documentos: 'm_documentos',
+  bajaPoliza: 'm_baja_poliza',
   grua: 'm_grua',
   asesor: 'm_asesor',
   // lead menu
@@ -61,6 +62,7 @@ export const CLIENT_MENU_OPTS = new Set<string>([
   OPT.cotizacion,
   OPT.pagos,
   OPT.documentos,
+  OPT.bajaPoliza,
   OPT.grua,
   OPT.asesor,
 ]);
@@ -258,6 +260,11 @@ export function clientMenu(): OutgoingMessage {
         id: OPT.documentos,
         title: '📄 Documentación',
         description: 'Tarjeta, póliza, certificado, cupón',
+      },
+      {
+        id: OPT.bajaPoliza,
+        title: 'Baja de póliza',
+        description: 'Solicitar la baja de un seguro',
       },
       {
         id: OPT.grua,

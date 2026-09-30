@@ -18,6 +18,7 @@ describe('FlowService', () => {
     resetSession: jest.Mock;
     getEstadoCuenta: jest.Mock;
     requestHandoff: jest.Mock;
+    requestPolicyCancellation: jest.Mock;
     getPolizas: jest.Mock;
     createSiniestro: jest.Mock;
     getPricing: jest.Mock;
@@ -50,6 +51,7 @@ describe('FlowService', () => {
       resetSession: jest.fn().mockResolvedValue(undefined),
       getEstadoCuenta: jest.fn().mockResolvedValue([]),
       requestHandoff: jest.fn().mockResolvedValue(undefined),
+      requestPolicyCancellation: jest.fn().mockResolvedValue({ id: 11 }),
       getPolizas: jest.fn().mockResolvedValue([
         {
           id: 833,
@@ -213,6 +215,40 @@ describe('FlowService', () => {
         data: { vehiculo: 'auto', quoteVehicle },
         audience: 'lead',
       });
+    });
+  });
+
+  describe('policy cancellation requests', () => {
+    it('identifies the client, selects a policy and notifies only after confirmation', async () => {
+      await send({ text: 'quiero dar de baja mi póliza' });
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      await send({ text: '37334584' });
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '37334584' });
+      expect(stored?.step).toBe('BAJA_POLIZA');
+      await send({ selectionId: 'pol_833', text: '' });
+      expect(stored?.step).toBe('BAJA_CONFIRM');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      const result = await send({ selectionId: OPT.confirmar, text: '' });
+      expect(api.requestPolicyCancellation).toHaveBeenCalledWith(1, 833);
+      expect(result.messages[0].body).toContain('todavía no fue dada de baja');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('does not create a request when the client cancels confirmation', async () => {
+      await send({ text: 'quiero darme de baja' });
+      await send({ text: '37334584' });
+      await send({ selectionId: 'pol_833', text: '' });
+      await send({ selectionId: OPT.cancelar, text: '' });
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('leaves a quote when the client asks to cancel a policy', async () => {
+      stored = { step: 'LLM_COTIZACION', data: {}, audience: 'lead' };
+      const result = await send({ text: 'quiero dar de baja mi seguro' });
+      expect(result.handoff).toBeUndefined();
+      expect(stored?.step).toBe('IDENTIFY');
     });
   });
 
