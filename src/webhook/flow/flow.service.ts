@@ -243,8 +243,12 @@ function parseFecha(text: string): { iso: string; display: string } | null {
   return fromDate(d);
 }
 
-/** Actions that require an identified client; resumed after IDENTIFY succeeds. */
+/**
+ * Actions that require an identified client; resumed after IDENTIFY succeeds.
+ * 'menu' is the identification asked right after "Sí, soy cliente".
+ */
 type ClientAction =
+  | 'menu'
   | 'pagos'
   | 'documentos'
   | 'siniestro_nueva'
@@ -602,8 +606,22 @@ export class FlowService {
       /\bno\b.*\bcliente\b/.test(t);
 
     if (isClient) {
-      this.setState(key, 'CLIENT_MENU', {}, 'client');
-      return { messages: [clientMenu()] };
+      if (ctx.client) {
+        this.setState(key, 'CLIENT_MENU', {}, 'client');
+        return { messages: [clientMenu()] };
+      }
+      // Identify up front instead of on the first action that needs it, so every
+      // request (an advisor handoff included) reaches the admin tied to the
+      // client and its producer code.
+      this.setState(key, 'IDENTIFY', { pendingAction: 'menu' }, 'client');
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: '¡Genial! Para ayudarte necesito identificarte. Pasame el *DNI del titular* o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
+          },
+        ],
+      };
     }
     if (isLead) {
       this.setState(key, 'LEAD_MENU', {}, 'lead');
@@ -760,6 +778,16 @@ export class FlowService {
       };
     }
 
+    // The not-found reply offers "escribí *asesor*": honor it instead of
+    // reading the word as a plate.
+    if (/\basesor/i.test(raw)) {
+      return this.handleClientMenu(
+        { ...input, selectionId: OPT.asesor },
+        ctx,
+        key,
+      );
+    }
+
     const cleaned = raw.replace(/[\s.-]/g, '');
     const params = /[a-zA-Z]/.test(cleaned)
       ? { plate: cleaned.toUpperCase() }
@@ -768,7 +796,10 @@ export class FlowService {
     try {
       await this.api.identifyClient(ctx.conversationId, params);
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
+      // 400 = the API rejected the shape (a DNI/plate of the wrong length, e.g.
+      // "no me acuerdo"); for the user that's the same as not finding them.
+      const status = axios.isAxiosError(error) ? error.response?.status : 0;
+      if (status === 404 || status === 400) {
         return this.retry(key, state, [
           {
             kind: 'text',
@@ -795,6 +826,9 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     switch (action) {
+      case 'menu':
+        this.setState(key, 'CLIENT_MENU');
+        return { messages: [clientMenu()] };
       case 'pagos': {
         const estado = await this.api.getEstadoCuenta(ctx.conversationId);
         this.setState(key, 'CLIENT_MENU');

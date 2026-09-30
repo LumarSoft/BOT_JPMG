@@ -22,6 +22,7 @@ describe('FlowService', () => {
     createSiniestro: jest.Mock;
     getPricing: jest.Mock;
     getHours: jest.Mock;
+    identifyClient: jest.Mock;
   };
 
   const KEY = 'pn:wa';
@@ -72,6 +73,10 @@ describe('FlowService', () => {
           'Sí, ahora estamos abiertos 🙂. Nuestro horario es: Lunes a viernes de 8 a 16 hs.',
         closedNote: null,
       }),
+      identifyClient: jest.fn().mockResolvedValue({
+        client: { firstName: 'Ana', lastName: 'Gómez' },
+        polizasCount: 1,
+      }),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -91,6 +96,12 @@ describe('FlowService', () => {
     await send({ text: 'hola' }); // ROOT welcome
     await send({ text: 'quiero cotizar' }); // COTIZAR_TIPO
     await send({ selectionId: OPT.cotAuto, text: '' }); // LLM_COTIZACION
+  }
+
+  /** Declares being a client and identifies by DNI (IDENTIFY → CLIENT_MENU). */
+  async function declareClient() {
+    await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' }); // IDENTIFY
+    await send({ text: '37334584' }); // CLIENT_MENU
   }
 
   describe('first message that already asks for a quote', () => {
@@ -319,7 +330,7 @@ describe('FlowService', () => {
 
     it('returns to the menu on a standalone greeting (no FAQ handoff)', async () => {
       await send({ text: 'hola' }); // ROOT welcome
-      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' }); // CLIENT_MENU
+      await declareClient(); // CLIENT_MENU
       const res = await send({ text: 'Buenas!' });
       expect(res.handoff).toBeUndefined();
       expect(res.state?.step).toBe('CLIENT_MENU');
@@ -327,11 +338,102 @@ describe('FlowService', () => {
 
     it('still routes a greeting that carries a request', async () => {
       await send({ text: 'hola' });
-      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' }); // CLIENT_MENU
+      await declareClient(); // CLIENT_MENU
       const res = await send({ text: 'hola, quiero ver mi estado de pagos' });
       // pagos needs identification → guard asks for DNI, not a menu reset/FAQ.
       expect(res.handoff).toBeUndefined();
       expect(res.state?.step).toBe('IDENTIFY');
+    });
+  });
+
+  describe('identification right after "Sí, soy cliente"', () => {
+    it('asks for the DNI before showing the client menu', async () => {
+      await send({ text: 'hola' }); // ROOT welcome
+      const res = await send({
+        selectionId: OPT.cliente,
+        text: 'Sí, soy cliente',
+      });
+
+      expect(res.state?.step).toBe('IDENTIFY');
+      expect(res.state?.audience).toBe('client');
+      const text = res.messages
+        .map((m) => (m.kind === 'text' ? m.body : ''))
+        .join(' ');
+      expect(text).toContain('DNI');
+    });
+
+    it('shows the client menu once identified', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: '37.334.584' });
+
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '37334584' });
+      expect(res.state?.step).toBe('CLIENT_MENU');
+      expect(res.messages[0]).toEqual({
+        kind: 'text',
+        body: '✅ ¡Listo, te identifiqué!',
+      });
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
+    });
+
+    it('asks again when the DNI is not found', async () => {
+      api.identifyClient.mockRejectedValueOnce(
+        Object.assign(new Error('Not found'), {
+          isAxiosError: true,
+          response: { status: 404 },
+        }),
+      );
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: '11111111' });
+
+      expect(res.state?.step).toBe('IDENTIFY');
+    });
+
+    it('asks again when the API rejects the value as malformed', async () => {
+      api.identifyClient.mockRejectedValueOnce(
+        Object.assign(new Error('Bad request'), {
+          isAxiosError: true,
+          response: { status: 400 },
+        }),
+      );
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'no me acuerdo' });
+
+      expect(res.state?.step).toBe('IDENTIFY');
+      const text = res.messages
+        .map((m) => (m.kind === 'text' ? m.body : ''))
+        .join(' ');
+      expect(text).toContain('No encontré ningún cliente');
+    });
+
+    it('goes to the advisor when the user writes "asesor" instead of a DNI', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'quiero hablar con un asesor' });
+
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.state?.step).toBe('ASESOR_MOTIVO');
+      expect(res.state?.audience).toBe('client');
+    });
+
+    it('skips the DNI when the conversation already has a client', async () => {
+      const clientCtx: FlowContext = {
+        ...leadCtx,
+        client: {
+          firstName: 'Ana',
+          lastName: 'Gómez',
+        } as FlowContext['client'],
+      };
+      stored = { step: 'ROOT', data: {} };
+      const res = await send(
+        { selectionId: OPT.cliente, text: 'Sí, soy cliente' },
+        clientCtx,
+      );
+
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.state?.step).toBe('CLIENT_MENU');
     });
   });
 
@@ -357,7 +459,7 @@ describe('FlowService', () => {
 
     it('remembers a declared (not DB-identified) client across a flow switch', async () => {
       await send({ text: 'hola' }); // ROOT welcome
-      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' }); // CLIENT_MENU
+      await declareClient(); // CLIENT_MENU
       await send({ selectionId: OPT.cotizacion, text: '' }); // COTIZAR_TIPO
       await send({ selectionId: OPT.cotAuto, text: '' }); // LLM_COTIZACION
 
@@ -716,7 +818,7 @@ describe('FlowService', () => {
 
     it('leaves the quote for "necesito el certificado de cobertura"', async () => {
       await send({ text: 'hola' });
-      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      await declareClient();
       await send({ selectionId: OPT.cotizacion, text: '' });
       await send({ selectionId: OPT.cotAuto, text: '' });
       const res = await send({ text: 'necesito el certificado de cobertura' });
@@ -757,7 +859,7 @@ describe('FlowService', () => {
 
     it('still leaves the quote when the user clearly asks for another flow', async () => {
       await send({ text: 'hola' });
-      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      await declareClient();
       await send({ selectionId: OPT.cotizacion, text: '' });
       await send({ selectionId: OPT.cotAuto, text: '' });
       const res = await send({ text: 'necesito hablar con un asesor' });
