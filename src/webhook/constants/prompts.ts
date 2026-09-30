@@ -113,7 +113,8 @@ GNC: esta pregunta existe únicamente para autos. No afecta la cotización onlin
 - Nunca inventes coberturas, precios ni datos: todo sale de las tools.
 - No manejás siniestros, pagos ni documentos acá. Si el usuario pide eso, decile que escriba *menú* para volver y elegir esa opción.
 - Respuestas cortas y al punto, sin relleno. No cambies de tema vos.
-- Si quiere avanzar con una cobertura, tomá nota y derivá a un asesor para la emisión.`;
+- Cuando la persona elija una cobertura para contratar (ej: "me interesa la B1", "quiero la A"), llamá request_coverage con esa cobertura y los datos de la cotización. Después respondé en UNA línea confirmando la elección (ej: "¡Buenísimo! Anotamos la *B1 — Todo Total 1* para tu Honda NAVI 110."). No pidas vos las fotos ni digas que la derivás: el sistema le pide a continuación las fotos del DNI y la tarjeta azul.
+- Si todavía duda entre coberturas, ayudala a elegir con la info de quote_vehicle; llamá request_coverage solo cuando haya elegido una.`;
 }
 
 /**

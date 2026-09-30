@@ -7,14 +7,17 @@ import type { BotContext, BotConversation } from '../api/api.types';
 import { MetaService } from './meta.service';
 import {
   FlowService,
+  LEAD_DOC_TIPO,
   PHOTO_RECEIVED,
   SINIESTRO_PHOTO_TIPO,
+  TAKE_OUT_DOCS_INTRO,
+  takeOutDocsState,
 } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
 import { gncButtons, toWhatsAppMarkdown } from './flow/flow.messages';
 import { renderQuote } from './constants/coverages';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
-import { COTIZADOR_TOOLS } from './constants/tools';
+import { COTIZADOR_TOOLS, REQUEST_COVERAGE_TOOL } from './constants/tools';
 import { compactMessages } from './compact-messages';
 import { findVehicle } from './vehicle-finder';
 import {
@@ -385,32 +388,56 @@ export class WebhookService {
         (stateVehicleType === 'auto' || stateVehicleType === 'moto')
           ? stateVehicleType
           : undefined;
-      const raw = await this.generateReply(
+      const { text: raw, coverageLeadId } = await this.generateReply(
         context,
         conversation,
         text,
         result.handoff,
         phoneNumberId,
+        from,
         vehicleType,
       );
       // The model writes standard markdown; WhatsApp speaks its own dialect.
       const reply = toWhatsAppMarkdown(raw);
       // The quote sub-flow's GNC question goes out as buttons instead of text.
-      const message: OutgoingMessage =
+      let outgoing: OutgoingMessage[] = [
         (result.handoff === 'cotizacion' ? gncButtons(reply) : null) ??
-        ({ kind: 'text', body: reply } as const);
-      await this.api
-        .saveMessage(
-          conversation.conversationId,
-          'assistant',
-          this.toTranscript(message),
-        )
-        .catch((error: Error) =>
-          this.logger.error(
-            `No se pudo guardar la respuesta: ${error.message}`,
-          ),
-        );
-      await this.dispatch(to, message, phoneNumberId);
+          ({ kind: 'text', body: reply } as const),
+      ];
+
+      // A coverage was chosen: the request is recorded, now collect the
+      // documents to take it out (DNI front/back, tarjeta azul) step by step.
+      if (coverageLeadId) {
+        await this.api
+          .saveFlowState(
+            conversation.conversationId,
+            JSON.stringify(takeOutDocsState(result.state, coverageLeadId)),
+          )
+          .catch((error: Error) =>
+            this.logger.error(
+              `No se pudo guardar el flowState: ${error.message}`,
+            ),
+          );
+        outgoing = compactMessages([
+          ...outgoing,
+          { kind: 'text', body: TAKE_OUT_DOCS_INTRO },
+        ]);
+      }
+
+      for (const message of outgoing) {
+        await this.api
+          .saveMessage(
+            conversation.conversationId,
+            'assistant',
+            this.toTranscript(message),
+          )
+          .catch((error: Error) =>
+            this.logger.error(
+              `No se pudo guardar la respuesta: ${error.message}`,
+            ),
+          );
+        await this.dispatch(to, message, phoneNumberId);
+      }
     }
 
     if (result.messages.length > 0 || result.handoff) {
@@ -525,19 +552,34 @@ export class WebhookService {
     const tipo = flowState?.step
       ? SINIESTRO_PHOTO_TIPO[flowState.step]
       : undefined;
+    // Or a take-out document for a chosen coverage (DNI, tarjeta azul): it goes
+    // to that request instead of a claim.
+    const leadTipo = flowState?.step
+      ? LEAD_DOC_TIPO[flowState.step]
+      : undefined;
+    const leadId = Number(flowState?.data.leadId);
+    const file = {
+      buffer: media.buffer,
+      filename: buildMediaFilename(media.mimeType),
+      mimeType: media.mimeType,
+    };
 
     try {
-      await this.api.attachAdjunto(
-        conversation.conversationId,
-        {
-          buffer: media.buffer,
-          filename: buildMediaFilename(media.mimeType),
-          mimeType: media.mimeType,
-        },
-        tipo,
-      );
+      if (leadTipo && Number.isInteger(leadId)) {
+        await this.api.attachLeadAdjunto(
+          conversation.conversationId,
+          leadId,
+          file,
+          leadTipo,
+        );
+      } else {
+        await this.api.attachAdjunto(conversation.conversationId, file, tipo);
+      }
     } catch (error) {
-      await this.meta.sendText(to, this.mediaErrorReply(error), phoneNumberId);
+      const reply = leadTipo
+        ? this.leadDocErrorReply(error)
+        : this.mediaErrorReply(error);
+      await this.meta.sendText(to, reply, phoneNumberId);
       return;
     }
 
@@ -555,7 +597,7 @@ export class WebhookService {
 
     // In a guided photo step: advance the deterministic flow and send the next
     // prompt (next photo / "¿hubo tercero?" / closing), keeping it on the rails.
-    if (tipo) {
+    if (tipo || leadTipo) {
       const key = `${phoneNumberId}:${from}`;
       const result = await this.flow.handle(
         key,
@@ -601,6 +643,14 @@ export class WebhookService {
     await this.meta.sendText(to, reply, phoneNumberId);
   }
 
+  /** A take-out document that could not be stored: ask again, don't lose the step. */
+  private leadDocErrorReply(error: unknown): string {
+    this.logger.error(
+      `Error adjuntando documento de contratación: ${(error as Error).message}`,
+    );
+    return 'No pude guardar la foto 😕. ¿Me la mandás de nuevo? Si no la tenés, escribí *no la tengo*.';
+  }
+
   /** Maps an attach-photo failure to a user-facing message. */
   private mediaErrorReply(error: unknown): string {
     if (axios.isAxiosError(error)) {
@@ -626,8 +676,9 @@ export class WebhookService {
     text: string,
     handoff: 'cotizacion' | 'faq',
     phoneNumberId: string,
+    from: string,
     vehicleType?: 'auto' | 'moto',
-  ): Promise<string> {
+  ): Promise<{ text: string; coverageLeadId?: number }> {
     const today = new Date().toLocaleDateString('es-AR', {
       weekday: 'long',
       day: 'numeric',
@@ -677,6 +728,8 @@ export class WebhookService {
 
     let promptTokens = 0;
     let completionTokens = 0;
+    // Set when the model calls request_coverage (the customer chose a coverage).
+    let coverageLeadId: number | undefined;
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -710,7 +763,7 @@ export class WebhookService {
           this.logger.log(
             `[4/5] Modelo respondió con texto final en ronda ${round + 1}`,
           );
-          return message.content ?? FALLBACK_REPLY;
+          return { text: message.content ?? FALLBACK_REPLY, coverageLeadId };
         }
 
         this.logger.log(
@@ -719,13 +772,24 @@ export class WebhookService {
         messages.push(message);
         // Independent lookups run in parallel; results keep the call order.
         const results = await Promise.all(
-          toolCalls.map((toolCall) =>
-            this.executeTool(
-              toolCall.function.name,
+          toolCalls.map(async (toolCall) => {
+            if (toolCall.function.name !== REQUEST_COVERAGE_TOOL) {
+              return this.executeTool(
+                toolCall.function.name,
+                toolCall.function.arguments,
+                conversation.conversationId,
+              );
+            }
+            // One request per turn even if the model repeats the call.
+            if (coverageLeadId) return JSON.stringify({ ok: true });
+            const res = await this.requestCoverage(
               toolCall.function.arguments,
-              conversation.conversationId,
-            ),
-          ),
+              conversation,
+              from,
+            );
+            coverageLeadId = res.leadId;
+            return res.result;
+          }),
         );
         toolCalls.forEach((toolCall, i) => {
           this.logger.log(
@@ -752,7 +816,7 @@ export class WebhookService {
       promptTokens += final.usage?.prompt_tokens ?? 0;
       completionTokens += final.usage?.completion_tokens ?? 0;
       const content = final.choices[0]?.message?.content;
-      if (content) return content;
+      if (content) return { text: content, coverageLeadId };
     } catch (error) {
       this.logger.error(
         `Error generando respuesta: ${(error as Error).message}`,
@@ -771,7 +835,69 @@ export class WebhookService {
       }
     }
 
-    return FALLBACK_REPLY;
+    return { text: FALLBACK_REPLY, coverageLeadId };
+  }
+
+  /**
+   * The customer chose a quoted coverage: record it as a lead in the
+   * Solicitudes panel (with everything the advisor needs to issue it) and flag
+   * the chat for human attention. Before this the model just said "te derivo
+   * con un asesor" and nothing reached anyone.
+   */
+  private async requestCoverage(
+    rawArgs: string,
+    conversation: BotConversation,
+    from: string,
+  ): Promise<{ result: string; leadId?: number }> {
+    let args: Record<string, unknown>;
+    try {
+      args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
+    } catch {
+      return { result: JSON.stringify({ error: 'Argumentos inválidos' }) };
+    }
+    const code = typeof args.coverageCode === 'string' ? args.coverageCode : '';
+    const name = typeof args.coverageName === 'string' ? args.coverageName : '';
+    if (!code && !name) {
+      return {
+        result: JSON.stringify({ error: 'Falta la cobertura elegida' }),
+      };
+    }
+
+    const vehicleType = args.vehicleType === 'moto' ? 'moto' : 'auto';
+    const client = conversation.client;
+    const payload: Record<string, unknown> = {
+      cobertura: [code, name].filter(Boolean).join(' — '),
+      vehiculo: args.vehicle,
+      anio: args.manufactureYear,
+      codigoPostal: args.postalCode,
+      ...(typeof args.price === 'string' && args.price
+        ? { precio: args.price }
+        : {}),
+      ...(vehicleType === 'auto' && typeof args.hasGnc === 'boolean'
+        ? { gnc: args.hasGnc ? 'Sí' : 'No' }
+        : {}),
+      ...(client ? { dni: client.dni } : {}),
+    };
+
+    try {
+      const { id } = await this.api.createLead(conversation.conversationId, {
+        productType: vehicleType,
+        contactName: client
+          ? `${client.firstName} ${client.lastName}`.trim()
+          : 'Cliente WhatsApp',
+        phone: from,
+        payload,
+      });
+      await this.api
+        .requestHandoff(conversation.conversationId)
+        .catch(() => undefined);
+      this.logger.log(
+        `📝 Pedido de contratación #${id}: ${String(payload.cobertura)} (${vehicleType})`,
+      );
+      return { result: JSON.stringify({ ok: true }), leadId: id };
+    } catch (error) {
+      return { result: this.toolError(REQUEST_COVERAGE_TOOL, error) };
+    }
   }
 
   /**

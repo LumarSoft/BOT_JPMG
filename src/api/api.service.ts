@@ -325,6 +325,32 @@ export class ApiService {
   }
 
   /**
+   * Attaches a document the customer sent to take out a quoted policy (DNI,
+   * tarjeta azul) to the lead the bot created for that coverage.
+   */
+  async attachLeadAdjunto(
+    conversationId: number,
+    leadId: number,
+    file: { buffer: Buffer; filename: string; mimeType: string },
+    tipo: string,
+  ): Promise<{ leadId: number; adjuntosCount: number }> {
+    const form = new FormData();
+    form.append(
+      'adjuntos',
+      new Blob([Uint8Array.from(file.buffer)], { type: file.mimeType }),
+      file.filename,
+    );
+    const { data } = await this.http.post<{
+      leadId: number;
+      adjuntosCount: number;
+    }>(
+      `/bot/conversation/${conversationId}/leads/${leadId}/adjuntos?tipo=${encodeURIComponent(tipo)}`,
+      form,
+    );
+    return data;
+  }
+
+  /**
    * Canonical product catalog (descriptions, no prices) shared with the web.
    * Cached in memory so describing a product never costs a round-trip per turn;
    * on a fetch error we serve the last good copy (or an empty list on cold start)

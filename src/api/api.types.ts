@@ -224,7 +224,7 @@ export interface AttachAdjuntosResult {
 
 // Advisor-contact / fixed-plan lead created by the bot for non-instant products.
 export interface CreateLeadInput {
-  productType: string; // bici | comercio | praxis | personas | bolso | hogar
+  productType: string; // bici | comercio | praxis | personas | bolso | hogar, or auto | moto for a quoted coverage
   contactName: string;
   phone: string;
   email?: string;

@@ -31,6 +31,9 @@ export type FlowStep =
   | 'COT_LEAD_NOMBRE' // capturing the contact name for an advisor-contact lead
   | 'COT_LEAD_TELEFONO' // capturing the contact phone, then create the lead
   | 'LLM_COTIZACION' // conversational quote flow (handed to the LLM)
+  | 'COT_DOC_DNI_FRENTE' // take-out documents after choosing a coverage: DNI front
+  | 'COT_DOC_DNI_DORSO' // DNI back
+  | 'COT_DOC_TARJETA_AZUL' // tarjeta azul
   | 'LLM_FAQ'; // free-text questions (handed to the LLM)
 
 export interface FlowState {

@@ -103,6 +103,51 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'request_coverage',
+      description:
+        'Registra que la persona quiere CONTRATAR una cobertura que ya le cotizaste con quote_vehicle (ej: "me interesa la B1", "quiero la A"). Llamala en cuanto elija una. El sistema anota el pedido para un asesor y le pide a continuación las fotos del DNI y la tarjeta azul.',
+      parameters: {
+        type: 'object',
+        properties: {
+          vehicleType: { type: 'string', enum: ['auto', 'moto'] },
+          coverageCode: {
+            type: 'string',
+            description: 'Código de la cobertura elegida, ej: "B1"',
+          },
+          coverageName: {
+            type: 'string',
+            description: 'Nombre de la cobertura, ej: "Todo Total 1"',
+          },
+          price: {
+            type: 'string',
+            description: 'Precio "desde" tal como lo mostraste, ej: "$ 62.614"',
+          },
+          vehicle: {
+            type: 'string',
+            description:
+              'Marca, modelo y versión cotizados, ej: "HONDA NAVI 110"',
+          },
+          manufactureYear: { type: 'integer' },
+          postalCode: { type: 'integer' },
+          hasGnc: {
+            type: 'boolean',
+            description: 'Solo autos: si tiene GNC',
+          },
+        },
+        required: [
+          'vehicleType',
+          'coverageCode',
+          'coverageName',
+          'vehicle',
+          'manufactureYear',
+          'postalCode',
+        ],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'find_vehicle',
       description:
         'Busca el vehículo en el catálogo InfoAuto en UN solo paso: resuelve la marca, la línea del modelo y devuelve las versiones que coinciden (con su CODIA), ya filtradas por año si lo pasás. Es el primer paso para cotizar: usalo apenas tengas marca y modelo. Si no encuentra el modelo, devuelve los modelos disponibles de la marca.',
@@ -225,8 +270,16 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
+/**
+ * Signals that the customer chose a quoted coverage to take out. Handled by the
+ * bot itself (not a data lookup): it records the request in the Solicitudes
+ * panel, flags the chat for an advisor and starts asking for the documents.
+ */
+export const REQUEST_COVERAGE_TOOL = 'request_coverage';
+
 /** Tool names safe to expose during the conversational quote sub-flow. */
 const COTIZADOR_TOOL_NAMES = [
+  REQUEST_COVERAGE_TOOL,
   'find_vehicle',
   'search_vehicle_brands',
   'get_vehicle_groups',

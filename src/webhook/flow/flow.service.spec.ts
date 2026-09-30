@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { ApiService } from '../../api/api.service';
-import { FlowService } from './flow.service';
+import { FlowService, takeOutDocsState } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
 
@@ -838,6 +838,56 @@ describe('FlowService', () => {
 
         expect(stored?.step).toBe('SINIESTRO_TYPE');
       });
+    });
+  });
+
+  describe('take-out documents after choosing a coverage', () => {
+    /** State the webhook saves once the quote model records the coverage. */
+    function startDocs(leadId = 42) {
+      stored = takeOutDocsState(
+        { step: 'LLM_COTIZACION', data: {}, audience: 'lead' },
+        leadId,
+      );
+    }
+    const photo = { text: '', selectionId: '__photo_received__' };
+
+    it('asks DNI back, then tarjeta azul, then closes with the menu', async () => {
+      startDocs();
+
+      const back = await send(photo);
+      expect(stored).toEqual({
+        step: 'COT_DOC_DNI_DORSO',
+        data: { leadId: 42 },
+        audience: 'lead',
+      });
+      expect(JSON.stringify(back.messages)).toContain('dorso del DNI');
+
+      const card = await send(photo);
+      expect(stored?.step).toBe('COT_DOC_TARJETA_AZUL');
+      expect(stored?.data.leadId).toBe(42);
+      expect(JSON.stringify(card.messages)).toContain('tarjeta azul');
+
+      const done = await send(photo);
+      expect(stored?.step).toBe('LEAD_MENU');
+      expect(JSON.stringify(done.messages)).toContain('Ya tenemos todo');
+    });
+
+    it('lets the customer skip a document with "no la tengo"', async () => {
+      startDocs();
+
+      await send({ text: 'no la tengo' });
+
+      expect(stored?.step).toBe('COT_DOC_DNI_DORSO');
+    });
+
+    it('re-asks for the photo on other text, without reaching the LLM', async () => {
+      startDocs();
+
+      const res = await send({ text: 'ahora te la mando' });
+
+      expect(res.handoff).toBeUndefined();
+      expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      expect(JSON.stringify(res.messages)).toContain('foto');
     });
   });
 });

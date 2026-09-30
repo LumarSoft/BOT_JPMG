@@ -127,6 +127,36 @@ export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
   SINIESTRO_FOTO_DANIO: 'siniestro',
 };
 
+/** Take-out document steps → the `tipo` label stored on each lead attachment. */
+export const LEAD_DOC_TIPO: Partial<Record<FlowStep, string>> = {
+  COT_DOC_DNI_FRENTE: 'dni_frente',
+  COT_DOC_DNI_DORSO: 'dni_dorso',
+  COT_DOC_TARJETA_AZUL: 'tarjeta_azul',
+};
+
+/** First prompt of the take-out documents, sent right after a coverage is chosen. */
+export const TAKE_OUT_DOCS_INTRO =
+  'Para avanzar con la contratación necesito unas fotos 📸:\n' +
+  '• *DNI* (frente y dorso)\n' +
+  '• *Tarjeta azul*\n\n' +
+  'Empecemos: mandame una foto del *frente de tu DNI*. (si no la tenés a mano, escribí *no la tengo*)';
+
+/**
+ * Flow snapshot that opens the take-out documents for the lead the quote model
+ * just created (see webhook.service). The lead id travels in the state so each
+ * photo lands on that lead; the declared audience is kept.
+ */
+export function takeOutDocsState(
+  prev: FlowState | null,
+  leadId: number,
+): FlowState {
+  return {
+    step: 'COT_DOC_DNI_FRENTE',
+    data: { leadId },
+    ...(prev?.audience ? { audience: prev.audience } : {}),
+  };
+}
+
 /** Buttons for the "¿hubo un tercero?" step. */
 const TERCERO_SI = 'sin_tercero_si';
 const TERCERO_NO = 'sin_tercero_no';
@@ -529,6 +559,18 @@ export class FlowService {
         return this.handleCotLeadTelefono(state, input, ctx, key);
       case 'LLM_COTIZACION':
         return this.handleLlm(input, key, 'cotizacion');
+      case 'COT_DOC_DNI_FRENTE':
+        return this.handleTakeOutDoc(state, input, key, {
+          next: 'COT_DOC_DNI_DORSO',
+          ask: 'Perfecto. Ahora el *dorso del DNI*. (si no la tenés, escribí *no la tengo*)',
+        });
+      case 'COT_DOC_DNI_DORSO':
+        return this.handleTakeOutDoc(state, input, key, {
+          next: 'COT_DOC_TARJETA_AZUL',
+          ask: 'Genial. Por último, una foto de la *tarjeta azul*. (si no la tenés, escribí *no la tengo*)',
+        });
+      case 'COT_DOC_TARJETA_AZUL':
+        return this.finishTakeOutDocs(state, input, ctx, key);
       case 'LLM_FAQ':
         return this.handleLlm(input, key, 'faq');
       default:
@@ -1122,6 +1164,39 @@ export class FlowService {
         },
       ],
     };
+  }
+
+  // ─── Cotización: documentos para contratar ────────────────
+
+  /** One take-out document step: a photo (or "no la tengo") moves to the next. */
+  private handleTakeOutDoc(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+    step: { next: FlowStep; ask: string },
+  ): FlowResult {
+    if (!this.photoAdvances(input)) {
+      return this.retry(key, state, this.retryPhoto().messages);
+    }
+    this.setState(key, step.next, { leadId: state.data.leadId });
+    return { messages: [{ kind: 'text', body: step.ask }] };
+  }
+
+  private async finishTakeOutDocs(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    if (!this.photoAdvances(input)) {
+      return this.retry(key, state, this.retryPhoto().messages);
+    }
+    return this.prepend(
+      '¡Listo! 🙌 Ya tenemos todo para tu contratación. Un asesor te contacta ' +
+        `para terminarla (${attentionHoursOf(ctx.attentionHours)}).` +
+        (await this.closedNote()),
+      this.toMainMenu(key, ctx),
+    );
   }
 
   private finishSiniestroPhotos(key: string): FlowResult {
@@ -1971,7 +2046,7 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: 'No encontré pólizas asociadas a tu cuenta. Si creés que es un error, escribí *asesor* y te ayudamos.',
+          body: 'No encontré pólizas vigentes a tu nombre. Si creés que es un error, escribí *asesor* y te ayudamos.',
         },
         clientMenu(),
       ],
@@ -2095,7 +2170,8 @@ export class FlowService {
       step === 'SINIESTRO_TERCERO' ||
       step === 'SINIESTRO_TERCERO_TARJETA' ||
       step === 'SINIESTRO_TERCERO_CARNET' ||
-      step === 'SINIESTRO_FOTO_DANIO'
+      step === 'SINIESTRO_FOTO_DANIO' ||
+      step in LEAD_DOC_TIPO
     );
   }
 

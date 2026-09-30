@@ -16,6 +16,9 @@ describe('WebhookService', () => {
     attachAdjunto: jest.Mock;
     getProducts: jest.Mock;
     reportOpenAiUsage: jest.Mock;
+    createLead: jest.Mock;
+    requestHandoff: jest.Mock;
+    attachLeadAdjunto: jest.Mock;
   };
   let meta: {
     sendText: jest.Mock;
@@ -37,6 +40,11 @@ describe('WebhookService', () => {
       attachAdjunto: jest.fn(),
       getProducts: jest.fn().mockResolvedValue([]),
       reportOpenAiUsage: jest.fn().mockResolvedValue(undefined),
+      createLead: jest.fn().mockResolvedValue({ id: 42 }),
+      requestHandoff: jest.fn().mockResolvedValue(undefined),
+      attachLeadAdjunto: jest
+        .fn()
+        .mockResolvedValue({ leadId: 42, adjuntosCount: 1 }),
     };
     meta = {
       sendText: jest.fn().mockResolvedValue(undefined),
@@ -454,6 +462,139 @@ describe('WebhookService', () => {
       expect(api.attachAdjunto).not.toHaveBeenCalled();
       const reply = (meta.sendText.mock.calls as string[][])[0][1];
       expect(reply).toContain('reenviarla');
+    });
+  });
+
+  describe('taking out a quoted coverage', () => {
+    beforeEach(() => {
+      api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+      api.saveMessage.mockResolvedValue({});
+      api.getConversation.mockResolvedValue({
+        conversationId: 3,
+        client: null,
+        newSession: false,
+        messages: [],
+      });
+    });
+
+    it('records the chosen coverage, flags the chat and asks for the DNI', async () => {
+      flow.handle.mockResolvedValue({
+        messages: [],
+        state: {
+          step: 'LLM_COTIZACION',
+          data: { vehiculo: 'moto' },
+          audience: 'lead',
+        },
+        handoff: 'cotizacion',
+      });
+      const toolTurn = {
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 't1',
+                  type: 'function',
+                  function: {
+                    name: 'request_coverage',
+                    arguments: JSON.stringify({
+                      vehicleType: 'moto',
+                      coverageCode: 'B1',
+                      coverageName: 'Todo Total 1',
+                      price: '$ 62.614',
+                      vehicle: 'HONDA NAVI 110',
+                      manufactureYear: 2025,
+                      postalCode: 2000,
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const create = jest
+        .fn()
+        .mockResolvedValueOnce(toolTurn)
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: '¡Buenísimo! Anotamos la B1.' } }],
+        });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+
+      await service.handleMessage(
+        '5493416956364',
+        'me interesa la B1',
+        'P1',
+        'cov-1',
+      );
+
+      expect(api.createLead).toHaveBeenCalledWith(3, {
+        productType: 'moto',
+        contactName: 'Cliente WhatsApp',
+        phone: '5493416956364',
+        payload: {
+          cobertura: 'B1 — Todo Total 1',
+          vehiculo: 'HONDA NAVI 110',
+          anio: 2025,
+          codigoPostal: 2000,
+          precio: '$ 62.614',
+        },
+      });
+      expect(api.requestHandoff).toHaveBeenCalledWith(3);
+      expect(api.saveFlowState).toHaveBeenCalledWith(
+        3,
+        JSON.stringify({
+          step: 'COT_DOC_DNI_FRENTE',
+          data: { leadId: 42 },
+          audience: 'lead',
+        }),
+      );
+      // Confirmation and the first document request go out as one message.
+      expect(meta.sendText).toHaveBeenCalledTimes(1);
+      const body = (meta.sendText.mock.calls as string[][])[0][1];
+      expect(body).toContain('Anotamos la B1');
+      expect(body).toContain('frente de tu DNI');
+    });
+
+    it('stores a photo sent during the documents on that request', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 3,
+        client: null,
+        newSession: false,
+        messages: [],
+        flowState: JSON.stringify({
+          step: 'COT_DOC_DNI_DORSO',
+          data: { leadId: 42 },
+        }),
+      });
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      flow.handle.mockResolvedValue({
+        messages: [{ kind: 'text', body: 'Por último, la tarjeta azul' }],
+        state: { step: 'COT_DOC_TARJETA_AZUL', data: { leadId: 42 } },
+      });
+
+      await service.handleMedia('5493416956364', 'media-9', 'P1', 'wm-9');
+
+      expect(api.attachLeadAdjunto).toHaveBeenCalledWith(
+        3,
+        42,
+        expect.objectContaining({ mimeType: 'image/jpeg' }),
+        'dni_dorso',
+      );
+      expect(api.attachAdjunto).not.toHaveBeenCalled();
+      expect(flow.handle).toHaveBeenCalledWith(
+        expect.any(String),
+        { text: '', selectionId: '__photo_received__' },
+        expect.anything(),
+      );
     });
   });
 });
