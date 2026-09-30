@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import axios from 'axios';
 import { ApiService } from '../api/api.service';
-import type { BotContext, BotConversation } from '../api/api.types';
+import type {
+  BotContext,
+  BotConversation,
+  MessageMedia,
+} from '../api/api.types';
 import { MetaService } from './meta.service';
 import {
   FlowService,
@@ -633,16 +637,24 @@ export class WebhookService {
       mimeType: media.mimeType,
     };
 
+    let attachmentResult: {
+      attached?: boolean;
+      attachments?: MessageMedia[];
+    };
     try {
       if (leadTipo && Number.isInteger(leadId)) {
-        await this.api.attachLeadAdjunto(
+        attachmentResult = await this.api.attachLeadAdjunto(
           conversation.conversationId,
           leadId,
           file,
           leadTipo,
         );
       } else {
-        await this.api.attachAdjunto(conversation.conversationId, file, tipo);
+        attachmentResult = await this.api.attachAdjunto(
+          conversation.conversationId,
+          file,
+          tipo,
+        );
       }
     } catch (error) {
       if (
@@ -658,14 +670,26 @@ export class WebhookService {
       return;
     }
 
-    // Best-effort transcript note so later turns know a photo was sent.
-    await this.api
-      .saveMessage(
-        conversation.conversationId,
-        'user',
-        '[El cliente envió una foto]',
-      )
-      .catch(() => undefined);
+    // Persist the real attachment metadata in the transcript. The inbox signs
+    // its protected URL when it is read, so the browser can render the image.
+    const messageMedia = attachmentResult.attachments?.[0];
+    const saveImageMessage = messageMedia
+      ? this.api.saveMessage(
+          conversation.conversationId,
+          'user',
+          '[El cliente envió una foto]',
+          messageMedia,
+        )
+      : this.api.saveMessage(
+          conversation.conversationId,
+          'user',
+          '[El cliente envió una foto]',
+        );
+    await saveImageMessage.catch((error: Error) =>
+      this.logger.error(
+        `No se pudo guardar la imagen en el chat: ${error.message}`,
+      ),
+    );
 
     // A human agent owns the chat → store the photo but stay silent.
     if (
@@ -673,6 +697,17 @@ export class WebhookService {
       automationDisabled ||
       !(await this.automaticRepliesStillEnabled(phoneNumberId))
     ) {
+      return;
+    }
+
+    // The image remains available in the inbox even when there is no open
+    // claim yet, but the guided flow must not advance as if it were attached.
+    if (attachmentResult.attached === false) {
+      await this.meta.sendText(
+        to,
+        'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.',
+        phoneNumberId,
+      );
       return;
     }
 

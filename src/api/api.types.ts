@@ -220,8 +220,19 @@ export interface QuoteResult {
 }
 
 export interface AttachAdjuntosResult {
-  siniestroId: number;
+  siniestroId: number | null;
   adjuntosCount: number;
+  /** Optional only for rolling compatibility with an older API during deploy. */
+  attached?: boolean;
+  attachments?: MessageMedia[];
+}
+
+export interface MessageMedia {
+  url: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  tipo?: string;
 }
 
 // Advisor-contact / fixed-plan lead created by the bot for non-instant products.

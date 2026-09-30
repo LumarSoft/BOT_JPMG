@@ -702,6 +702,71 @@ describe('WebhookService', () => {
       expect(reply).toContain('sumé');
     });
 
+    it('stores the actual image metadata in the inbox transcript', async () => {
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      const attachment = {
+        url: '/uploads/siniestros/a.webp',
+        originalName: 'a.webp',
+        mimeType: 'image/webp',
+        size: 123,
+      };
+      api.attachAdjunto.mockResolvedValue({
+        siniestroId: 9,
+        adjuntosCount: 1,
+        attached: true,
+        attachments: [attachment],
+      });
+
+      await service.handleMedia('5491155556666', 'media-real', 'P1', 'wm-real');
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '[El cliente envió una foto]',
+        attachment,
+      );
+    });
+
+    it('keeps the image visible in the inbox when there is no open claim', async () => {
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      const attachment = {
+        url: '/uploads/siniestros/unattached.webp',
+        originalName: 'unattached.webp',
+        mimeType: 'image/webp',
+        size: 99,
+      };
+      api.attachAdjunto.mockResolvedValue({
+        siniestroId: null,
+        adjuntosCount: 0,
+        attached: false,
+        attachments: [attachment],
+      });
+
+      await service.handleMedia(
+        '5491155556666',
+        'media-loose',
+        'P1',
+        'wm-loose',
+      );
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '[El cliente envió una foto]',
+        attachment,
+      );
+      expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
+        'denuncia',
+      );
+      expect(flow.handle).not.toHaveBeenCalled();
+    });
+
     it('guides the user when there is no open claim (404)', async () => {
       meta.downloadMedia.mockResolvedValue({
         buffer: Buffer.from('img'),

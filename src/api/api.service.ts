@@ -14,6 +14,7 @@ import type {
   InfoAutoBrand,
   InfoAutoGroup,
   InfoAutoModel,
+  MessageMedia,
   PendingWarning,
   PolizaDocumento,
   PolizaSummary,
@@ -173,10 +174,11 @@ export class ApiService {
     conversationId: number,
     role: 'user' | 'assistant',
     content: string,
+    media?: MessageMedia,
   ): Promise<ConversationMessage> {
     const { data } = await this.http.post<ConversationMessage>(
       `/bot/conversation/${conversationId}/message`,
-      { role, content },
+      { role, content, ...(media ? { media } : {}) },
     );
     return data;
   }
@@ -333,7 +335,12 @@ export class ApiService {
     leadId: number,
     file: { buffer: Buffer; filename: string; mimeType: string },
     tipo: string,
-  ): Promise<{ leadId: number; adjuntosCount: number }> {
+  ): Promise<{
+    leadId: number;
+    adjuntosCount: number;
+    attached?: boolean;
+    attachments?: MessageMedia[];
+  }> {
     const form = new FormData();
     form.append(
       'adjuntos',
@@ -343,6 +350,8 @@ export class ApiService {
     const { data } = await this.http.post<{
       leadId: number;
       adjuntosCount: number;
+      attached?: boolean;
+      attachments?: MessageMedia[];
     }>(
       `/bot/conversation/${conversationId}/leads/${leadId}/adjuntos?tipo=${encodeURIComponent(tipo)}`,
       form,
