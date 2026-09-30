@@ -182,6 +182,38 @@ describe('FlowService', () => {
       );
       expect(res.state?.step).toBe('ROOT');
     });
+
+    it('keeps verified vehicle memory unchanged across quote turns and restarts', async () => {
+      const quoteVehicle = {
+        vehicleType: 'auto',
+        brandId: 12,
+        brandName: 'CHEVROLET',
+        candidates: [
+          {
+            codia: 120632,
+            description: 'ONIX 1.0T PREMIER II AT L/24',
+          },
+        ],
+        selected: {
+          codia: 120632,
+          description: 'ONIX 1.0T PREMIER II AT L/24',
+        },
+      };
+      stored = {
+        step: 'LLM_COTIZACION',
+        data: { vehiculo: 'auto', quoteVehicle },
+        audience: 'lead',
+      };
+
+      const res = await send({ text: 'no, no tiene GNC' });
+
+      expect(res.handoff).toBe('cotizacion');
+      expect(res.state).toEqual({
+        step: 'LLM_COTIZACION',
+        data: { vehiculo: 'auto', quoteVehicle },
+        audience: 'lead',
+      });
+    });
   });
 
   describe('siniestro form', () => {

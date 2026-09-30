@@ -395,6 +395,66 @@ describe('WebhookService', () => {
       expect(parsed.error).toEqual(expect.any(String));
       expect(api.quoteVehicle).not.toHaveBeenCalled();
     });
+
+    it('does not reuse an auto CODIA for a motorcycle quote', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+          remembered?: typeof memory & {
+            selected?: { codia: number; description: string };
+          },
+        ) => Promise<string>;
+      };
+
+      const result = await privateService.executeTool(
+        'quote_vehicle',
+        JSON.stringify({
+          vehicleType: 'moto',
+          codia: 0,
+          manufactureYear: 2024,
+          postalCode: 2000,
+        }),
+        9,
+        { ...memory, selected: memory.candidates[1] },
+      );
+
+      const parsed = JSON.parse(result) as { error?: unknown };
+      expect(parsed.error).toEqual(expect.any(String));
+      expect(api.quoteVehicle).not.toHaveBeenCalled();
+    });
+
+    it('drops the old selection when a new vehicle search returns other candidates', () => {
+      const privateService = service as unknown as {
+        rememberVehicleSearch: (
+          previous: typeof memory & {
+            selected?: { codia: number; description: string };
+          },
+          result: string,
+          args: string,
+        ) => {
+          vehicleType: string;
+          candidates: Array<{ codia: number; description: string }>;
+          selected?: { codia: number; description: string };
+        };
+      };
+
+      const next = privateService.rememberVehicleSearch(
+        { ...memory, selected: memory.candidates[1] },
+        JSON.stringify({
+          brand: { id: 18, name: 'FORD' },
+          versions: [
+            { codia: 180771, description: 'FOCUS 2.0 SE PLUS' },
+            { codia: 180772, description: 'FOCUS 2.0 TITANIUM' },
+          ],
+        }),
+        JSON.stringify({ vehicleType: 'auto' }),
+      );
+
+      expect(next.candidates).toHaveLength(2);
+      expect(next.selected).toBeUndefined();
+    });
   });
 
   describe('outgoing messages', () => {
