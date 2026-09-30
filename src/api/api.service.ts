@@ -178,7 +178,23 @@ export class ApiService {
   ): Promise<ConversationMessage> {
     const { data } = await this.http.post<ConversationMessage>(
       `/bot/conversation/${conversationId}/message`,
-      { role, content, ...(media ? { media } : {}) },
+      {
+        role,
+        content,
+        // Upload metadata also includes filename. Only send fields accepted
+        // by SaveMessageDto: the API rejects unknown nested properties.
+        ...(media
+          ? {
+              media: {
+                url: media.url,
+                originalName: media.originalName,
+                mimeType: media.mimeType,
+                size: media.size,
+                ...(media.tipo ? { tipo: media.tipo } : {}),
+              },
+            }
+          : {}),
+      },
     );
     return data;
   }

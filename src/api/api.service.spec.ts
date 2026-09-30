@@ -1,6 +1,34 @@
 import { ConfigService } from '@nestjs/config';
 import { ApiService } from './api.service';
 
+describe('ApiService image messages', () => {
+  it('omits upload-only metadata that strict message validation rejects', async () => {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new ApiService(config);
+    const post = jest.fn().mockResolvedValue({ data: { id: 1 } });
+    (service as any).http.post = post;
+    const attachment = {
+      filename: 'stored.webp',
+      url: '/uploads/siniestros/stored.webp',
+      originalName: 'photo.webp',
+      mimeType: 'image/webp',
+      size: 74368,
+      tipo: 'otro',
+    };
+
+    await service.saveMessage(14, 'user', '[foto]', attachment);
+
+    const { filename: _filename, ...media } = attachment;
+    expect(post).toHaveBeenCalledWith('/bot/conversation/14/message', {
+      role: 'user',
+      content: '[foto]',
+      media,
+    });
+  });
+});
+
 describe('ApiService InfoAuto pagination', () => {
   it('returns brands from every page of the motorcycle catalog', async () => {
     const config = {
