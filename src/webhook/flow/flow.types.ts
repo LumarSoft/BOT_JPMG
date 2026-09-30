@@ -14,6 +14,10 @@ export type FlowStep =
   | 'SINIESTRO_POLIZA' // pick the affected policy
   | 'SINIESTRO_FECHA' // waiting for the incident date
   | 'SINIESTRO_DESC' // waiting for the description
+  | 'SINIESTRO_HORA'
+  | 'SINIESTRO_LOCALIDAD'
+  | 'SINIESTRO_CALLE'
+  | 'SINIESTRO_ALTURA'
   | 'SINIESTRO_CONFIRM' // confirm before creating
   | 'SINIESTRO_FOTO_TARJETA' // waiting for the insured's green-card photo
   | 'SINIESTRO_FOTO_CARNET' // waiting for the insured's driver-license photo

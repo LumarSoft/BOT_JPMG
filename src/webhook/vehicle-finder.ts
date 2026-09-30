@@ -67,18 +67,23 @@ function tokens(text: string): string[] {
 /**
  * Whether a version can be the user's `year`. InfoAuto lags on the newest
  * model year: a Honda NAVI still on sale is listed "2024-2025" while it is
- * sold — and quoted by Triunfo and the web — as a 2026. So a version sold up to
- * last year also counts for the current and next year.
+ * sold — and quoted by Triunfo and the web — as a 2026. Only motorcycles sold up to
+ * last year can use that grace period for the current and next year; cars
+ * must match the catalog range.
  */
 function inYears(
   item: { prices_from?: number | null; prices_to?: number | null },
   year: number,
+  allowRecentMoto = false,
 ): boolean {
   const from = item.prices_from;
   const to = item.prices_to;
   if (typeof from !== 'number' || typeof to !== 'number') return true;
   if (year < from) return false;
-  return year <= to || stillOnSale(to);
+  return (
+    year <= to ||
+    (allowRecentMoto && year <= new Date().getFullYear() + 1 && stillOnSale(to))
+  );
 }
 
 function stillOnSale(to: number): boolean {
@@ -185,12 +190,21 @@ export async function findVehicle(
     const extra = tokens(args.model).filter((t) => !lineWords.has(t));
     let models = bestMatches(found.models, extra);
     models = bestMatches(models, args.version ? tokens(args.version) : []);
-    let note: string | undefined;
     if (year) {
-      const forYear = models.filter((m) => inYears(m, year));
+      const forYear = models.filter((m) =>
+        inYears(m, year, vehicleType === 'moto'),
+      );
       if (forYear.length > 0) models = forYear;
       else
-        note = `El catálogo no lista estas versiones para ${year}. Igual cotizá con el año ${year} que dijo la persona (el cotizador lo acepta); solo preguntá si el año parece un error de tipeo.`;
+        return {
+          brand: { id: brand.id, name: brand.name },
+          error: `El catálogo no lista el modelo "${args.model}" para ${year}. No se puede cotizar esa combinación; pedí que revise el modelo y el año de la documentación.`,
+          availableYears: models.map((m) => ({
+            description: m.description,
+            from: m.prices_from,
+            to: m.prices_to,
+          })),
+        };
     }
     return {
       brand: { id: brand.id, name: brand.name },
@@ -200,7 +214,7 @@ export async function findVehicle(
         description: m.description.replace(/\s+/g, ' ').trim(),
         years:
           typeof m.prices_from === 'number' && typeof m.prices_to === 'number'
-            ? stillOnSale(m.prices_to)
+            ? vehicleType === 'moto' && stillOnSale(m.prices_to)
               ? `${m.prices_from} en adelante`
               : `${m.prices_from}-${m.prices_to}`
             : undefined,
@@ -210,7 +224,6 @@ export async function findVehicle(
             note: `Hay ${models.length} versiones; pedile un dato que las distinga (motor, puertas, versión).`,
           }
         : {}),
-      ...(note ? { note } : {}),
     };
   }
 

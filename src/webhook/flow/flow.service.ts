@@ -529,6 +529,11 @@ export class FlowService {
         return this.handleSiniestroFecha(state, input, key);
       case 'SINIESTRO_DESC':
         return this.handleSiniestroDesc(state, input, key);
+      case 'SINIESTRO_HORA':
+      case 'SINIESTRO_LOCALIDAD':
+      case 'SINIESTRO_CALLE':
+      case 'SINIESTRO_ALTURA':
+        return this.handleSiniestroDetalle(state, input, key);
       case 'SINIESTRO_CONFIRM':
         return this.handleSiniestroConfirm(state, input, ctx, key);
       case 'SINIESTRO_FOTO_TARJETA':
@@ -949,7 +954,7 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: 'Contame brevemente qué pasó (y la hora y el lugar si los tenés).',
+          body: 'Contame cómo ocurrió el hecho. Si fue un choque, ¿cómo fue el choque?',
         },
       ],
     };
@@ -967,19 +972,75 @@ export class FlowService {
       return this.retry(key, state, [
         {
           kind: 'text',
-          body: 'Contame un poco más de qué pasó (cómo fue, y la hora y el lugar si los tenés).',
+          body: 'Contame un poco más de cómo ocurrió el hecho o cómo fue el choque.',
         },
       ]);
     }
 
-    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
-    const poliza = polizas.find((p) => p.id === state.data.polizaId);
-    this.setState(key, 'SINIESTRO_CONFIRM', { ...state.data, descripcion });
+    this.setState(key, 'SINIESTRO_HORA', { ...state.data, descripcion });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: '¿A qué hora ocurrió? Escribí la hora como *HH:MM*, o decime una hora aproximada.',
+        },
+      ],
+    };
+  }
+
+  private handleSiniestroDetalle(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    const fields = {
+      SINIESTRO_HORA: {
+        field: 'hora',
+        next: 'SINIESTRO_LOCALIDAD',
+        question: '¿En qué localidad ocurrió el hecho?',
+      },
+      SINIESTRO_LOCALIDAD: {
+        field: 'localidad',
+        next: 'SINIESTRO_CALLE',
+        question: '¿En qué calle ocurrió?',
+      },
+      SINIESTRO_CALLE: {
+        field: 'calle',
+        next: 'SINIESTRO_ALTURA',
+        question:
+          '¿A qué altura de esa calle? Si no había numeración, indicá la esquina, kilómetro o referencia.',
+      },
+      SINIESTRO_ALTURA: {
+        field: 'altura',
+        next: 'SINIESTRO_CONFIRM',
+        question: '',
+      },
+    } as const;
+    const detail = fields[state.step as keyof typeof fields];
+    const value = input.text.trim();
+    if (!value || !/[\p{L}\p{N}]/u.test(value)) {
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'Necesito ese dato para completar la denuncia. Si no lo sabés, decime que no lo recordás.',
+        },
+      ]);
+    }
+    const data = { ...state.data, [detail.field]: value };
+    if (detail.next !== 'SINIESTRO_CONFIRM') {
+      this.setState(key, detail.next, data);
+      return { messages: [{ kind: 'text', body: detail.question }] };
+    }
+    // Preserve the existing claim contract: details reach the panel and advisor
+    // in the description, together with the account of what happened.
+    const descripcion = `${String(data.descripcion)}\nHora: ${String(data.hora)}\nLocalidad: ${String(data.localidad)}\nCalle: ${String(data.calle)}\nAltura / referencia: ${value}`;
+    this.setState(key, 'SINIESTRO_CONFIRM', { ...data, descripcion });
+    const polizas = (data.polizas as PolizaSummary[] | undefined) ?? [];
     return {
       messages: [
         siniestroConfirm(
-          poliza,
-          state.data.fechaDisplay as string,
+          polizas.find((p) => p.id === data.polizaId),
+          data.fechaDisplay as string,
           descripcion,
         ),
       ],
@@ -2194,6 +2255,10 @@ export class FlowService {
       step === 'IDENTIFY' ||
       step === 'SINIESTRO_FECHA' ||
       step === 'SINIESTRO_DESC' ||
+      step === 'SINIESTRO_HORA' ||
+      step === 'SINIESTRO_LOCALIDAD' ||
+      step === 'SINIESTRO_CALLE' ||
+      step === 'SINIESTRO_ALTURA' ||
       step === 'ASESOR_MOTIVO' ||
       step === 'LEAD_CONTACT' ||
       step === 'COT_LEAD_FIELDS' ||

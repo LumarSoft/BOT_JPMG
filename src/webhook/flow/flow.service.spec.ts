@@ -240,7 +240,8 @@ describe('FlowService', () => {
       expect(afterDate.handoff).toBeUndefined();
       expect(afterDate.state?.step).toBe('SINIESTRO_DESC');
 
-      await send({ text: 'choqué contra un árbol de frente' }, clientCtx); // SINIESTRO_CONFIRM
+      await send({ text: 'choqué contra un árbol de frente' }, clientCtx); // SINIESTRO_HORA
+      await completeIncidentDetails();
       const done = await send({ text: 'dale' }, clientCtx); // confirm
 
       // "hoy" resolves to today's local date (YYYY-MM-DD), same as the service.
@@ -252,12 +253,30 @@ describe('FlowService', () => {
           polizaId: 833,
           tipo: 'auto',
           fecha: todayIso,
-          descripcion: 'choqué contra un árbol de frente',
+          descripcion:
+            'choqué contra un árbol de frente\nHora: 14:30\nLocalidad: Rosario\nCalle: San Martín\nAltura / referencia: 1234',
         }),
       );
       // The claim is created first, then the guided evidence upload begins.
       expect(done.state?.step).toBe('SINIESTRO_FOTO_TARJETA');
     });
+
+    async function completeIncidentDetails() {
+      expect(stored?.step).toBe('SINIESTRO_HORA');
+      expect(api.createSiniestro).not.toHaveBeenCalled();
+      await send({ text: '14:30' }, clientCtx);
+      expect(stored?.step).toBe('SINIESTRO_LOCALIDAD');
+      await send({ text: 'Rosario' }, clientCtx);
+      expect(stored?.step).toBe('SINIESTRO_CALLE');
+      await send({ text: 'San Martín' }, clientCtx);
+      expect(stored?.step).toBe('SINIESTRO_ALTURA');
+      const summary = await send({ text: '1234' }, clientCtx);
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(summary.messages[0].body).toContain('Hora: 14:30');
+      expect(summary.messages[0].body).toContain('Localidad: Rosario');
+      expect(summary.messages[0].body).toContain('Calle: San Martín');
+      expect(summary.messages[0].body).toContain('Altura / referencia: 1234');
+    }
 
     /** Drives an identified client to the date question of a new claim. */
     async function toDateStep() {
@@ -281,6 +300,7 @@ describe('FlowService', () => {
       await toDateStep();
       await send({ text }, clientCtx);
       await send({ text: 'me rompieron el vidrio' }, clientCtx);
+      await completeIncidentDetails();
       await send({ text: 'dale' }, clientCtx);
 
       expect(api.createSiniestro).toHaveBeenCalledWith(
@@ -295,6 +315,7 @@ describe('FlowService', () => {
         await toDateStep();
         await send({ text: 'hoy' }, clientCtx);
         await send({ text: 'me rompieron el vidrio' }, clientCtx);
+        await completeIncidentDetails();
         await send({ text: 'dale' }, clientCtx); // SINIESTRO_FOTO_TARJETA
         await send({ text: 'no la tengo' }, clientCtx); // SINIESTRO_FOTO_CARNET
         await send({ text: 'no la tengo' }, clientCtx); // SINIESTRO_TERCERO

@@ -72,7 +72,7 @@ describe('findVehicle', () => {
     expect(a.getModels).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps all versions (with a note) when none matches the year', async () => {
+  it('blocks the quote when no version matches the year', async () => {
     const res = await findVehicle(api(), {
       vehicleType: 'auto',
       brand: 'chevrolet',
@@ -80,8 +80,37 @@ describe('findVehicle', () => {
       year: 1990,
     });
 
-    expect((res.versions as unknown[]).length).toBe(2);
-    expect(res.note).toContain('1990');
+    expect(res.versions).toBeUndefined();
+    expect(res.error).toContain('1990');
+  });
+
+  it('rejects Fiat Palio 2024 instead of handing back an older CODIA', async () => {
+    const a = {
+      searchBrands: jest.fn().mockResolvedValue([{ id: 17, name: 'FIAT' }]),
+      getGroups: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 1, name: 'PALIO', prices_from: 1996, prices_to: 2018 },
+        ]),
+      getModels: jest
+        .fn()
+        .mockResolvedValue([
+          {
+            codia: 170001,
+            description: 'PALIO 1.4',
+            prices_from: 2010,
+            prices_to: 2018,
+          },
+        ]),
+    };
+    const result = await findVehicle(a, {
+      vehicleType: 'auto',
+      brand: 'Fiat',
+      model: 'Palio',
+      year: 2024,
+    });
+    expect(result.error).toContain('2024');
+    expect(result.versions).toBeUndefined();
   });
 
   it('lists the available lines when the model is not found', async () => {
@@ -256,7 +285,7 @@ describe('findVehicle', () => {
       ]);
     });
 
-    it('still drops a version that stopped selling years ago', async () => {
+    it('does not extrapolate a car model beyond its catalog years', async () => {
       const a = {
         searchBrands: jest
           .fn()
@@ -284,9 +313,8 @@ describe('findVehicle', () => {
         year: 2026,
       });
 
-      expect((res.versions as { codia: number }[]).map((v) => v.codia)).toEqual(
-        [2],
-      );
+      expect(res.versions).toBeUndefined();
+      expect(res.error).toContain('2026');
     });
   });
 });
