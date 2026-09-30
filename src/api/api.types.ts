@@ -6,6 +6,8 @@ export interface BotContext {
   producerSlug: string;
   /** Configurable bot display name (Producer.botName); null → generic fallback. */
   botName: string | null;
+  /** False when a SuperAdmin disabled every automated response for the organization. */
+  botEnabled?: boolean;
   /** General attention window (Producer.attentionHours); null → app default. */
   attentionHours: string | null;
   systemPrompt: string;

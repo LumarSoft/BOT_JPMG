@@ -278,10 +278,18 @@ export class WebhookService {
 
       // A human agent has taken over this conversation — store the message so
       // the agent can see it in the inbox, but do not run the bot for this turn.
-      if (conversation.botPaused || !this.autoReplyEnabled) {
+      if (
+        conversation.botPaused ||
+        !this.autoReplyEnabled ||
+        context.botEnabled === false
+      ) {
         if (!this.autoReplyEnabled) {
           this.logger.warn(
             `BOT_AUTOREPLY_ENABLED=false — mensaje de ${from} guardado sin responder`,
+          );
+        } else if (context.botEnabled === false) {
+          this.logger.warn(
+            `Bot desactivado para ${context.producerName} — mensaje de ${from} guardado sin responder`,
           );
         }
         await this.api
@@ -338,6 +346,11 @@ export class WebhookService {
         flowState: this.parseFlowState(conversation.flowState),
       },
     );
+
+    // Re-read the organization switch immediately before any automated output.
+    // This closes the race where a SuperAdmin activates global human attention
+    // while this message is already being processed.
+    if (!(await this.automaticRepliesStillEnabled(phoneNumberId))) return;
 
     // Persist the new flow snapshot so a restart resumes the exact step. The LLM
     // handoff below never changes flow state, so it's safe to save it now.
@@ -418,6 +431,9 @@ export class WebhookService {
         vehicleType,
         this.readQuoteVehicleMemory(result.state),
       );
+      // LLM/tool turns can take several seconds. Check again so an in-flight
+      // response cannot escape after the global stop button was pressed.
+      if (!(await this.automaticRepliesStillEnabled(phoneNumberId))) return;
       let effectiveState = result.state;
       if (effectiveState?.step === 'LLM_COTIZACION' && quoteVehicleMemory) {
         effectiveState = {
@@ -580,8 +596,17 @@ export class WebhookService {
       return;
     }
 
+    const automationDisabled =
+      context.botEnabled === false || !this.autoReplyEnabled;
+
     const media = await this.meta.downloadMedia(mediaId, phoneNumberId);
     if (!media) {
+      if (
+        automationDisabled ||
+        !(await this.automaticRepliesStillEnabled(phoneNumberId))
+      ) {
+        return;
+      }
       await this.meta.sendText(
         to,
         'No pude descargar la imagen. ¿Podés reenviarla?',
@@ -620,6 +645,12 @@ export class WebhookService {
         await this.api.attachAdjunto(conversation.conversationId, file, tipo);
       }
     } catch (error) {
+      if (
+        automationDisabled ||
+        !(await this.automaticRepliesStillEnabled(phoneNumberId))
+      ) {
+        return;
+      }
       const reply = leadTipo
         ? this.leadDocErrorReply(error)
         : this.mediaErrorReply(error);
@@ -637,7 +668,13 @@ export class WebhookService {
       .catch(() => undefined);
 
     // A human agent owns the chat → store the photo but stay silent.
-    if (conversation.botPaused) return;
+    if (
+      conversation.botPaused ||
+      automationDisabled ||
+      !(await this.automaticRepliesStillEnabled(phoneNumberId))
+    ) {
+      return;
+    }
 
     // In a guided photo step: advance the deterministic flow and send the next
     // prompt (next photo / "¿hubo tercero?" / closing), keeping it on the rails.
@@ -743,6 +780,22 @@ export class WebhookService {
       candidates,
       ...(selected ? { selected } : {}),
     };
+  }
+
+  /** Fail-closed gate used immediately before automated outbound messages. */
+  private async automaticRepliesStillEnabled(
+    phoneNumberId: string,
+  ): Promise<boolean> {
+    if (!this.autoReplyEnabled) return false;
+    try {
+      const context = await this.api.getContext(phoneNumberId);
+      return context.botEnabled !== false;
+    } catch (error) {
+      this.logger.error(
+        `No se pudo revalidar el estado global del bot: ${(error as Error).message}`,
+      );
+      return false;
+    }
   }
 
   /** Resolves a numeric/version answer against the last verified InfoAuto list. */

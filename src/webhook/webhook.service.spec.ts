@@ -510,6 +510,55 @@ describe('WebhookService', () => {
 
       expect(meta.showTyping).not.toHaveBeenCalled();
     });
+
+    it('stores the message but sends nothing when the bot is disabled globally', async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: false,
+      });
+
+      await service.handleMessage(
+        '5491155556666',
+        'hola',
+        'P1',
+        'wamid-disabled',
+      );
+
+      expect(api.saveMessage).toHaveBeenCalledWith(1, 'user', 'hola');
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(meta.showTyping).not.toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
+      expect(meta.sendButtons).not.toHaveBeenCalled();
+      expect(meta.sendList).not.toHaveBeenCalled();
+    });
+
+    it('cancels an in-flight automatic reply when the global stop is activated', async () => {
+      api.getContext
+        .mockResolvedValueOnce({
+          producerName: 'John',
+          systemPrompt: 'x',
+          botEnabled: true,
+        })
+        .mockResolvedValueOnce({
+          producerName: 'John',
+          systemPrompt: 'x',
+          botEnabled: false,
+        });
+
+      await service.handleMessage(
+        '5491155556666',
+        'hola',
+        'P1',
+        'wamid-stop-race',
+      );
+
+      expect(flow.handle).toHaveBeenCalled();
+      expect(api.saveMessage).toHaveBeenCalledWith(1, 'user', 'hola');
+      expect(meta.sendText).not.toHaveBeenCalled();
+      expect(meta.sendButtons).not.toHaveBeenCalled();
+      expect(meta.sendList).not.toHaveBeenCalled();
+    });
   });
 
   describe('/reset secret command', () => {
@@ -677,6 +726,38 @@ describe('WebhookService', () => {
       expect(api.attachAdjunto).not.toHaveBeenCalled();
       const reply = (meta.sendText.mock.calls as string[][])[0][1];
       expect(reply).toContain('reenviarla');
+    });
+
+    it('stores an inbound image silently when the bot is disabled globally', async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: false,
+      });
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      api.attachAdjunto.mockResolvedValue({
+        siniestroId: 9,
+        adjuntosCount: 2,
+      });
+
+      await service.handleMedia(
+        '5491155556666',
+        'media-disabled',
+        'P1',
+        'wm-disabled',
+      );
+
+      expect(api.attachAdjunto).toHaveBeenCalled();
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '[El cliente envió una foto]',
+      );
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
     });
   });
 
