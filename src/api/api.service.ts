@@ -235,8 +235,11 @@ export class ApiService {
   }
 
   /** Marks the conversation as pending human attention (user requested an advisor). */
-  async requestHandoff(conversationId: number): Promise<void> {
-    await this.http.post(`/bot/conversation/${conversationId}/request-handoff`);
+  async requestHandoff(conversationId: number, reason?: string): Promise<void> {
+    await this.http.post(
+      `/bot/conversation/${conversationId}/request-handoff`,
+      { reason: reason?.slice(0, 2000) },
+    );
   }
 
   /** Creates an advisor-contact / fixed-plan lead, scoped to the conversation's producer. */

@@ -320,6 +320,16 @@ export class FlowService {
   ): Promise<FlowResult> {
     const existing = this.load(key);
     const sel = input.selectionId;
+    // Payment proofs and missing credits need human review. Policy cancellations
+    // keep the dedicated identification, policy selection and confirmation flow.
+    if (
+      !sel &&
+      /\b(ya pague|envio (?:el |un )?comprobante|adjunto (?:el |un )?comprobante|no (?:se )?(?:acredito|acredita) (?:mi |el )?pago)\b/.test(
+        fold(input.text),
+      )
+    ) {
+      return this.handleAsesorMotivo(input, ctx, key);
+    }
 
     // First contact (no state): greet and branch on whether they're a client.
     if (!existing) {
@@ -1477,8 +1487,9 @@ export class FlowService {
   ): Promise<FlowResult> {
     // Mark the conversation as pending in the API so it surfaces in the admin
     // inbox. Best-effort: a failed call should not block the bot reply.
-    await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
-    void input;
+    await this.api
+      .requestHandoff(ctx.conversationId, input.text)
+      .catch(() => undefined);
     this.setState(key, 'CLIENT_MENU');
     return {
       messages: [
@@ -1502,8 +1513,9 @@ export class FlowService {
     // for human attention so it surfaces in the admin inbox/novedades — the
     // product-specific quote leads go through createLead instead. Best-effort:
     // a failed call must not block the reply.
-    void input;
-    await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+    await this.api
+      .requestHandoff(ctx.conversationId, input.text)
+      .catch(() => undefined);
     this.setState(key, 'LEAD_MENU');
     return {
       messages: [
@@ -2401,7 +2413,14 @@ export class FlowService {
   /** Keyword routing so typed text (not just taps) reaches the right flow. */
   private matchClientIntent(text: string): string | null {
     const t = fold(text);
-    if (/\bbaja\b|\bcancelar (mi |la |el )?(poliza|seguro)\b/.test(t))
+    if (
+      !/\bno (?:quiero|deseo|necesito) (?:dar(?:me)? de baja|cancelar)\b/.test(
+        t,
+      ) &&
+      /\bbaja\b|\bbajarme (?:del |de mi )?(?:seguro|poliza)\b|\bcancelar (mi |la |el )?(poliza|seguro)\b/.test(
+        t,
+      )
+    )
       return OPT.bajaPoliza;
     // Quoting first: "cotizar un seguro contra robo" is a quote, not a claim.
     if (/cotiz|presupuest|seguro nuevo|\basegurar\b/.test(t))

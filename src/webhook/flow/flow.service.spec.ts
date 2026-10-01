@@ -93,6 +93,25 @@ describe('FlowService', () => {
     flow = module.get(FlowService);
   });
 
+  it.each(['Ya pagué, adjunto un comprobante', 'No se acreditó mi pago'])(
+    'passes a first-message human request with its original reason: %s',
+    async (text) => {
+      const result = await send({ text });
+      expect(api.requestHandoff).toHaveBeenCalledWith(1, text);
+      expect(result.handoff).toBeUndefined();
+      expect(JSON.stringify(result.messages)).toContain('asesor');
+    },
+  );
+
+  it('preserves the reason collected in the advisor flow', async () => {
+    stored = { step: 'ASESOR_MOTIVO', data: {} };
+    await send({ text: 'Necesito modificar mi domicilio' });
+    expect(api.requestHandoff).toHaveBeenCalledWith(
+      1,
+      'Necesito modificar mi domicilio',
+    );
+  });
+
   /** Drives the lead into the conversational cotización (LLM_COTIZACION). */
   async function enterCotizacion() {
     await send({ text: 'hola' }); // ROOT welcome
