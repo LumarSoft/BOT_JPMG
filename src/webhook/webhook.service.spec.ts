@@ -30,8 +30,10 @@ describe('WebhookService', () => {
     showTyping: jest.Mock;
   };
   let flow: { handle: jest.Mock; reset: jest.Mock };
+  let freeTextEnabled: boolean;
 
   beforeEach(async () => {
+    freeTextEnabled = false;
     api = {
       getContext: jest.fn().mockResolvedValue({ systemPrompt: 'x' }),
       getConversation: jest.fn(),
@@ -79,6 +81,8 @@ describe('WebhookService', () => {
             get: jest.fn((key: string) => {
               if (key === 'OPENAI_API_KEY') return 'test-value';
               if (key === 'BOT_AUTOREPLY_ENABLED') return 'true';
+              if (key === 'BOT_FREE_TEXT_ROUTING_ENABLED')
+                return freeTextEnabled ? 'true' : undefined;
               return undefined;
             }),
           },
@@ -255,7 +259,9 @@ describe('WebhookService', () => {
       );
       expect(
         new Set(
-          api.reportOpenAiUsage.mock.calls.map(([input]) => input.requestId),
+          (api.reportOpenAiUsage.mock.calls as [{ requestId: string }][]).map(
+            ([input]) => input.requestId,
+          ),
         ).size,
       ).toBe(create.mock.calls.length);
       expect(api.reportOpenAiUsage).toHaveBeenLastCalledWith(
@@ -706,6 +712,72 @@ describe('WebhookService', () => {
       });
       api.saveMessage.mockResolvedValue({});
     });
+
+    it('asks the purpose of an unattached photo without assuming a claim, when enabled', async () => {
+      freeTextEnabled = true;
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      api.attachAdjunto.mockResolvedValue({
+        attached: false,
+        siniestroId: null,
+        adjuntosCount: 0,
+      });
+      await service.handleMedia(
+        '5491155556666',
+        'loose-photo',
+        'P1',
+        'wm-loose-opt-in',
+      );
+      const reply = (meta.sendText.mock.calls as string[][])[0][1];
+      expect(reply).toContain('cotizar');
+      expect(reply).toContain('documentación');
+      expect(reply).toContain('siniestro');
+      expect(api.saveMessage).toHaveBeenCalledWith(7, 'assistant', reply);
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(api.saveFlowState).not.toHaveBeenCalled();
+    });
+
+    it.each(['paused', 'disabled'])(
+      'never answers an unattached photo when %s, even with routing enabled',
+      async (mode) => {
+        freeTextEnabled = true;
+        if (mode === 'paused')
+          api.getConversation.mockResolvedValue({
+            conversationId: 7,
+            client: null,
+            botPaused: true,
+            messages: [],
+          });
+        else
+          api.getContext.mockResolvedValue({
+            systemPrompt: 'x',
+            botEnabled: false,
+          });
+        meta.downloadMedia.mockResolvedValue({
+          buffer: Buffer.from('img'),
+          mimeType: 'image/jpeg',
+        });
+        api.attachAdjunto.mockResolvedValue({
+          attached: false,
+          siniestroId: null,
+          adjuntosCount: 0,
+        });
+        await service.handleMedia(
+          '5491155556666',
+          'silent-photo',
+          'P1',
+          'wm-silent-opt-in',
+        );
+        expect(meta.sendText).not.toHaveBeenCalled();
+        expect(api.saveMessage).toHaveBeenCalledWith(
+          7,
+          'user',
+          '[El cliente envió una foto]',
+        );
+      },
+    );
 
     it('downloads the image and attaches it to the open claim', async () => {
       meta.downloadMedia.mockResolvedValue({

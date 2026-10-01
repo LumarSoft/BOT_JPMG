@@ -37,6 +37,7 @@ describe('FlowService', () => {
 
   // Mirrors the API: the snapshot returned by one turn is fed into the next.
   let stored: FlowState | null;
+  let freeTextEnabled: boolean;
 
   /** Sends a message, threading only the persisted snapshot (no in-memory carry-over). */
   async function send(input: UserInput, ctx: FlowContext = leadCtx) {
@@ -47,6 +48,7 @@ describe('FlowService', () => {
 
   beforeEach(async () => {
     stored = null;
+    freeTextEnabled = process.env.TEST_FREE_TEXT_ROUTING === 'true';
     api = {
       resetSession: jest.fn().mockResolvedValue(undefined),
       getEstadoCuenta: jest.fn().mockResolvedValue([]),
@@ -86,11 +88,121 @@ describe('FlowService', () => {
         { provide: ApiService, useValue: api },
         {
           provide: ConfigService,
-          useValue: { get: jest.fn().mockReturnValue('0800-TOW') },
+          useValue: {
+            get: jest.fn((key: string) =>
+              key === 'BOT_FREE_TEXT_ROUTING_ENABLED'
+                ? freeTextEnabled
+                  ? 'true'
+                  : undefined
+                : '0800-TOW',
+            ),
+          },
         },
       ],
     }).compile();
     flow = module.get(FlowService);
+  });
+
+  describe('opt-in free-text reception', () => {
+    it.each([
+      'ART',
+      'Me podés comunicar con Milagros?',
+      'Quiero hablar con John',
+      'Necesito consultar el seguro de riesgo de trabajo',
+    ])(
+      'records a human request with its complete original text: %s',
+      async (text) => {
+        freeTextEnabled = true;
+        const result = await send({ text });
+        expect(api.requestHandoff).toHaveBeenCalledWith(1, text);
+        expect(result.handoff).toBeUndefined();
+        expect(api.createSiniestro).not.toHaveBeenCalled();
+        expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['Hola, avisame cuándo tengo que pagar la cuota del auto', 'pagos'],
+      ['Vos podrías pasarme la póliza de ese camión?', 'documentos'],
+    ])(
+      'identifies before accessing private information: %s',
+      async (text, action) => {
+        freeTextEnabled = true;
+        await send({ text });
+        expect(stored).toMatchObject({
+          step: 'IDENTIFY',
+          data: { pendingAction: action },
+        });
+        expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+        expect(api.getPolizas).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['ROOT', 'CLIENT_MENU', 'LEAD_MENU', 'LLM_FAQ'] as const)(
+      'accepts ART in %s without calling the FAQ model',
+      async (step) => {
+        freeTextEnabled = true;
+        stored = { step, data: {} };
+        await send({ text: 'coti ART' });
+        expect(api.requestHandoff).toHaveBeenCalledWith(1, 'coti ART');
+      },
+    );
+
+    it('does not enable the new routing by default', async () => {
+      freeTextEnabled = false;
+      await send({ text: 'ART' });
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('ROOT');
+    });
+
+    it('answers a known client payment request through the existing account flow', async () => {
+      freeTextEnabled = true;
+      const result = await send(
+        { text: '¿Cuándo tengo que pagar la cuota?' },
+        {
+          ...leadCtx,
+          client: {
+            id: 2,
+            firstName: 'Ana',
+            lastName: 'Gómez',
+            dni: '12345678',
+          },
+        },
+      );
+      expect(api.getEstadoCuenta).toHaveBeenCalledWith(1);
+      expect(result.handoff).toBeUndefined();
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'SINIESTRO_DESC',
+      'COT_LEAD_NOMBRE',
+      'COT_LEAD_FIELDS',
+      'LLM_COTIZACION',
+    ] as const)('does not intercept text captured in %s', async (step) => {
+      freeTextEnabled = true;
+      stored = { step, data: { vehiculo: 'auto' } };
+      await send({ text: 'ART' });
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it('preserves an explicit button even when its visible text says ART', async () => {
+      freeTextEnabled = true;
+      await send({ text: 'ART', selectionId: OPT.noCliente });
+      expect(stored?.step).toBe('LEAD_MENU');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it('keeps cancellation confirmation mandatory with the flag enabled', async () => {
+      freeTextEnabled = true;
+      await send({ text: 'quiero dar de baja mi póliza' });
+      await send({ text: '37334584' });
+      await send({ text: '', selectionId: 'pol_833' });
+      expect(stored?.step).toBe('BAJA_CONFIRM');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      await send({ text: '', selectionId: OPT.confirmar });
+      expect(api.requestPolicyCancellation).toHaveBeenCalledTimes(1);
+    });
   });
 
   it.each(['Ya pagué, adjunto un comprobante', 'No se acreditó mi pago'])(

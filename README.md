@@ -96,3 +96,19 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+## Recepción de mensajes libres (activación controlada)
+
+`BOT_FREE_TEXT_ROUTING_ENABLED` queda en `false` por defecto. En `true`, los pedidos explícitos de atención humana, ART, cuotas y documentos pueden entrar desde el primer mensaje o desde un menú. Los pedidos de cuenta o documentos conservan la identificación previa. Las consultas de ART se derivan al equipo, sin consejo médico ni decisiones de cobertura.
+
+Los botones y los pasos de captura, cotización, baja y denuncia mantienen su enrutamiento. Una foto sin denuncia asociada pregunta su finalidad; se conserva en el inbox y no avanza un paso del flujo. El bot sigue respetando la pausa del operador y la desactivación global.
+
+Verificación local (sin mensajes a WhatsApp ni llamadas reales de cotización):
+
+```sh
+./node_modules/.bin/jest --runInBand
+TEST_FREE_TEXT_ROUTING=true ./node_modules/.bin/jest --runInBand
+./node_modules/.bin/nest build
+```
+
+La segunda ejecución habilita la ampliación en las pruebas de flujo existentes. Para volver al comportamiento anterior basta dejar la opción en `false` y reiniciar el bot desde el procedimiento de despliegue del proyecto.

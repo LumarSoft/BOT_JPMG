@@ -703,11 +703,16 @@ export class WebhookService {
     // The image remains available in the inbox even when there is no open
     // claim yet, but the guided flow must not advance as if it were attached.
     if (attachmentResult.attached === false) {
-      await this.meta.sendText(
-        to,
-        'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.',
-        phoneNumberId,
-      );
+      const reply =
+        this.config.get<string>('BOT_FREE_TEXT_ROUTING_ENABLED') === 'true' &&
+        !tipo &&
+        !leadTipo
+          ? 'Recibí tu foto. ¿Es para cotizar un seguro, enviar documentación o denunciar un siniestro? Contame qué necesitás; también podés escribir *asesor*.'
+          : 'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.';
+      await this.api
+        .saveMessage(conversation.conversationId, 'assistant', reply)
+        .catch(() => undefined);
+      await this.meta.sendText(to, reply, phoneNumberId);
       return;
     }
 

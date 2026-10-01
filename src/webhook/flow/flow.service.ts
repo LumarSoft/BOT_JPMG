@@ -51,6 +51,7 @@ import type {
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
 import { fold } from '../text';
+import { freeTextIntent } from './free-text-intent';
 
 /**
  * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
@@ -278,7 +279,7 @@ export class FlowService {
 
   constructor(
     private readonly api: ApiService,
-    config: ConfigService,
+    private readonly config: ConfigService,
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
   }
@@ -320,6 +321,21 @@ export class FlowService {
   ): Promise<FlowResult> {
     const existing = this.load(key);
     const sel = input.selectionId;
+    // Opt-in extension: established pickers, captured answers and LLM quoting
+    // retain their original routing. Buttons always take precedence.
+    if (
+      this.config.get<string>('BOT_FREE_TEXT_ROUTING_ENABLED') === 'true' &&
+      !sel &&
+      (!existing || OPEN_STEPS.has(existing.state.step))
+    ) {
+      const intent = freeTextIntent(input.text);
+      if (intent === 'human' || intent === 'art') {
+        return this.handleAsesorMotivo(input, ctx, key);
+      }
+      if (intent === 'pagos' || intent === 'documentos') {
+        return this.guard(ctx, key, intent);
+      }
+    }
     // Payment proofs and missing credits need human review. Policy cancellations
     // keep the dedicated identification, policy selection and confirmation flow.
     if (
