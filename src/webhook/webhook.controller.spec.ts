@@ -7,7 +7,7 @@ import { SentMessageRegistry } from './sent-message-registry.service';
 
 describe('WebhookController', () => {
   let controller: WebhookController;
-  let webhookService: { handleMessage: jest.Mock };
+  let webhookService: { handleMessage: jest.Mock; handleAudio: jest.Mock };
   let api: {
     recordAgentEcho: jest.Mock;
     persistCoexistenceHistory: jest.Mock;
@@ -17,7 +17,10 @@ describe('WebhookController', () => {
   };
 
   beforeEach(async () => {
-    webhookService = { handleMessage: jest.fn().mockResolvedValue(undefined) };
+    webhookService = {
+      handleMessage: jest.fn().mockResolvedValue(undefined),
+      handleAudio: jest.fn().mockResolvedValue(undefined),
+    };
     api = {
       recordAgentEcho: jest.fn().mockResolvedValue(undefined),
       persistCoexistenceHistory: jest.fn().mockResolvedValue(undefined),
@@ -117,6 +120,52 @@ describe('WebhookController', () => {
       undefined,
       'John',
     );
+  });
+
+  it('routes a voice note to the audio handler with the sender name', () => {
+    controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                contacts: [{ wa_id: 'wa1', profile: { name: 'John' } }],
+                messages: [
+                  {
+                    from: 'wa1',
+                    id: 'm1',
+                    timestamp: '1',
+                    type: 'audio',
+                    audio: {
+                      id: 'aud-1',
+                      mime_type: 'audio/ogg; codecs=opus',
+                      voice: true,
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(webhookService.handleAudio).toHaveBeenCalledWith(
+      'wa1',
+      'aud-1',
+      'P1',
+      'm1',
+      'John',
+    );
+    expect(webhookService.handleMessage).not.toHaveBeenCalled();
   });
 
   it('records a WhatsApp Business app echo so the API can pause the bot', () => {

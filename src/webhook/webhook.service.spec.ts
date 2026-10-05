@@ -4,6 +4,7 @@ import { WebhookService } from './webhook.service';
 import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
 import { FlowService } from './flow/flow.service';
+import { AudioTranscriber } from './audio-transcriber.service';
 
 describe('WebhookService', () => {
   let service: WebhookService;
@@ -14,6 +15,7 @@ describe('WebhookService', () => {
     resetSession: jest.Mock;
     saveFlowState: jest.Mock;
     attachAdjunto: jest.Mock;
+    storeAudio?: jest.Mock;
     getProducts: jest.Mock;
     reportOpenAiUsage: jest.Mock;
     createLead: jest.Mock;
@@ -30,6 +32,7 @@ describe('WebhookService', () => {
     showTyping: jest.Mock;
   };
   let flow: { handle: jest.Mock; reset: jest.Mock };
+  let transcriber: { transcribe: jest.Mock };
 
   beforeEach(async () => {
     api = {
@@ -62,6 +65,7 @@ describe('WebhookService', () => {
       downloadMedia: jest.fn(),
       showTyping: jest.fn(),
     };
+    transcriber = { transcribe: jest.fn() };
     // By default the flow replies with a single text message and no LLM handoff.
     flow = {
       handle: jest
@@ -86,6 +90,7 @@ describe('WebhookService', () => {
         { provide: ApiService, useValue: api },
         { provide: MetaService, useValue: meta },
         { provide: FlowService, useValue: flow },
+        { provide: AudioTranscriber, useValue: transcriber },
       ],
     }).compile();
 
@@ -730,6 +735,139 @@ describe('WebhookService', () => {
 
       expect(api.getConversation).toHaveBeenCalledTimes(1);
       expect(meta.sendText).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('inbound voice notes', () => {
+    const stored = {
+      url: '/uploads/audios/a.ogg',
+      originalName: 'whatsapp.ogg',
+      mimeType: 'audio/ogg',
+      size: 4200,
+    };
+
+    beforeEach(() => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+      });
+      api.saveMessage.mockResolvedValue({});
+      api.storeAudio = jest.fn().mockResolvedValue(stored);
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('ogg'),
+        mimeType: 'audio/ogg; codecs=opus',
+      });
+    });
+
+    it('answers the transcription like a typed message and keeps the audio in the inbox', async () => {
+      transcriber.transcribe.mockResolvedValue('quiero denunciar un choque');
+
+      await service.handleAudio(
+        '5491155556666',
+        'audio-1',
+        'P1',
+        'wa-1',
+        'John',
+      );
+
+      expect(api.storeAudio).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ mimeType: 'audio/ogg' }),
+      );
+      expect(transcriber.transcribe).toHaveBeenCalledWith(
+        expect.objectContaining({ mimeType: 'audio/ogg; codecs=opus' }),
+        'P1',
+      );
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '🎤 Audio: quiero denunciar un choque',
+        stored,
+        'John',
+      );
+      expect(flow.handle).toHaveBeenCalledWith(
+        'P1:5491155556666',
+        { text: 'quiero denunciar un choque', selectionId: undefined },
+        expect.anything(),
+      );
+      expect(meta.sendText).toHaveBeenCalledWith(
+        '5491155556666',
+        'reply',
+        'P1',
+      );
+    });
+
+    it('asks the customer to write when the audio cannot be understood', async () => {
+      transcriber.transcribe.mockResolvedValue(null);
+
+      await service.handleAudio('5491155556666', 'audio-2', 'P1', 'wa-2');
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '🎤 Audio (sin transcripción)',
+        stored,
+        undefined,
+      );
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
+        '¿Me lo escribís?',
+      );
+    });
+
+    it('does not transcribe for a number over its LLM budget', async () => {
+      api.getContext.mockResolvedValue({
+        systemPrompt: 'x',
+        llmEnabled: false,
+      });
+
+      await service.handleAudio('5491155556666', 'audio-3', 'P1', 'wa-3');
+
+      expect(transcriber.transcribe).not.toHaveBeenCalled();
+      expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
+        'no puedo escuchar audios',
+      );
+    });
+
+    it('transcribes for the inbox but stays silent while an advisor has the chat', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: true,
+      });
+      transcriber.transcribe.mockResolvedValue('hola, ¿me llaman?');
+
+      await service.handleAudio('5491155556666', 'audio-4', 'P1', 'wa-4');
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '🎤 Audio: hola, ¿me llaman?',
+        stored,
+        undefined,
+      );
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
+    });
+
+    it('still answers when storing the audio fails', async () => {
+      api.storeAudio = jest.fn().mockRejectedValue(new Error('disk full'));
+      transcriber.transcribe.mockResolvedValue('hola');
+
+      await service.handleAudio('5491155556666', 'audio-5', 'P1', 'wa-5');
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '🎤 Audio: hola',
+        undefined,
+        undefined,
+      );
+      expect(meta.sendText).toHaveBeenCalled();
     });
   });
 

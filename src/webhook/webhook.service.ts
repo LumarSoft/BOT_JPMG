@@ -24,6 +24,11 @@ import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS, REQUEST_COVERAGE_TOOL } from './constants/tools';
 import { compactMessages } from './compact-messages';
 import { findVehicle } from './vehicle-finder';
+import {
+  AudioTranscriber,
+  audioFilename,
+  baseMimeType,
+} from './audio-transcriber.service';
 import { fold } from './text';
 import {
   DEFAULT_ATTENTION_HOURS,
@@ -137,6 +142,7 @@ export class WebhookService {
     private readonly api: ApiService,
     private readonly meta: MetaService,
     private readonly flow: FlowService,
+    private readonly transcriber: AudioTranscriber,
   ) {
     this.openai = new OpenAI({
       apiKey: this.config.get('OPENAI_API_KEY'),
@@ -201,6 +207,22 @@ export class WebhookService {
   }
 
   /**
+   * Entry point for a voice note. Same dedup and per-sender serialization as
+   * text: the audio is transcribed and then answered like a typed message.
+   */
+  handleAudio(
+    from: string,
+    mediaId: string,
+    phoneNumberId: string,
+    messageId: string,
+    contactName?: string,
+  ): Promise<void> {
+    return this.enqueue(from, phoneNumberId, messageId, () =>
+      this.processAudio(from, mediaId, phoneNumberId, messageId, contactName),
+    );
+  }
+
+  /**
    * Discards Meta re-deliveries, then chains `task` behind any in-flight one for
    * the same sender. Returns a promise that resolves when *this* task finishes.
    */
@@ -252,6 +274,9 @@ export class WebhookService {
     selectionId?: string,
     messageId?: string,
     contactName?: string,
+    // What the inbox stores instead of `text` (a voice note: its transcription
+    // labelled as audio, plus the playable file). The flow still gets `text`.
+    inbound?: { content: string; media?: MessageMedia },
   ) {
     this.logger.log(
       `[1/5] Mensaje entrante de ${from}: ${JSON.stringify(text)}`,
@@ -311,8 +336,8 @@ export class WebhookService {
           .saveMessage(
             conversation.conversationId,
             'user',
-            text,
-            undefined,
+            inbound?.content ?? text,
+            inbound?.media,
             contactName,
           )
           .catch(() => undefined);
@@ -341,8 +366,8 @@ export class WebhookService {
       await this.api.saveMessage(
         conversation.conversationId,
         'user',
-        text,
-        undefined,
+        inbound?.content ?? text,
+        inbound?.media,
         contactName,
       );
     } catch (error) {
@@ -590,6 +615,119 @@ export class WebhookService {
       case 'list':
         return `${message.body}\n${message.rows.map((r) => `• ${r.title}`).join('\n')}`;
     }
+  }
+
+  /**
+   * A voice note: stored for the inbox and transcribed by OpenAI, then run
+   * through processMessage as if the customer had typed the transcription. When
+   * it can't be transcribed (download failure, no speech, number over its LLM
+   * budget) the inbox still gets the audio and the customer is asked to write.
+   */
+  private async processAudio(
+    from: string,
+    mediaId: string,
+    phoneNumberId: string,
+    messageId: string,
+    contactName?: string,
+  ) {
+    this.logger.log(`Procesando audio de ${from}...`);
+    const to = this.meta.normalizePhone(from);
+
+    let context: BotContext;
+    let conversation: BotConversation;
+    try {
+      context = await this.api.getContext(phoneNumberId);
+      conversation = await this.api.getConversation(phoneNumberId, from);
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        this.logger.warn(
+          `Número ${phoneNumberId} no registrado — audio ignorado`,
+        );
+        return;
+      }
+      this.logger.error(
+        `API no disponible (audio): ${(error as Error).message}`,
+      );
+      await this.meta.sendText(to, FALLBACK_REPLY, phoneNumberId);
+      return;
+    }
+
+    const botAnswers =
+      this.autoReplyEnabled &&
+      context.botEnabled !== false &&
+      !conversation.botPaused;
+    // Download + transcription take a few seconds: show "escribiendo…".
+    if (botAnswers) this.meta.showTyping(messageId, phoneNumberId);
+
+    const audio = await this.meta.downloadMedia(mediaId, phoneNumberId);
+    let media: MessageMedia | undefined;
+    let transcript: string | null = null;
+    if (audio) {
+      const mimeType = baseMimeType(audio.mimeType);
+      media = await this.api
+        .storeAudio(conversation.conversationId, {
+          buffer: audio.buffer,
+          filename: audioFilename(mimeType),
+          mimeType,
+        })
+        .catch((error: Error) => {
+          this.logger.error(`No se pudo guardar el audio: ${error.message}`);
+          return undefined;
+        });
+      // Transcribed even when a human has the chat, so the advisor can read
+      // it — but never over the number's monthly LLM budget.
+      if (context.llmEnabled !== false) {
+        transcript = await this.transcriber
+          .transcribe(audio, phoneNumberId)
+          .catch((error: Error) => {
+            this.logger.error(
+              `No se pudo transcribir el audio: ${error.message}`,
+            );
+            return null;
+          });
+      }
+    }
+
+    if (transcript) {
+      this.logger.log(
+        `🎤 Transcripción de ${from}: ${JSON.stringify(transcript)}`,
+      );
+      await this.processMessage(
+        from,
+        transcript,
+        phoneNumberId,
+        undefined,
+        messageId,
+        contactName,
+        { content: `🎤 Audio: ${transcript}`, media },
+      );
+      return;
+    }
+
+    await this.api
+      .saveMessage(
+        conversation.conversationId,
+        'user',
+        '🎤 Audio (sin transcripción)',
+        media,
+        contactName,
+      )
+      .catch(() => undefined);
+    if (
+      !botAnswers ||
+      !(await this.automaticRepliesStillEnabled(phoneNumberId))
+    )
+      return;
+
+    const reply = !audio
+      ? 'No pude descargar el audio 😕. ¿Me lo reenviás o me lo escribís?'
+      : context.llmEnabled === false
+        ? 'Por ahora no puedo escuchar audios 🙏. ¿Me lo escribís?'
+        : 'No pude entender el audio 😕. ¿Me lo escribís?';
+    await this.meta.sendText(to, reply, phoneNumberId);
+    await this.api
+      .saveMessage(conversation.conversationId, 'assistant', reply)
+      .catch(() => undefined);
   }
 
   /**

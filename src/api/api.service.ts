@@ -112,6 +112,8 @@ export class ApiService {
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens?: number;
+    /** Seconds of audio, for transcription models billed per minute. */
+    audioSeconds?: number;
     requestId?: string;
     timestamp?: number;
   }): Promise<void> {
@@ -355,6 +357,24 @@ export class ApiService {
     const query = tipo ? `?tipo=${encodeURIComponent(tipo)}` : '';
     const { data } = await this.http.post<AttachAdjuntosResult>(
       `/bot/conversation/${conversationId}/adjuntos${query}`,
+      form,
+    );
+    return data;
+  }
+
+  /** Stores a voice note so the inbox can play it; returns the message media. */
+  async storeAudio(
+    conversationId: number,
+    file: { buffer: Buffer; filename: string; mimeType: string },
+  ): Promise<MessageMedia> {
+    const form = new FormData();
+    form.append(
+      'audio',
+      new Blob([Uint8Array.from(file.buffer)], { type: file.mimeType }),
+      file.filename,
+    );
+    const { data } = await this.http.post<MessageMedia>(
+      `/bot/conversation/${conversationId}/audio`,
       form,
     );
     return data;

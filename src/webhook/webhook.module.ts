@@ -7,6 +7,7 @@ import { SentMessageRegistry } from './sent-message-registry.service';
 import { InactivityWarningService } from './inactivity-warning.service';
 import { FlowService } from './flow/flow.service';
 import { SiniestroExtractor } from './flow/siniestro-extractor.service';
+import { AudioTranscriber } from './audio-transcriber.service';
 import { InternalController } from './internal.controller';
 
 @Module({
@@ -19,6 +20,7 @@ import { InternalController } from './internal.controller';
     InactivityWarningService,
     FlowService,
     SiniestroExtractor,
+    AudioTranscriber,
   ],
 })
 export class WebhookModule {}

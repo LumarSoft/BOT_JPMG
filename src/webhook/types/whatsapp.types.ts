@@ -26,6 +26,19 @@ export interface WhatsAppImageMessage {
   };
 }
 
+/** A voice note (`voice: true`) or an audio file. */
+export interface WhatsAppAudioMessage {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: 'audio';
+  audio: {
+    id: string;
+    mime_type: string;
+    voice?: boolean;
+  };
+}
+
 /** Reply payload shared by button and list interactive messages. */
 export interface WhatsAppInteractiveReply {
   id: string;
@@ -44,10 +57,11 @@ export interface WhatsAppInteractiveMessage {
     | { type: 'list_reply'; list_reply: WhatsAppInteractiveReply };
 }
 
-/** Messages the bot acts on. Other types (audio, video, …) are ignored. */
+/** Messages the bot acts on. Other types (video, documents, …) are ignored. */
 export type WhatsAppMessage =
   | WhatsAppTextMessage
   | WhatsAppImageMessage
+  | WhatsAppAudioMessage
   | WhatsAppInteractiveMessage;
 
 export interface WhatsAppMetadata {

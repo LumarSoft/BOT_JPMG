@@ -153,6 +153,17 @@ export class WebhookController {
           contactName,
         )
         .catch(console.error);
+    } else if (message.type === 'audio') {
+      console.log(`🎤 De: ${message.from} → [audio ${message.audio.id}]`);
+      this.webhookService
+        .handleAudio(
+          message.from,
+          message.audio.id,
+          phoneNumberId,
+          message.id,
+          contactName,
+        )
+        .catch(console.error);
     } else if (message.type === 'image') {
       console.log(`🖼️ De: ${message.from} → [imagen ${message.image.id}]`);
       this.webhookService
