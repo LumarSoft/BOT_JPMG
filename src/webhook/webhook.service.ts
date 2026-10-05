@@ -27,6 +27,7 @@ import { findVehicle } from './vehicle-finder';
 import { fold } from './text';
 import {
   DEFAULT_ATTENTION_HOURS,
+  DEFAULT_OPENAI_MODEL,
   renderCatalogForPrompt,
 } from './constants/business';
 
@@ -59,7 +60,6 @@ const MAX_TOKENS: Record<'cotizacion' | 'faq', number> = {
   faq: 350,
 };
 
-const DEFAULT_MODEL = 'gpt-5.6-luna';
 const DEFAULT_PRICE_IN_PER_1M = 0.2;
 const DEFAULT_PRICE_OUT_PER_1M = 1.2;
 
@@ -141,7 +141,8 @@ export class WebhookService {
     this.openai = new OpenAI({
       apiKey: this.config.get('OPENAI_API_KEY'),
     });
-    this.model = this.config.get<string>('OPENAI_MODEL') || DEFAULT_MODEL;
+    this.model =
+      this.config.get<string>('OPENAI_MODEL') || DEFAULT_OPENAI_MODEL;
     this.priceInPer1M = this.readPositiveNumber(
       'OPENAI_PRICE_IN_PER_1M',
       DEFAULT_PRICE_IN_PER_1M,
@@ -370,6 +371,8 @@ export class WebhookService {
         botName: context.botName,
         attentionHours: context.attentionHours,
         flowState: this.parseFlowState(conversation.flowState),
+        phoneNumberId,
+        llmEnabled: context.llmEnabled,
       },
     );
 

@@ -4,6 +4,7 @@ import { ApiService } from '../../api/api.service';
 import { FlowService, takeOutDocsState } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
+import { SiniestroExtractor } from './siniestro-extractor.service';
 
 /**
  * Covers two things: the flow-switch behaviour (a user parked in a sticky LLM
@@ -25,6 +26,7 @@ describe('FlowService', () => {
     getHours: jest.Mock;
     identifyClient: jest.Mock;
   };
+  let extractor: { extract: jest.Mock };
 
   const KEY = 'pn:wa';
   const leadCtx: FlowContext = {
@@ -80,10 +82,12 @@ describe('FlowService', () => {
         polizasCount: 1,
       }),
     };
+    extractor = { extract: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FlowService,
         { provide: ApiService, useValue: api },
+        { provide: SiniestroExtractor, useValue: extractor },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue('0800-TOW') },
@@ -271,7 +275,171 @@ describe('FlowService', () => {
     });
   });
 
+  describe('siniestro checklist (model reads the answer)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Evelyn',
+        lastName: 'Benitez',
+        dni: '37334584',
+      } as FlowContext['client'],
+      phoneNumberId: 'P1',
+      llmEnabled: true,
+    };
+    const vacio = {
+      fecha: null,
+      hora: null,
+      localidad: null,
+      calle: null,
+      altura: null,
+      entreCalles: null,
+      alturaDesconocida: null,
+      sentido: null,
+      relato: null,
+      personas: null,
+      lesionados: null,
+      lesionesDetalle: null,
+      otroVehiculo: null,
+      terceroPatente: null,
+      terceroConductor: null,
+      terceroCompania: null,
+    };
+    const completo = {
+      ...vacio,
+      fecha: '2026-10-03',
+      hora: '18:30',
+      localidad: 'Rosario',
+      calle: 'San Martín',
+      altura: '1250',
+      sentido: 'norte',
+      relato: 'Me chocaron de atrás en el semáforo',
+      personas: 2,
+      lesionados: false,
+      otroVehiculo: true,
+      terceroPatente: 'AB123CD',
+    };
+
+    async function openChecklist() {
+      await send({ text: 'hola' }, ctx);
+      await send({ selectionId: OPT.siniestros, text: '' }, ctx);
+      await send({ selectionId: OPT.sinNueva, text: '' }, ctx);
+      return send({ selectionId: 'pol_833', text: '' }, ctx);
+    }
+
+    it('asks for every claim detail in a single message', async () => {
+      const result = await openChecklist();
+
+      expect(stored?.step).toBe('SINIESTRO_DATOS');
+      expect(result.messages).toHaveLength(1);
+      expect(result.messages[0].body).toContain(
+        'Respondé todo en un solo mensaje',
+      );
+      expect(result.messages[0].body).toContain('Calle y altura exacta');
+      expect(result.messages[0].body).toContain('norte, sur, este u oeste');
+    });
+
+    it('confirms and files the claim when the answer is complete', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValue(completo);
+
+      const summary = await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+
+      expect(extractor.extract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'el sábado 18:30 en rosario…',
+          phoneNumberId: 'P1',
+        }),
+      );
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(summary.messages[0].body).toContain('Lugar: San Martín 1250');
+      expect(summary.messages[0].body).toContain('hacia el norte');
+
+      await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+      expect(api.createSiniestro).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ polizaId: 833, fecha: '2026-10-03' }),
+      );
+      const [, filed] = api.createSiniestro.mock.calls[0] as [
+        number,
+        { descripcion: string },
+      ];
+      expect(filed.descripcion).toContain('Personas en el vehículo: 2');
+    });
+
+    it('asks for the street number when only a corner was given, and accepts "no sé"', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce({
+        ...completo,
+        calle: 'Pellegrini',
+        altura: null,
+        entreCalles: 'Oroño',
+      });
+
+      const followUp = await send({ text: 'fue en pellegrini y oroño…' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_DATOS');
+      expect(followUp.messages[0].body).toContain(
+        'Altura (número) sobre *Pellegrini*',
+      );
+      expect(followUp.messages[0].body).toContain('esquina con Oroño');
+      expect(api.createSiniestro).not.toHaveBeenCalled();
+
+      extractor.extract.mockResolvedValueOnce({
+        ...vacio,
+        alturaDesconocida: true,
+      });
+      const summary = await send({ text: 'no sé' }, ctx);
+
+      expect(extractor.extract).toHaveBeenLastCalledWith(
+        expect.objectContaining({ asked: ['altura'] }),
+      );
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(summary.messages[0].body).toContain(
+        'Lugar: Pellegrini s/n (esquina / entre Oroño)',
+      );
+    });
+
+    it('asks again for a date in the future', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValue({ ...completo, fecha: '2099-01-01' });
+
+      const followUp = await send({ text: 'el 1/1/2099' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_DATOS');
+      expect(followUp.messages[0].body).toContain('Fecha del hecho');
+    });
+
+    it('falls back to one question at a time when the model fails', async () => {
+      await openChecklist();
+      extractor.extract.mockRejectedValue(new Error('timeout'));
+
+      const result = await send({ text: 'me chocaron ayer' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_FECHA');
+      expect(result.messages[0].body).toContain('de a un dato por vez');
+    });
+
+    it('does not call the model for a number over its LLM budget', async () => {
+      await send({ text: 'hola' }, { ...ctx, llmEnabled: false });
+      await send(
+        { selectionId: OPT.siniestros, text: '' },
+        { ...ctx, llmEnabled: false },
+      );
+      await send(
+        { selectionId: OPT.sinNueva, text: '' },
+        { ...ctx, llmEnabled: false },
+      );
+      await send(
+        { selectionId: 'pol_833', text: '' },
+        { ...ctx, llmEnabled: false },
+      );
+
+      expect(stored?.step).toBe('SINIESTRO_FECHA');
+    });
+  });
+
   describe('siniestro form', () => {
+    // The step-by-step form, used when the model is not available.
     const clientCtx: FlowContext = {
       ...leadCtx,
       client: {
@@ -279,13 +447,15 @@ describe('FlowService', () => {
         lastName: 'Benitez',
         dni: '37334584',
       } as FlowContext['client'],
+      llmEnabled: false,
     };
 
-    it('completes the denuncia and calls createSiniestro (date given inside a sentence)', async () => {
+    it('asks one question at a time without the model and calls createSiniestro', async () => {
       await send({ text: 'hola' }, clientCtx); // CLIENT_MENU
       await send({ selectionId: OPT.siniestros, text: '' }, clientCtx); // SINIESTRO_TYPE
       await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx); // SINIESTRO_POLIZA
       await send({ selectionId: 'pol_833', text: '' }, clientCtx); // SINIESTRO_FECHA
+      expect(extractor.extract).not.toHaveBeenCalled();
 
       // Date embedded in a sentence used to dead-end into the FAQ model.
       const afterDate = await send(

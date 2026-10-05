@@ -9,6 +9,9 @@ import type { ProductCatalogItem } from '../../api/api.types';
  */
 export const DEFAULT_ATTENTION_HOURS = 'lunes a viernes de 8 a 16 hs';
 
+/** OpenAI model used when OPENAI_MODEL is not set. */
+export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
+
 /** Resolves the attention window to display, falling back to the app default. */
 export function attentionHoursOf(value?: string | null): string {
   const v = value?.trim();

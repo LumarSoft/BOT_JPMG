@@ -58,6 +58,7 @@ El bot **no tiene base de datos propia**: todo estado (conversaciones, mensajes,
 - **Prompt del bot**: `src/webhook/constants/prompts.ts` (`buildSystemPrompt`) — comportamiento, menús y reglas de la IA; el prefijo de identidad viene de `Producer.systemPrompt` en la API
 - **Tools de OpenAI**: `src/webhook/constants/tools.ts` — schemas de las funciones que el modelo puede invocar
 - **Cliente de john-api**: `src/api/api.service.ts` + tipos en `src/api/api.types.ts`
+- **Datos de la denuncia de siniestro**: `src/webhook/flow/siniestro-datos.ts` — lista que se le pide al cliente en un solo mensaje, qué es obligatorio, repreguntas y descripción final; el modelo la lee con `siniestro-extractor.service.ts` (si cambian los campos, actualizar también su esquema JSON)
 - **Tipos del payload de Meta**: `src/webhook/types/whatsapp.types.ts` — refleja la estructura real del webhook de WhatsApp Business
 - **Lógica de IA, loop de tools y envío**: `src/webhook/webhook.service.ts`
 - **Parsing del webhook y routing**: `src/webhook/webhook.controller.ts`

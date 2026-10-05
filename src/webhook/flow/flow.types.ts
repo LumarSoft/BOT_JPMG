@@ -12,6 +12,7 @@ export type FlowStep =
   | 'IDENTIFY' // waiting for DNI/patente to identify the client
   | 'SINIESTRO_TYPE' // denuncia nueva vs consultar
   | 'SINIESTRO_POLIZA' // pick the affected policy
+  | 'SINIESTRO_DATOS' // checklist answered in one message, read by the model
   | 'SINIESTRO_FECHA' // waiting for the incident date
   | 'SINIESTRO_DESC' // waiting for the description
   | 'SINIESTRO_HORA'
@@ -107,4 +108,8 @@ export interface FlowContext {
   botName: string | null;
   /** General attention window (Producer.attentionHours); null → app default. */
   attentionHours: string | null;
+  /** Meta number the chat came through (OpenAI usage is billed per number). */
+  phoneNumberId?: string;
+  /** False when the number is over its monthly LLM budget. */
+  llmEnabled?: boolean;
 }

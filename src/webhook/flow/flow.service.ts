@@ -51,6 +51,17 @@ import type {
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
 import { fold } from '../text';
+import { SiniestroExtractor } from './siniestro-extractor.service';
+import {
+  SINIESTRO_DATOS_VACIOS,
+  mergeDatos,
+  pendientes,
+  siniestroChecklist,
+  siniestroDescripcion,
+  siniestroFaltantes,
+  type SiniestroCampo,
+  type SiniestroDatos,
+} from './siniestro-datos';
 
 /**
  * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
@@ -260,7 +271,9 @@ type ClientAction =
  * identification, siniestros, pagos, documentos) are driven entirely by this
  * state machine — fixed copy, stable option ids, no LLM. The model is only
  * reached through the LLM_* steps (cotización and free-text questions), where
- * natural language actually adds value.
+ * natural language actually adds value. The one exception is reading the
+ * claim checklist (SINIESTRO_DATOS, see SiniestroExtractor): the flow still
+ * validates, asks for what is missing and confirms before filing.
  *
  * State is durable: the API persists the `{ step, data }` snapshot per
  * conversation and hands it back on the next message. `handle` rehydrates from
@@ -279,6 +292,7 @@ export class FlowService {
   constructor(
     private readonly api: ApiService,
     config: ConfigService,
+    private readonly extractor: SiniestroExtractor,
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
   }
@@ -543,6 +557,8 @@ export class FlowService {
         return this.handleSiniestroType(input, ctx, key);
       case 'SINIESTRO_POLIZA':
         return this.handleSiniestroPoliza(state, input, ctx, key);
+      case 'SINIESTRO_DATOS':
+        return this.handleSiniestroDatos(state, input, ctx, key);
       case 'SINIESTRO_FECHA':
         return this.handleSiniestroFecha(state, input, key);
       case 'SINIESTRO_DESC':
@@ -1047,13 +1063,116 @@ export class FlowService {
       );
     }
 
-    this.setState(key, 'SINIESTRO_FECHA', { ...state.data, polizaId });
+    // Without the model (number over its monthly budget) the claim is asked
+    // one question at a time, as before.
+    if (ctx.llmEnabled === false)
+      return this.askSiniestroFecha(key, state.data, polizaId);
+
+    this.setState(key, 'SINIESTRO_DATOS', {
+      ...state.data,
+      polizaId,
+      datos: SINIESTRO_DATOS_VACIOS,
+      pedidos: [],
+    });
+    return { messages: [siniestroChecklist()] };
+  }
+
+  private askSiniestroFecha(
+    key: string,
+    data: Record<string, unknown>,
+    polizaId: number,
+  ): FlowResult {
+    this.setState(key, 'SINIESTRO_FECHA', { ...data, polizaId });
     return {
       messages: [
         {
           kind: 'text',
           body: '¿Qué día ocurrió el hecho? Escribilo como *DD/MM/AAAA* (o "hoy").',
         },
+      ],
+    };
+  }
+
+  /**
+   * The customer's answer to the checklist (or to the follow-up for what was
+   * missing). The model only reads the text into fields; this step validates
+   * them, asks again for whatever is still missing in a single message, and
+   * moves to the usual confirmation once the claim is complete.
+   */
+  private async handleSiniestroDatos(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const known =
+      (state.data.datos as SiniestroDatos | undefined) ??
+      SINIESTRO_DATOS_VACIOS;
+    const asked = (state.data.pedidos as SiniestroCampo[] | undefined) ?? [];
+    const text = input.text.trim();
+    if (!text) {
+      const faltan = pendientes(known);
+      return this.retry(key, state, [
+        asked.length ? siniestroFaltantes(faltan) : siniestroChecklist(),
+      ]);
+    }
+
+    let extracted: Partial<SiniestroDatos>;
+    try {
+      extracted = await this.extractor.extract({
+        text,
+        known,
+        asked,
+        phoneNumberId: ctx.phoneNumberId ?? '',
+      });
+    } catch (error) {
+      this.logger.warn(
+        `No se pudieron leer los datos del siniestro con el modelo: ${(error as Error).message} — sigo paso a paso`,
+      );
+      return this.prepend(
+        'Vamos a cargarlo de a un dato por vez.',
+        this.askSiniestroFecha(key, state.data, state.data.polizaId as number),
+      );
+    }
+
+    // Only a real past or present date counts; anything else is asked again.
+    if (extracted.fecha && !parseFecha(extracted.fecha)) extracted.fecha = null;
+    const datos = mergeDatos(known, extracted);
+    const faltan = pendientes(datos);
+    const progressed = faltan.length < pendientes(known).length;
+
+    if (faltan.length) {
+      const data = {
+        ...state.data,
+        datos,
+        pedidos: faltan.map((f) => f.campo),
+      };
+      if (!progressed)
+        return this.retry(key, { ...state, data }, [
+          siniestroFaltantes(faltan),
+        ]);
+      this.setState(key, 'SINIESTRO_DATOS', { ...data, [RETRIES]: 0 });
+      return { messages: [siniestroFaltantes(faltan)] };
+    }
+
+    const fecha = parseFecha(datos.fecha!)!;
+    const descripcion = siniestroDescripcion(datos);
+    this.setState(key, 'SINIESTRO_CONFIRM', {
+      ...state.data,
+      datos,
+      pedidos: [],
+      fechaIso: fecha.iso,
+      fechaDisplay: fecha.display,
+      descripcion,
+    });
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    return {
+      messages: [
+        siniestroConfirm(
+          polizas.find((p) => p.id === state.data.polizaId),
+          fecha.display,
+          descripcion,
+        ),
       ],
     };
   }

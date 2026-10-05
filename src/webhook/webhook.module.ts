@@ -6,6 +6,7 @@ import { MetaService } from './meta.service';
 import { SentMessageRegistry } from './sent-message-registry.service';
 import { InactivityWarningService } from './inactivity-warning.service';
 import { FlowService } from './flow/flow.service';
+import { SiniestroExtractor } from './flow/siniestro-extractor.service';
 import { InternalController } from './internal.controller';
 
 @Module({
@@ -17,6 +18,7 @@ import { InternalController } from './internal.controller';
     MetaService,
     InactivityWarningService,
     FlowService,
+    SiniestroExtractor,
   ],
 })
 export class WebhookModule {}
