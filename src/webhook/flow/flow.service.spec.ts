@@ -316,6 +316,87 @@ describe('FlowService', () => {
       expect(done.state?.step).toBe('SINIESTRO_FOTO_TARJETA');
     });
 
+    const polizaCon = (estadoPago: {
+      alDia: boolean;
+      cuotasRechazadas: number;
+      cuotasVencidas: number;
+    }) => ({
+      id: 833,
+      certificado: '1741715',
+      company: 'Triunfo',
+      riskType: 'auto',
+      status: 'vigente',
+      vigenciaDesde: null,
+      vigenciaHasta: null,
+      paymentMethod: null,
+      vehiculo: { dominio: 'ABC123', marca: 'CHEVROLET', modelo: 'CORSA' },
+      estadoPago,
+    });
+
+    async function pickPolicyForClaim() {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
+      await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx);
+      return send({ selectionId: 'pol_833', text: '' }, clientCtx);
+    }
+
+    it('does not take a claim on a policy with a rejected payment and alerts an advisor', async () => {
+      api.getPolizas.mockResolvedValue([
+        polizaCon({ alDia: false, cuotasRechazadas: 1, cuotasVencidas: 0 }),
+      ]);
+
+      const result = await pickPolicyForClaim();
+
+      expect(result.messages[0].body).toContain('pago rechazado');
+      expect(stored?.step).toBe('CLIENT_MENU');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('1741715'),
+      );
+      expect(api.createSiniestro).not.toHaveBeenCalled();
+    });
+
+    it('does not take a claim on a policy with overdue installments', async () => {
+      api.getPolizas.mockResolvedValue([
+        polizaCon({ alDia: false, cuotasRechazadas: 0, cuotasVencidas: 2 }),
+      ]);
+
+      const result = await pickPolicyForClaim();
+
+      expect(result.messages[0].body).toContain('cuotas vencidas');
+      expect(api.requestHandoff).toHaveBeenCalled();
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('continues the claim when the policy is paid up', async () => {
+      api.getPolizas.mockResolvedValue([
+        polizaCon({ alDia: true, cuotasRechazadas: 0, cuotasVencidas: 0 }),
+      ]);
+
+      await pickPolicyForClaim();
+
+      expect(stored?.step).toBe('SINIESTRO_FECHA');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it('alerts an advisor when the client has no policy in force', async () => {
+      api.getPolizas.mockResolvedValue([]);
+
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
+      const result = await send(
+        { selectionId: OPT.sinNueva, text: '' },
+        clientCtx,
+      );
+
+      expect(result.messages[0].body).toContain('No encontré pólizas vigentes');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('no tiene pólizas vigentes'),
+      );
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
     async function completeIncidentDetails() {
       expect(stored?.step).toBe('SINIESTRO_HORA');
       expect(api.createSiniestro).not.toHaveBeenCalled();

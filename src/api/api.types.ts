@@ -127,6 +127,14 @@ export interface PolizaSummary {
   vigenciaHasta: string | null;
   paymentMethod: string | null;
   vehiculo: VehiculoSummary | null;
+  /** Payment standing; `alDia` is false with a rejected or past-due installment. */
+  estadoPago?: EstadoPago;
+}
+
+export interface EstadoPago {
+  alDia: boolean;
+  cuotasRechazadas: number;
+  cuotasVencidas: number;
 }
 
 export interface CuotaImpaga {

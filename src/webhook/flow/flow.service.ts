@@ -542,7 +542,7 @@ export class FlowService {
       case 'SINIESTRO_TYPE':
         return this.handleSiniestroType(input, ctx, key);
       case 'SINIESTRO_POLIZA':
-        return this.handleSiniestroPoliza(state, input, key);
+        return this.handleSiniestroPoliza(state, input, ctx, key);
       case 'SINIESTRO_FECHA':
         return this.handleSiniestroFecha(state, input, key);
       case 'SINIESTRO_DESC':
@@ -885,7 +885,15 @@ export class FlowService {
       }
       case 'siniestro_nueva': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
-        if (polizas.length === 0) return this.noPolizas(key);
+        // Often the policy lapsed over a rejected or missed payment: the claim
+        // can't go through on its own, but the office has to know about it.
+        if (polizas.length === 0)
+          return this.siniestroBloqueado(
+            key,
+            ctx,
+            'Denuncia de siniestro no registrada: el cliente no tiene pólizas vigentes.',
+            'No encontré pólizas vigentes a tu nombre, así que no puedo registrar la denuncia automáticamente.',
+          );
         this.setState(key, 'SINIESTRO_POLIZA', { polizas });
         return {
           messages: [
@@ -992,11 +1000,12 @@ export class FlowService {
     return { messages: [], handoff: 'faq' };
   }
 
-  private handleSiniestroPoliza(
+  private async handleSiniestroPoliza(
     state: FlowState,
     input: UserInput,
+    ctx: FlowContext,
     key: string,
-  ): FlowResult {
+  ): Promise<FlowResult> {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
     let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
 
@@ -1017,6 +1026,25 @@ export class FlowService {
           'No reconocí esa póliza. Elegí una de la lista, o escribí *menú* para volver.',
         ),
       ]);
+    }
+
+    const poliza = polizas.find((p) => p.id === polizaId)!;
+    const pago = poliza.estadoPago;
+    if (pago && !pago.alDia) {
+      // Reason worded so the office files it under siniestros, not pagos
+      // (see classifyMatter in the API: payment words take precedence).
+      const motivo =
+        pago.cuotasRechazadas > 0
+          ? 'un cobro rechazado'
+          : 'saldo vencido impago';
+      return this.siniestroBloqueado(
+        key,
+        ctx,
+        `Denuncia de siniestro no registrada: la póliza ${poliza.certificado} figura con ${motivo}.`,
+        pago.cuotasRechazadas > 0
+          ? `La póliza *${poliza.certificado}* registra un *pago rechazado*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlo.`
+          : `La póliza *${poliza.certificado}* registra *cuotas vencidas sin pagar*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlas.`,
+      );
     }
 
     this.setState(key, 'SINIESTRO_FECHA', { ...state.data, polizaId });
@@ -2238,6 +2266,37 @@ export class FlowService {
     }
     this.setState(key, 'ROOT');
     return { messages: [welcomeMenu(undefined, ctx.botName)] };
+  }
+
+  /**
+   * A claim the bot must not file on its own (no policy in force, or the policy
+   * has a rejected / overdue payment). The chat goes to human attention with
+   * the reason so an advisor reviews the case instead of the claim stalling.
+   */
+  private async siniestroBloqueado(
+    key: string,
+    ctx: FlowContext,
+    reason: string,
+    explanation: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(ctx.conversationId, reason)
+      .catch(() => undefined);
+    this.setState(key, 'CLIENT_MENU');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `⚠️ ${explanation}
+
+` +
+            `Ya le avisé a un asesor para que revise tu caso y te contacte a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
+        },
+        clientMenu(),
+      ],
+    };
   }
 
   private noPolizas(key: string): FlowResult {

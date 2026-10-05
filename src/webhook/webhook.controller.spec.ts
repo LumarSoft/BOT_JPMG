@@ -77,6 +77,48 @@ describe('WebhookController', () => {
     expect(webhookService.handleMessage).toHaveBeenCalledTimes(2);
   });
 
+  it('passes the sender’s WhatsApp profile name along with the message', () => {
+    controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                contacts: [{ wa_id: 'wa1', profile: { name: 'John' } }],
+                messages: [
+                  {
+                    from: 'wa1',
+                    id: 'm1',
+                    timestamp: '1',
+                    type: 'text',
+                    text: { body: 'hola' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(webhookService.handleMessage).toHaveBeenCalledWith(
+      'wa1',
+      'hola',
+      'P1',
+      'm1',
+      undefined,
+      'John',
+    );
+  });
+
   it('records a WhatsApp Business app echo so the API can pause the bot', () => {
     controller.receiveMessage({
       object: 'whatsapp_business_account',

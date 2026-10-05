@@ -76,6 +76,11 @@ export interface WhatsAppStatus {
   };
 }
 
+export interface WhatsAppContact {
+  wa_id: string;
+  profile?: { name?: string };
+}
+
 export interface WhatsAppWebhookBody {
   object: string;
   entry: Array<{
@@ -85,6 +90,8 @@ export interface WhatsAppWebhookBody {
         messaging_product: string;
         metadata: WhatsAppMetadata;
         messages?: WhatsAppMessage[];
+        /** Sender profiles for `messages` (the WhatsApp name the person set). */
+        contacts?: WhatsAppContact[];
         statuses?: WhatsAppStatus[];
         // ── Coexistence only (see coexistence.types.ts) ──
         /** Messages an employee sent from the WhatsApp Business app. */

@@ -535,6 +535,31 @@ describe('WebhookService', () => {
       expect(meta.showTyping).not.toHaveBeenCalled();
     });
 
+    it('stores the sender’s WhatsApp profile name with the inbound message', async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: false,
+      });
+
+      await service.handleMessage(
+        '5491155556666',
+        'hola',
+        'P1',
+        'wamid-name',
+        undefined,
+        'John',
+      );
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        1,
+        'user',
+        'hola',
+        undefined,
+        'John',
+      );
+    });
+
     it('stores the message but sends nothing when the bot is disabled globally', async () => {
       api.getContext.mockResolvedValue({
         producerName: 'John',
@@ -549,7 +574,13 @@ describe('WebhookService', () => {
         'wamid-disabled',
       );
 
-      expect(api.saveMessage).toHaveBeenCalledWith(1, 'user', 'hola');
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        1,
+        'user',
+        'hola',
+        undefined,
+        undefined,
+      );
       expect(flow.handle).not.toHaveBeenCalled();
       expect(meta.showTyping).not.toHaveBeenCalled();
       expect(meta.sendText).not.toHaveBeenCalled();
@@ -578,7 +609,13 @@ describe('WebhookService', () => {
       );
 
       expect(flow.handle).toHaveBeenCalled();
-      expect(api.saveMessage).toHaveBeenCalledWith(1, 'user', 'hola');
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        1,
+        'user',
+        'hola',
+        undefined,
+        undefined,
+      );
       expect(meta.sendText).not.toHaveBeenCalled();
       expect(meta.sendButtons).not.toHaveBeenCalled();
       expect(meta.sendList).not.toHaveBeenCalled();
@@ -751,6 +788,7 @@ describe('WebhookService', () => {
         'user',
         '[El cliente envió una foto]',
         attachment,
+        undefined,
       );
     });
 
@@ -784,6 +822,7 @@ describe('WebhookService', () => {
         'user',
         '[El cliente envió una foto]',
         attachment,
+        undefined,
       );
       expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
         'denuncia',
@@ -844,6 +883,8 @@ describe('WebhookService', () => {
         7,
         'user',
         '[El cliente envió una foto]',
+        undefined,
+        undefined,
       );
       expect(flow.handle).not.toHaveBeenCalled();
       expect(meta.sendText).not.toHaveBeenCalled();

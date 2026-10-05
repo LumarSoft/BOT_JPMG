@@ -188,6 +188,7 @@ export class ApiService {
     role: 'user' | 'assistant',
     content: string,
     media?: MessageMedia,
+    contactName?: string,
   ): Promise<ConversationMessage> {
     const { data } = await this.http.post<ConversationMessage>(
       `/bot/conversation/${conversationId}/message`,
@@ -207,6 +208,7 @@ export class ApiService {
               },
             }
           : {}),
+        ...(contactName?.trim() ? { contactName: contactName.trim() } : {}),
       },
     );
     return data;

@@ -168,9 +168,17 @@ export class WebhookService {
     phoneNumberId: string,
     messageId: string,
     selectionId?: string,
+    contactName?: string,
   ): Promise<void> {
     return this.enqueue(from, phoneNumberId, messageId, () =>
-      this.processMessage(from, text, phoneNumberId, selectionId, messageId),
+      this.processMessage(
+        from,
+        text,
+        phoneNumberId,
+        selectionId,
+        messageId,
+        contactName,
+      ),
     );
   }
 
@@ -184,9 +192,10 @@ export class WebhookService {
     mediaId: string,
     phoneNumberId: string,
     messageId: string,
+    contactName?: string,
   ): Promise<void> {
     return this.enqueue(from, phoneNumberId, messageId, () =>
-      this.processMedia(from, mediaId, phoneNumberId),
+      this.processMedia(from, mediaId, phoneNumberId, contactName),
     );
   }
 
@@ -241,6 +250,7 @@ export class WebhookService {
     phoneNumberId: string,
     selectionId?: string,
     messageId?: string,
+    contactName?: string,
   ) {
     this.logger.log(
       `[1/5] Mensaje entrante de ${from}: ${JSON.stringify(text)}`,
@@ -297,7 +307,13 @@ export class WebhookService {
           );
         }
         await this.api
-          .saveMessage(conversation.conversationId, 'user', text)
+          .saveMessage(
+            conversation.conversationId,
+            'user',
+            text,
+            undefined,
+            contactName,
+          )
           .catch(() => undefined);
         return;
       }
@@ -321,7 +337,13 @@ export class WebhookService {
       // wait for the reply (a model call can take seconds) doesn't feel dead.
       if (messageId) this.meta.showTyping(messageId, phoneNumberId);
 
-      await this.api.saveMessage(conversation.conversationId, 'user', text);
+      await this.api.saveMessage(
+        conversation.conversationId,
+        'user',
+        text,
+        undefined,
+        contactName,
+      );
     } catch (error) {
       this.logger.error(
         `API no disponible (conversation): ${(error as Error).message}`,
@@ -577,6 +599,7 @@ export class WebhookService {
     from: string,
     mediaId: string,
     phoneNumberId: string,
+    contactName?: string,
   ) {
     this.logger.log(`Procesando imagen de ${from}...`);
     const to = this.meta.normalizePhone(from);
@@ -673,18 +696,13 @@ export class WebhookService {
     // Persist the real attachment metadata in the transcript. The inbox signs
     // its protected URL when it is read, so the browser can render the image.
     const messageMedia = attachmentResult.attachments?.[0];
-    const saveImageMessage = messageMedia
-      ? this.api.saveMessage(
-          conversation.conversationId,
-          'user',
-          '[El cliente envió una foto]',
-          messageMedia,
-        )
-      : this.api.saveMessage(
-          conversation.conversationId,
-          'user',
-          '[El cliente envió una foto]',
-        );
+    const saveImageMessage = this.api.saveMessage(
+      conversation.conversationId,
+      'user',
+      '[El cliente envió una foto]',
+      messageMedia,
+      contactName,
+    );
     await saveImageMessage.catch((error: Error) =>
       this.logger.error(
         `No se pudo guardar la imagen en el chat: ${error.message}`,

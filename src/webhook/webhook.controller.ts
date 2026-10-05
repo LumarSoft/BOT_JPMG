@@ -93,7 +93,10 @@ export class WebhookController {
               );
             }
             for (const message of value.messages ?? []) {
-              this.handleInboundMessage(message, value.metadata);
+              const contactName = value.contacts?.find(
+                (contact) => contact.wa_id === message.from,
+              )?.profile?.name;
+              this.handleInboundMessage(message, value.metadata, contactName);
             }
         }
       }
@@ -110,6 +113,7 @@ export class WebhookController {
   private handleInboundMessage(
     message: WhatsAppMessage,
     metadata: WhatsAppMetadata | undefined,
+    contactName?: string,
   ): void {
     const phoneNumberId = metadata?.phone_number_id;
     // Routing is by number: without it we cannot resolve which tenant this
@@ -127,6 +131,8 @@ export class WebhookController {
           message.text.body,
           phoneNumberId,
           message.id,
+          undefined,
+          contactName,
         )
         .catch(console.error);
     } else if (message.type === 'interactive') {
@@ -144,12 +150,19 @@ export class WebhookController {
           phoneNumberId,
           message.id,
           reply.id,
+          contactName,
         )
         .catch(console.error);
     } else if (message.type === 'image') {
       console.log(`🖼️ De: ${message.from} → [imagen ${message.image.id}]`);
       this.webhookService
-        .handleMedia(message.from, message.image.id, phoneNumberId, message.id)
+        .handleMedia(
+          message.from,
+          message.image.id,
+          phoneNumberId,
+          message.id,
+          contactName,
+        )
         .catch(console.error);
     }
   }
