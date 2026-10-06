@@ -99,4 +99,76 @@ describe('renderQuote', () => {
       ['B1', false],
     ]);
   });
+
+  it('shows the sum insured and the card and cash price of each coverage', () => {
+    const quote = {
+      quoteNumber: '1',
+      validUntil: '2026-11-05',
+      vehicleValue: '     23900000.00',
+      messages: [],
+      coverages: [
+        {
+          code: 'C1',
+          name: 'Terceros Completo',
+          tagline: null,
+          benefits: [],
+          highlighted: false,
+          paymentOptions: [
+            {
+              code: '1',
+              name: 'Con tarjeta',
+              premium: 109654,
+              installmentValue: 109654,
+              installments: 1,
+            },
+            {
+              code: '9',
+              name: 'En efectivo',
+              premium: 116072,
+              installmentValue: 116072,
+              installments: 1,
+            },
+          ],
+        },
+      ],
+    } as unknown as QuoteResult;
+
+    const rendered = renderQuote(quote);
+
+    expect(rendered.sumaAsegurada).toMatch(/^\$\s?23\.900\.000$/);
+    expect(rendered.coberturas[0].conTarjeta).toMatch(/^\$\s?109\.654$/);
+    expect(rendered.coberturas[0].enEfectivo).toMatch(/^\$\s?116\.072$/);
+  });
+
+  it('does not present a $0 sum insured or a missing price as real', () => {
+    const quote = {
+      quoteNumber: '1',
+      validUntil: null,
+      vehicleValue: '0.00',
+      messages: [],
+      coverages: [
+        {
+          code: 'A',
+          name: 'RC',
+          tagline: null,
+          benefits: [],
+          highlighted: false,
+          paymentOptions: [
+            {
+              code: '1',
+              name: 'Con tarjeta',
+              premium: 15000,
+              installmentValue: 15000,
+              installments: 1,
+            },
+          ],
+        },
+      ],
+    } as unknown as QuoteResult;
+
+    const rendered = renderQuote(quote);
+
+    expect(rendered.sumaAsegurada).toBeNull();
+    expect(rendered.coberturas[0].enEfectivo).toBeNull();
+  });
 });

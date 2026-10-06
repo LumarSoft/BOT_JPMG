@@ -44,13 +44,20 @@ export interface RenderedCoverage {
   descripcion: string | null;
   incluye: string[];
   recomendada: boolean;
-  desde: string;
+  /** Card price (Triunfo payment code 1), null when not quoted. */
+  conTarjeta: string | null;
+  /** Cash price (Triunfo payment code 9), null when not quoted. */
+  enEfectivo: string | null;
   opciones: RenderedOption[];
 }
 
+const CARD_PAYMENT_CODE = '1';
+const CASH_PAYMENT_CODE = '9';
+
 /**
- * Turns a raw quote into the shape the model should read out: human coverage
- * names and prices already written in Argentine pesos, cheapest first.
+ * Turns a raw quote into the shape the model should read out: the sum insured,
+ * human coverage names and the card and cash prices already written in
+ * Argentine pesos, in the order the API configured.
  *
  * Formatting here rather than in the prompt is deliberate. Left to itself the
  * model printed US separators ("$65,976" — which an Argentine reads as sixty-six
@@ -59,18 +66,22 @@ export interface RenderedCoverage {
  */
 export function renderQuote(quote: QuoteResult): {
   vigencia: string | null;
-  valorVehiculo: string | null;
+  sumaAsegurada: string | null;
   coberturas: RenderedCoverage[];
   avisos: string[];
 } {
-  const cheapest = (c: (typeof quote.coverages)[number]): number => {
-    const premiums = c.paymentOptions
-      .map((o) => o.premium)
-      .filter((p) => p > 0);
-    return premiums.length > 0
-      ? Math.min(...premiums)
-      : Number.MAX_SAFE_INTEGER;
+  const priceFor = (
+    c: (typeof quote.coverages)[number],
+    code: string,
+  ): string | null => {
+    const premium = c.paymentOptions.find(
+      (o) => o.code.trim() === code,
+    )?.premium;
+    return premium && premium > 0 ? fmtArs(premium) : null;
   };
+  // The value Triunfo insures the vehicle for; it returns 0 when it could not
+  // value it, and a $0 sum insured must not be shown as if it were real.
+  const value = Number.parseFloat(quote.vehicleValue ?? '');
 
   // Kept in the order the API returns: the producer's configuration puts the
   // coverages recommended for this vehicle year first, same as on the web.
@@ -82,7 +93,8 @@ export function renderQuote(quote: QuoteResult): {
     descripcion: c.tagline?.trim() || null,
     incluye: Array.isArray(c.benefits) ? c.benefits : [],
     recomendada: c.highlighted === true,
-    desde: fmtArs(cheapest(c)),
+    conTarjeta: priceFor(c, CARD_PAYMENT_CODE),
+    enEfectivo: priceFor(c, CASH_PAYMENT_CODE),
     opciones: c.paymentOptions.map((o) => ({
       forma: o.name,
       total: fmtArs(o.premium),
@@ -94,7 +106,7 @@ export function renderQuote(quote: QuoteResult): {
 
   return {
     vigencia: quote.validUntil,
-    valorVehiculo: quote.vehicleValue,
+    sumaAsegurada: value > 0 ? fmtArs(value) : null,
     coberturas,
     avisos: quote.messages,
   };
