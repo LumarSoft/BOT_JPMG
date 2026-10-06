@@ -72,25 +72,25 @@ export function renderQuote(quote: QuoteResult): {
       : Number.MAX_SAFE_INTEGER;
   };
 
-  const coberturas = [...quote.coverages]
-    .sort((a, b) => cheapest(a) - cheapest(b))
-    .map((c) => ({
-      // The API applies the same producer-configured wording used by the web.
-      // Keep the prefix fallback only as protection against an older API.
-      nombre: c.name?.trim() || coverageName(c.code),
-      codigo: c.code,
-      descripcion: c.tagline?.trim() || null,
-      incluye: Array.isArray(c.benefits) ? c.benefits : [],
-      recomendada: c.highlighted === true,
-      desde: fmtArs(cheapest(c)),
-      opciones: c.paymentOptions.map((o) => ({
-        forma: o.name,
-        total: fmtArs(o.premium),
-        ...(o.installments > 1
-          ? { cuotas: `${o.installments} x ${fmtArs(o.installmentValue)}` }
-          : {}),
-      })),
-    }));
+  // Kept in the order the API returns: the producer's configuration puts the
+  // coverages recommended for this vehicle year first, same as on the web.
+  const coberturas = quote.coverages.map((c) => ({
+    // The API applies the same producer-configured wording used by the web.
+    // Keep the prefix fallback only as protection against an older API.
+    nombre: c.name?.trim() || coverageName(c.code),
+    codigo: c.code,
+    descripcion: c.tagline?.trim() || null,
+    incluye: Array.isArray(c.benefits) ? c.benefits : [],
+    recomendada: c.highlighted === true,
+    desde: fmtArs(cheapest(c)),
+    opciones: c.paymentOptions.map((o) => ({
+      forma: o.name,
+      total: fmtArs(o.premium),
+      ...(o.installments > 1
+        ? { cuotas: `${o.installments} x ${fmtArs(o.installmentValue)}` }
+        : {}),
+    })),
+  }));
 
   return {
     vigencia: quote.validUntil,

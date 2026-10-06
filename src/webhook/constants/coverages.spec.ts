@@ -61,4 +61,42 @@ describe('renderQuote', () => {
       }),
     ]);
   });
+
+  it('keeps the order the API configured, even when the recommended one costs more', () => {
+    const coverage = (code: string, premium: number, highlighted = false) => ({
+      code,
+      name: code,
+      tagline: null,
+      benefits: [],
+      highlighted,
+      paymentOptions: [
+        {
+          code: 'DA',
+          name: 'Débito Automático',
+          premium,
+          installmentValue: premium,
+          installments: 1,
+        },
+      ],
+    });
+    const quote = {
+      quoteNumber: '1',
+      validUntil: null,
+      vehicleValue: null,
+      messages: [],
+      coverages: [
+        coverage('C1', 40000, true),
+        coverage('A', 15000),
+        coverage('B1', 23000),
+      ],
+    } as unknown as QuoteResult;
+
+    expect(
+      renderQuote(quote).coberturas.map((c) => [c.codigo, c.recomendada]),
+    ).toEqual([
+      ['C1', true],
+      ['A', false],
+      ['B1', false],
+    ]);
+  });
 });
