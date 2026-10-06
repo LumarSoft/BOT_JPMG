@@ -69,7 +69,7 @@ export function identificationFromText(
 
   const plates: string[] =
     folded.match(
-      /(?<![a-z0-9])(?:[a-z]{2}[ -]*\d{3}[ -]*[a-z]{2}|[a-z]{3}[ -]*\d{3})(?![a-z0-9])/g,
+      /(?<![a-z0-9])(?:[a-z]{2}[ -]*\d{3}[ -]*[a-z]{2}|[a-z]{3}[ -]*\d{3}|[a-z][ -]*\d{3}[ -]*[a-z]{3})(?![a-z0-9])/g,
     ) ?? [];
   if (plates.length === 1)
     return { plate: plates[0].replace(/[ -]/g, '').toUpperCase() };

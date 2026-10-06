@@ -1,3 +1,7 @@
+import {
+  IdentificationInterpreter,
+  type IdentificationAction,
+} from './identification-interpreter.service';
 import { identificationFromText } from './identification';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -281,20 +285,9 @@ type ClientAction =
   | 'baja_poliza';
 
 /**
- * Deterministic conversation engine. The bot's transactional flows (menus,
- * identification, siniestros, pagos, documentos) are driven entirely by this
- * state machine — fixed copy, stable option ids, no LLM. The model is only
- * reached through the LLM_* steps (cotización and free-text questions), where
- * natural language actually adds value. The one exception is reading the
- * claim checklist (SINIESTRO_DATOS, see SiniestroExtractor): the flow still
- * validates, asks for what is missing and confirms before filing.
- *
- * State is durable: the API persists the `{ step, data }` snapshot per
- * conversation and hands it back on the next message. `handle` rehydrates from
- * it and returns the new snapshot to persist, so the bot is effectively
- * stateless and resumes the exact step after a restart or deploy. Session expiry
- * is owned solely by the API (SESSION_TIMEOUT_MINUTES); the in-memory `states`
- * map is just a per-turn scratchpad (filled on hydrate, cleared after handle).
+ * Conversation state machine for transactional flows. The model interprets
+ * natural language identification and claim details; validation, client lookup
+ * and actions remain explicit. LLM_* steps handle quotations and free text.
  */
 @Injectable()
 export class FlowService {
@@ -307,6 +300,7 @@ export class FlowService {
     private readonly api: ApiService,
     config: ConfigService,
     private readonly extractor: SiniestroExtractor,
+    private readonly identification: IdentificationInterpreter,
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
   }
@@ -854,7 +848,7 @@ export class FlowService {
 
     // The not-found reply offers "escribí *asesor*": honor it instead of
     // reading the word as a plate.
-    if (/\basesor/i.test(raw)) {
+    if (/^(?:asesor|(?:quiero )?hablar con (?:un )?asesor)[.!]?$/i.test(raw)) {
       return this.handleClientMenu(
         { ...input, selectionId: OPT.asesor },
         ctx,
@@ -862,7 +856,50 @@ export class FlowService {
       );
     }
 
-    const params = identificationFromText(raw);
+    let action = (state.data.pendingAction as IdentificationAction) ?? 'pagos';
+    let params: { dni: string } | { plate: string } | null = null;
+    // Bare identifiers need no interpretation; natural speech goes to the model.
+    const bare =
+      /^(?:[\d .-]+|[a-z]{3}[ -]*\d{3}|[a-z]{2}[ -]*\d{3}[ -]*[a-z]{2}|[a-z][ -]*\d{3}[ -]*[a-z]{3})$/i.test(
+        raw,
+      );
+    if (bare || ctx.llmEnabled === false) params = identificationFromText(raw);
+    else {
+      try {
+        const meaning = await this.identification.interpret({
+          text: raw,
+          pendingAction: action,
+          history: ctx.history,
+          phoneNumberId: ctx.phoneNumberId ?? '',
+        });
+        action = meaning.action ?? action;
+        state = { ...state, data: { ...state.data, pendingAction: action } };
+        if (meaning.clarification || (!meaning.dni && !meaning.plate)) {
+          this.setState(key, 'IDENTIFY', state.data);
+          return {
+            messages: [
+              {
+                kind: 'text',
+                body:
+                  meaning.clarification ??
+                  'Para continuar, decime el DNI del titular o la patente.',
+              },
+            ],
+          };
+        }
+        params = meaning.dni
+          ? { dni: meaning.dni }
+          : meaning.plate
+            ? { plate: meaning.plate }
+            : null;
+      } catch {
+        this.logger.warn(
+          'Interpretación de identificación no disponible; se pide el dato explícito',
+        );
+        // On a model failure only an explicit numeric/plate input is safe.
+        params = bare ? identificationFromText(raw) : null;
+      }
+    }
     if (!params) {
       return this.retry(key, state, [
         {
@@ -889,7 +926,6 @@ export class FlowService {
       throw error;
     }
 
-    const action = (state.data.pendingAction as ClientAction) ?? 'pagos';
     // ctx.client is still null in this request, but identifyClient persisted the
     // link, so the conversation-scoped action calls resolve the client fine.
     return this.prepend(

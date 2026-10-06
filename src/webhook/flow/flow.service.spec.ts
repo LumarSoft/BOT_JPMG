@@ -4,6 +4,8 @@ import { ApiService } from '../../api/api.service';
 import { FlowService, takeOutDocsState } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
+import { IdentificationInterpreter } from './identification-interpreter.service';
+import { identificationFromText } from './identification';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 
 /**
@@ -27,6 +29,7 @@ describe('FlowService', () => {
     identifyClient: jest.Mock;
   };
   let extractor: { extract: jest.Mock };
+  let interpreter: { interpret: jest.Mock };
 
   const KEY = 'pn:wa';
   const leadCtx: FlowContext = {
@@ -83,11 +86,25 @@ describe('FlowService', () => {
       }),
     };
     extractor = { extract: jest.fn() };
+    interpreter = {
+      interpret: jest.fn().mockImplementation(({ text }: { text: string }) => {
+        const params = identificationFromText(text);
+        return Promise.resolve({
+          dni: params && 'dni' in params ? params.dni : null,
+          plate: params && 'plate' in params ? params.plate : null,
+          action: null,
+          clarification: params
+            ? null
+            : 'No pude reconocer el documento. Decime el DNI completo o la patente.',
+        });
+      }),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FlowService,
         { provide: ApiService, useValue: api },
         { provide: SiniestroExtractor, useValue: extractor },
+        { provide: IdentificationInterpreter, useValue: interpreter },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue('0800-TOW') },
@@ -769,6 +786,73 @@ describe('FlowService', () => {
       expect(res.messages[0]).toMatchObject({
         body: expect.stringContaining('No pude reconocer'),
       });
+    });
+
+    it('understands a corrected document without taking the first number', async () => {
+      interpreter.interpret.mockResolvedValueOnce({
+        dni: '27345678',
+        plate: null,
+        action: null,
+        clarification: null,
+      });
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      await send({ text: 'Dije 27345679 pero el correcto es 27345678' });
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
+    });
+
+    it('remembers the requested action while asking for a missing identifier', async () => {
+      interpreter.interpret.mockResolvedValueOnce({
+        dni: null,
+        plate: null,
+        action: 'siniestro_nueva',
+        clarification: '¿Cuál es el DNI del titular para denunciar el choque?',
+      });
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'Quiero hacer un siniestro.' });
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.state?.data.pendingAction).toBe('siniestro_nueva');
+      expect(res.messages[0]).toMatchObject({
+        body: expect.stringContaining('denunciar el choque'),
+      });
+      await send({ text: '27345678' });
+      expect(api.getPolizas).toHaveBeenCalled();
+    });
+
+    it('asks for clarification when there are two possible documents', async () => {
+      interpreter.interpret.mockResolvedValueOnce({
+        dni: null,
+        plate: null,
+        action: null,
+        clarification: '¿Consultás por vos o por tu papá?',
+      });
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({
+        text: 'El de mi papá es 12345678 y el mío 27345678',
+      });
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.messages[0]).toMatchObject({
+        body: '¿Consultás por vos o por tu papá?',
+      });
+    });
+
+    it('avoids model calls when the monthly budget is exhausted', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      await send({ text: '27345678' }, { ...leadCtx, llmEnabled: false });
+      expect(interpreter.interpret).not.toHaveBeenCalled();
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
+    });
+
+    it('does not identify the wrong person when model interpretation fails', async () => {
+      interpreter.interpret.mockRejectedValueOnce(new Error('timeout'));
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'Mi DNI es 27345678' });
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.state?.step).toBe('IDENTIFY');
     });
 
     it('asks again when the API rejects the value as malformed', async () => {

@@ -1,9 +1,9 @@
 import type { ClientSummary } from '../../api/api.types';
 
 /**
- * The deterministic conversation steps. The bot is driven by this state
- * machine; the LLM is only reached through the `LLM_*` steps (cotización and
- * free-text questions), never for the critical transactional flows.
+ * Conversation steps driven by the state machine. The model interprets
+ * identification and claim details and handles LLM_* steps; validation and
+ * transactional actions stay in the flow.
  */
 export type FlowStep =
   | 'ROOT' // first contact: ¿sos cliente?
@@ -112,6 +112,8 @@ export interface FlowContext {
   phoneNumberId?: string;
   /** False when the number is over its monthly LLM budget. */
   llmEnabled?: boolean;
+  /** Recent session messages for contextual interpretation. */
+  history?: Array<{ role: string; content: string }>;
   /** When the API stored the message being handled (ISO). */
   inboundAt?: string;
 }

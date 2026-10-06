@@ -400,6 +400,10 @@ export class WebhookService {
         flowState: this.parseFlowState(conversation.flowState),
         phoneNumberId,
         llmEnabled: context.llmEnabled,
+        history: conversation.messages.map(({ role, content }) => ({
+          role,
+          content,
+        })),
         inboundAt,
       },
     );
