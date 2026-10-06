@@ -307,6 +307,7 @@ export class WebhookService {
     }
 
     let conversation: BotConversation;
+    let inboundAt: string | undefined;
     try {
       conversation = await this.api.getConversation(phoneNumberId, from);
       this.logger.log(
@@ -363,13 +364,14 @@ export class WebhookService {
       // wait for the reply (a model call can take seconds) doesn't feel dead.
       if (messageId) this.meta.showTyping(messageId, phoneNumberId);
 
-      await this.api.saveMessage(
+      const saved = await this.api.saveMessage(
         conversation.conversationId,
         'user',
         inbound?.content ?? text,
         inbound?.media,
         contactName,
       );
+      inboundAt = saved?.createdAt;
     } catch (error) {
       this.logger.error(
         `API no disponible (conversation): ${(error as Error).message}`,
@@ -398,6 +400,7 @@ export class WebhookService {
         flowState: this.parseFlowState(conversation.flowState),
         phoneNumberId,
         llmEnabled: context.llmEnabled,
+        inboundAt,
       },
     );
 
@@ -477,7 +480,7 @@ export class WebhookService {
         quoteVehicleMemory,
       } = await this.generateReply(
         context,
-        conversation,
+        this.quoteHistory(conversation, result.state),
         text,
         result.handoff,
         phoneNumberId,
@@ -1320,6 +1323,24 @@ export class WebhookService {
     }
 
     return { text: FALLBACK_REPLY, coverageLeadId, quoteVehicleMemory };
+  }
+
+  /**
+   * The quote model only sees messages since the current quote started, so a
+   * quote restarted after a mistake doesn't reuse the previous brand or year.
+   * States saved before the marker existed keep the whole session history.
+   */
+  private quoteHistory(
+    conversation: BotConversation,
+    state: FlowState | null | undefined,
+  ): BotConversation {
+    const startedAt = state?.data.quoteStartedAt;
+    if (state?.step !== 'LLM_COTIZACION' || typeof startedAt !== 'string')
+      return conversation;
+    return {
+      ...conversation,
+      messages: conversation.messages.filter((m) => m.createdAt >= startedAt),
+    };
   }
 
   private async reportCompletionUsage(

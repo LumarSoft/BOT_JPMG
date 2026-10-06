@@ -112,4 +112,6 @@ export interface FlowContext {
   phoneNumberId?: string;
   /** False when the number is over its monthly LLM budget. */
   llmEnabled?: boolean;
+  /** When the API stored the message being handled (ISO). */
+  inboundAt?: string;
 }

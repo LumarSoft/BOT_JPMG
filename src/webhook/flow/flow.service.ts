@@ -104,6 +104,19 @@ const CAR_BRAND_RE =
 const DUAL_BRAND_RE = /\b(honda|suzuki)\b/;
 /** A model year ("2010", "1998"): a strong sign the text describes a vehicle. */
 const MODEL_YEAR_RE = /\b(19[5-9]\d|20[0-4]\d)\b/;
+
+/** Steps inside a quote: re-tapping a quote category there starts over. */
+const QUOTE_STEPS = new Set<FlowStep>([
+  'LLM_COTIZACION',
+  'COT_PLAN',
+  'COT_LEAD_FIELDS',
+  'COT_LEAD_NOMBRE',
+  'COT_LEAD_TELEFONO',
+]);
+
+/** "Quiero empezar de nuevo", "reiniciar", "volver a empezar". */
+const RESTART_QUOTE_RE =
+  /\b(empezar|arrancar|comenzar|cotizar) (de nuevo|otra vez|de cero)\b|\bvolver a (empezar|arrancar|comenzar)\b|\breinicia(r|lo|la)?\b/;
 const MOTO_BRAND_RE =
   /\b(motomel|gilera|zanella|corven|keller|mondial|guerrero|bajaj|kawasaki|ktm|benelli|harley|royal enfield|siam|appia|okinoi|kymco|sym|voge|cfmoto|rouser|yamaha)\b/;
 const LAST_GREETING_TEXT = 'lastGreetingText';
@@ -405,6 +418,16 @@ export class FlowService {
     // Global escape hatch: "menú" / the back option returns to the main menu.
     if (sel === OPT.menu || /^men[uú]$/i.test(input.text.trim())) {
       return this.toMainMenu(key, ctx);
+    }
+
+    // Re-tapping a quote category (the old "Auto" button is still on screen)
+    // or asking to start over restarts the quote. Before, the tap just reached
+    // the quote model as the word "Auto" and it carried on with the previous
+    // brand, model and year.
+    if (QUOTE_STEPS.has(existing.state.step)) {
+      const restart = this.quoteRestartOption(existing.state, input);
+      if (restart !== undefined)
+        return this.restartCotizacion(restart, ctx, key);
     }
 
     // The escape offered after a step failed to understand the user twice.
@@ -1710,6 +1733,7 @@ export class FlowService {
       return this.startCotizacion(
         key,
         category === OPT.cotMoto ? 'moto' : 'auto',
+        ctx,
         input,
       );
     }
@@ -1725,7 +1749,7 @@ export class FlowService {
     // the quote model works out auto vs moto — showing the category list would
     // make them repeat themselves.
     if (!input.selectionId && this.namesVehicle(input.text)) {
-      return this.startCotizacion(key, undefined, input);
+      return this.startCotizacion(key, undefined, ctx, input);
     }
     return this.showCotizarMenu(key);
   }
@@ -1746,7 +1770,7 @@ export class FlowService {
     if (!opt || !COTIZAR_LABEL[opt]) {
       // Typed a vehicle instead of picking ("el gol trend 1.6 2015"): quote it.
       if (!input.selectionId && this.namesVehicle(input.text)) {
-        return this.startCotizacion(key, undefined, input);
+        return this.startCotizacion(key, undefined, ctx, input);
       }
       // Category not recognised — LLM helps clarify; state stays COTIZAR_TIPO.
       return { messages: [], handoff: 'faq' };
@@ -1756,6 +1780,7 @@ export class FlowService {
       return this.startCotizacion(
         key,
         opt === OPT.cotMoto ? 'moto' : 'auto',
+        ctx,
         input,
       );
     }
@@ -2106,9 +2131,19 @@ export class FlowService {
   private startCotizacion(
     key: string,
     vehiculo: 'auto' | 'moto' | undefined,
+    ctx: FlowContext,
     input?: UserInput,
   ): FlowResult {
-    this.setState(key, 'LLM_COTIZACION', vehiculo ? { vehiculo } : {});
+    // quoteStartedAt bounds the history the quote model sees (webhook.service),
+    // so a restarted quote does not pick up the previous one's vehicle data.
+    // It is the time of the message that opened the quote, so that message
+    // ("cotizame mi corsa 2010, cp 2000") stays in the history.
+    const quoteStartedAt = ctx.inboundAt ?? new Date().toISOString();
+    this.setState(
+      key,
+      'LLM_COTIZACION',
+      vehiculo ? { vehiculo, quoteStartedAt } : { quoteStartedAt },
+    );
     if (!vehiculo) return { messages: [], handoff: 'cotizacion' };
 
     // The user often names the vehicle in the very message that opens the flow
@@ -2133,6 +2168,38 @@ export class FlowService {
         },
       ],
     };
+  }
+
+  /**
+   * The category to restart the quote with: the tapped category, or the one in
+   * progress when the user asks to start over (null = unknown, show the list).
+   * undefined when the message is not a restart.
+   */
+  private quoteRestartOption(
+    state: FlowState,
+    input: UserInput,
+  ): string | null | undefined {
+    if (input.selectionId) {
+      return COTIZAR_LABEL[input.selectionId] ? input.selectionId : undefined;
+    }
+    if (!RESTART_QUOTE_RE.test(fold(input.text))) return undefined;
+    if (state.data.vehiculo === 'auto') return OPT.cotAuto;
+    if (state.data.vehiculo === 'moto') return OPT.cotMoto;
+    return null;
+  }
+
+  private async restartCotizacion(
+    opt: string | null,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const restarted = '🔄 Listo, empezamos de nuevo la cotización.';
+    if (!opt) return this.prepend(restarted, this.showCotizarMenu(key));
+    this.setState(key, 'COTIZAR_TIPO');
+    return this.prepend(
+      restarted,
+      await this.handleCotizarTipo({ text: '', selectionId: opt }, ctx, key),
+    );
   }
 
   /**

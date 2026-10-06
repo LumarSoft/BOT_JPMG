@@ -153,6 +153,76 @@ describe('WebhookService', () => {
     expect(request).not.toHaveProperty('max_tokens');
   });
 
+  it('passes the stored message time to the flow and limits the quote model to the current quote', async () => {
+    const create = stubOpenAi();
+    api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+    api.getConversation.mockResolvedValue({
+      conversationId: 1,
+      client: null,
+      newSession: false,
+      botPaused: false,
+      flowState: null,
+      messages: [
+        {
+          id: 1,
+          role: 'user',
+          content: 'fiat palio 2024',
+          createdAt: '2026-10-05T10:00:00.000Z',
+        },
+        {
+          id: 2,
+          role: 'assistant',
+          content: 'El Palio figura hasta 2018',
+          createdAt: '2026-10-05T10:00:05.000Z',
+        },
+        {
+          id: 3,
+          role: 'user',
+          content: 'Auto',
+          createdAt: '2026-10-05T10:05:00.000Z',
+        },
+        {
+          id: 4,
+          role: 'assistant',
+          content: 'Decime marca, modelo y año',
+          createdAt: '2026-10-05T10:05:01.000Z',
+        },
+      ],
+    });
+    api.saveMessage.mockResolvedValue({
+      id: 5,
+      createdAt: '2026-10-05T10:06:00.000Z',
+    });
+    flow.handle.mockResolvedValueOnce({
+      messages: [],
+      handoff: 'cotizacion',
+      state: {
+        step: 'LLM_COTIZACION',
+        data: { vehiculo: 'auto', quoteStartedAt: '2026-10-05T10:05:00.000Z' },
+      },
+    });
+
+    await service.handleMessage(
+      '5491155556666',
+      'corsa 2010 cp 2000',
+      'P1',
+      'q-1',
+    );
+
+    expect(flow.handle).toHaveBeenCalledWith(
+      'P1:5491155556666',
+      expect.anything(),
+      expect.objectContaining({ inboundAt: '2026-10-05T10:06:00.000Z' }),
+    );
+    const [[request]] = create.mock.calls as Array<
+      [{ messages: Array<{ content: string }> }]
+    >;
+    const sent = request.messages.map((m) => m.content).join('\n');
+    expect(sent).toContain('Decime marca, modelo y año');
+    expect(sent).toContain('corsa 2010 cp 2000');
+    expect(sent).not.toContain('palio');
+  });
+
   describe('LLM turn', () => {
     beforeEach(() => {
       api.getContext.mockResolvedValue({

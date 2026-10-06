@@ -856,6 +856,80 @@ describe('FlowService', () => {
     });
   });
 
+  describe('restarting a quote', () => {
+    const inProgress = (vehiculo: 'auto' | 'moto') => {
+      stored = {
+        step: 'LLM_COTIZACION',
+        data: {
+          vehiculo,
+          quoteStartedAt: '2026-10-05T10:00:00.000Z',
+          quoteVehicleMemory: { brandId: 17, codia: 170761 },
+        },
+        audience: 'lead',
+      };
+    };
+
+    it('starts the car quote over when "Auto" is tapped again', async () => {
+      inProgress('auto');
+
+      const res = await send(
+        { selectionId: OPT.cotAuto, text: 'Auto' },
+        { ...leadCtx, inboundAt: '2026-10-05T10:05:00.000Z' },
+      );
+
+      expect(res.handoff).toBeUndefined();
+      expect(res.messages[0].body).toContain('empezamos de nuevo');
+      expect(res.messages[1].body).toContain('marca, modelo, año');
+      // The remembered vehicle is dropped and the history restarts at the tap.
+      expect(stored).toMatchObject({
+        step: 'LLM_COTIZACION',
+        data: { vehiculo: 'auto', quoteStartedAt: '2026-10-05T10:05:00.000Z' },
+      });
+      expect(stored?.data).not.toHaveProperty('quoteVehicleMemory');
+    });
+
+    it('starts over when the user asks for it in words', async () => {
+      inProgress('auto');
+
+      const res = await send({ text: 'me equivoqué, quiero empezar de nuevo' });
+
+      expect(res.handoff).toBeUndefined();
+      expect(res.messages[0].body).toContain('empezamos de nuevo');
+      expect(stored?.data).toMatchObject({ vehiculo: 'auto' });
+      expect(stored?.data).not.toHaveProperty('quoteVehicleMemory');
+    });
+
+    it('switches to another category tapped mid-quote', async () => {
+      inProgress('auto');
+
+      await send({ selectionId: OPT.cotMoto, text: 'Moto' });
+
+      expect(stored?.data).toMatchObject({ vehiculo: 'moto' });
+    });
+
+    it('keeps genuine quote answers with the model', async () => {
+      inProgress('auto');
+
+      const res = await send({ text: 'es un corsa 2010, cp 2000' });
+
+      expect(res.handoff).toBe('cotizacion');
+      expect(stored?.data).toHaveProperty('quoteVehicleMemory');
+    });
+
+    it('marks when a new quote starts so the model sees only its messages', async () => {
+      await send({ text: 'hola' });
+      await send({ text: 'quiero cotizar' });
+      await send(
+        { selectionId: OPT.cotAuto, text: 'Auto' },
+        { ...leadCtx, inboundAt: '2026-10-05T11:00:00.000Z' },
+      );
+
+      expect(stored?.data).toMatchObject({
+        quoteStartedAt: '2026-10-05T11:00:00.000Z',
+      });
+    });
+  });
+
   describe('cotización shortcut', () => {
     const clientCtx: FlowContext = {
       ...leadCtx,
