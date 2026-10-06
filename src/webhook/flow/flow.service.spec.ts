@@ -749,6 +749,28 @@ describe('FlowService', () => {
       expect(res.state?.step).toBe('IDENTIFY');
     });
 
+    it.each([
+      'Mi DNI es 37334584.',
+      'Treinta y siete, tres tres cuatro cinco ocho cuatro.',
+    ])('identifies the client from the audio transcript %s', async (text) => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text });
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '37334584' });
+      expect(res.state?.step).toBe('CLIENT_MENU');
+    });
+
+    it('asks for identification without sending unrelated speech as a plate', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'Quiero hacer un siniestro.' });
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.state?.step).toBe('IDENTIFY');
+      expect(res.messages[0]).toMatchObject({
+        body: expect.stringContaining('No pude reconocer'),
+      });
+    });
+
     it('asks again when the API rejects the value as malformed', async () => {
       api.identifyClient.mockRejectedValueOnce(
         Object.assign(new Error('Bad request'), {
@@ -758,7 +780,7 @@ describe('FlowService', () => {
       );
       await send({ text: 'hola' });
       await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
-      const res = await send({ text: 'no me acuerdo' });
+      const res = await send({ text: 'Mi DNI es 37334584.' });
 
       expect(res.state?.step).toBe('IDENTIFY');
       const text = res.messages

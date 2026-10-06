@@ -1,3 +1,4 @@
+import { identificationFromText } from './identification';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
@@ -861,10 +862,15 @@ export class FlowService {
       );
     }
 
-    const cleaned = raw.replace(/[\s.-]/g, '');
-    const params = /[a-zA-Z]/.test(cleaned)
-      ? { plate: cleaned.toUpperCase() }
-      : { dni: cleaned.replace(/\D/g, '') };
+    const params = identificationFromText(raw);
+    if (!params) {
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'No pude reconocer el documento o la patente. Decime el DNI completo (7 u 8 números) o la patente, por ejemplo *AB123CD*.',
+        },
+      ]);
+    }
 
     try {
       await this.api.identifyClient(ctx.conversationId, params);
