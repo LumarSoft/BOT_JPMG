@@ -146,6 +146,13 @@ function polizaRef(p: Pick<PolizaSummary, 'certificado' | 'vehiculo'>): string {
   return `Póliza ${p.certificado}${dominio ? ` · ${dominio}` : ''}`;
 }
 
+/** One-line mention for the office: "CHEVROLET CORSA (Póliza 1741715 · ABC123)". */
+export function polizaMention(
+  p: Pick<PolizaSummary, 'riskType' | 'vehiculo' | 'certificado'>,
+): string {
+  return `${polizaLabel(p)} (${polizaRef(p)})`;
+}
+
 /**
  * Legal-entity markers. The cartera stores a company's razón social in
  * `firstName`, so greeting "by name" produced "¡Hola de nuevo, JOHN PELLEGRINI

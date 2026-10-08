@@ -21,6 +21,7 @@ describe('FlowService', () => {
     resetSession: jest.Mock;
     getEstadoCuenta: jest.Mock;
     requestHandoff: jest.Mock;
+    getDocumentos: jest.Mock;
     requestPolicyCancellation: jest.Mock;
     getPolizas: jest.Mock;
     createSiniestro: jest.Mock;
@@ -56,6 +57,7 @@ describe('FlowService', () => {
       resetSession: jest.fn().mockResolvedValue(undefined),
       getEstadoCuenta: jest.fn().mockResolvedValue([]),
       requestHandoff: jest.fn().mockResolvedValue(undefined),
+      getDocumentos: jest.fn().mockResolvedValue([]),
       requestPolicyCancellation: jest.fn().mockResolvedValue({ id: 11 }),
       getPolizas: jest.fn().mockResolvedValue([
         {
@@ -1529,6 +1531,36 @@ describe('FlowService', () => {
       expect(res.handoff).toBeUndefined();
       expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
       expect(JSON.stringify(res.messages)).toContain('foto');
+    });
+  });
+  describe('documentación cuando Triunfo no devuelve documentos', () => {
+    const clientCtx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Evelyn',
+        lastName: 'Benitez',
+        dni: '37334584',
+      } as FlowContext['client'],
+      llmEnabled: false,
+    };
+
+    it('deja el pedido en la bandeja como handoff en vez de una promesa vacía', async () => {
+      await send({ text: 'hola' }, clientCtx); // CLIENT_MENU
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx); // DOC_POLIZA
+      const res = await send({ selectionId: 'pol_833', text: '' }, clientCtx);
+
+      expect(api.getDocumentos).toHaveBeenCalledWith(1, 833);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining(
+          'Pidió la documentación de su póliza CHEVROLET CORSA (Póliza 1741715 · ABC123)',
+        ),
+      );
+      expect(res.messages[0]).toMatchObject({
+        kind: 'text',
+        body: expect.stringContaining('Ya le pasé el pedido a un asesor'),
+      });
+      expect(res.state?.step).toBe('CLIENT_MENU');
     });
   });
 });

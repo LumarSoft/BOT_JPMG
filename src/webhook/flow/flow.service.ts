@@ -42,6 +42,7 @@ import {
   planPicker,
   POLIZA_PREFIX,
   polizaPicker,
+  polizaMention,
   returningGreeting,
   ROOT_OPTS,
   siniestroConfirm,
@@ -1646,12 +1647,26 @@ export class FlowService {
 
     const docs = await this.api.getDocumentos(ctx.conversationId, polizaId);
     if (docs.length === 0) {
+      // Triunfo does not return policy documents for the cartera yet, so this
+      // is the normal outcome today. The request used to end here with a
+      // promise nobody heard about; now it reaches the inbox as a handoff so
+      // the office sends the tarjeta/certificado/cupón by hand.
+      const poliza = polizas.find((p) => p.id === polizaId);
+      const reason =
+        `Pidió la documentación de su póliza${poliza ? ` ${polizaMention(poliza)}` : ''}. ` +
+        'Triunfo no devolvió documentos: enviarle tarjeta, certificado o cupón según corresponda.';
+      await this.api
+        .requestHandoff(ctx.conversationId, reason)
+        .catch(() => undefined);
       this.setState(key, 'CLIENT_MENU');
       return {
         messages: [
           {
             kind: 'text',
-            body: 'No encontré documentos disponibles para esa póliza. Te derivo con un asesor para que te los gestione.',
+            body:
+              'No tengo los documentos de esa póliza para enviarte ahora. Ya le pasé el pedido a un asesor para que te los mande ' +
+              `(${attentionHoursOf(ctx.attentionHours)}).` +
+              (await this.closedNote()),
           },
           clientMenu(),
         ],
