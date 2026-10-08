@@ -197,8 +197,11 @@ export interface InfoAutoGroup {
 export interface InfoAutoModel {
   codia: number;
   description: string;
-  prices_from?: number;
-  prices_to?: number;
+  prices_from?: number | null;
+  prices_to?: number | null;
+  /** InfoAuto publishes a 0km list price: brand-new versions have this and
+   * no used-price range. */
+  list_price?: boolean;
 }
 
 export interface QuotePaymentOption {

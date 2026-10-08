@@ -72,13 +72,22 @@ function tokens(text: string): string[] {
  * must match the catalog range.
  */
 function inYears(
-  item: { prices_from?: number | null; prices_to?: number | null },
+  item: {
+    prices_from?: number | null;
+    prices_to?: number | null;
+    list_price?: boolean;
+  },
   year: number,
   allowRecentMoto = false,
 ): boolean {
   const from = item.prices_from;
   const to = item.prices_to;
-  if (typeof from !== 'number' || typeof to !== 'number') return true;
+  if (typeof from !== 'number' || typeof to !== 'number') {
+    // A brand-new version (KYMCO SKYTOWN 150) has a 0km list price and no
+    // used-price range yet: Triunfo prices it for the current year only.
+    // Anything else without a range is left for the API to decide.
+    return !isNewOnly(item) || year === new Date().getFullYear();
+  }
   if (year < from) return false;
   return (
     year <= to ||
@@ -88,6 +97,31 @@ function inYears(
 
 function stillOnSale(to: number): boolean {
   return to >= new Date().getFullYear() - 1;
+}
+
+/** Sold only as 0km: InfoAuto lists a list price but no used-price range. */
+function isNewOnly(item: {
+  prices_from?: number | null;
+  prices_to?: number | null;
+  list_price?: boolean;
+}): boolean {
+  return (
+    item.list_price === true &&
+    (typeof item.prices_from !== 'number' || typeof item.prices_to !== 'number')
+  );
+}
+
+/** Model years of a version as the client should hear them. */
+function yearsLabel(
+  m: InfoAutoModel,
+  vehicleType: VehicleType,
+): string | undefined {
+  if (isNewOnly(m)) return `0km ${new Date().getFullYear()}`;
+  if (typeof m.prices_from !== 'number' || typeof m.prices_to !== 'number')
+    return undefined;
+  return vehicleType === 'moto' && stillOnSale(m.prices_to)
+    ? `${m.prices_from} en adelante`
+    : `${m.prices_from}-${m.prices_to}`;
 }
 
 /** Keeps the items matching `keep`, unless that would leave nothing. */
@@ -201,8 +235,7 @@ export async function findVehicle(
           error: `El catálogo no lista el modelo "${args.model}" para ${year}. No se puede cotizar esa combinación; pedí que revise el modelo y el año de la documentación.`,
           availableYears: models.map((m) => ({
             description: m.description,
-            from: m.prices_from,
-            to: m.prices_to,
+            years: yearsLabel(m, vehicleType),
           })),
         };
     }
@@ -212,12 +245,7 @@ export async function findVehicle(
       versions: models.slice(0, MAX_CANDIDATES).map((m) => ({
         codia: m.codia,
         description: m.description.replace(/\s+/g, ' ').trim(),
-        years:
-          typeof m.prices_from === 'number' && typeof m.prices_to === 'number'
-            ? vehicleType === 'moto' && stillOnSale(m.prices_to)
-              ? `${m.prices_from} en adelante`
-              : `${m.prices_from}-${m.prices_to}`
-            : undefined,
+        years: yearsLabel(m, vehicleType),
       })),
       ...(models.length > MAX_CANDIDATES
         ? {

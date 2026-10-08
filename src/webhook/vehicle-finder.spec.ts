@@ -92,16 +92,14 @@ describe('findVehicle', () => {
         .mockResolvedValue([
           { id: 1, name: 'PALIO', prices_from: 1996, prices_to: 2018 },
         ]),
-      getModels: jest
-        .fn()
-        .mockResolvedValue([
-          {
-            codia: 170001,
-            description: 'PALIO 1.4',
-            prices_from: 2010,
-            prices_to: 2018,
-          },
-        ]),
+      getModels: jest.fn().mockResolvedValue([
+        {
+          codia: 170001,
+          description: 'PALIO 1.4',
+          prices_from: 2010,
+          prices_to: 2018,
+        },
+      ]),
     };
     const result = await findVehicle(a, {
       vehicleType: 'auto',
@@ -315,6 +313,43 @@ describe('findVehicle', () => {
 
       expect(res.versions).toBeUndefined();
       expect(res.error).toContain('2026');
+    });
+
+    it('offers a brand-new moto (0km list price, no used range) for this year only', async () => {
+      const skytown = {
+        codia: 9500084,
+        description: 'SKYTOWN 150',
+        prices_from: null,
+        prices_to: null,
+        list_price: true,
+      };
+      const a = {
+        searchBrands: jest.fn().mockResolvedValue([{ id: 950, name: 'KYMCO' }]),
+        getGroups: jest.fn(),
+        getModels: jest.fn().mockResolvedValue([skytown]),
+      };
+
+      const thisYear = await findVehicle(a, {
+        vehicleType: 'moto',
+        brand: 'kymco',
+        model: 'skytown 150',
+        year: 2026,
+      });
+      expect(thisYear.versions).toEqual([
+        { codia: 9500084, description: 'SKYTOWN 150', years: '0km 2026' },
+      ]);
+
+      const lastYear = await findVehicle(a, {
+        vehicleType: 'moto',
+        brand: 'kymco',
+        model: 'skytown 150',
+        year: 2025,
+      });
+      expect(lastYear.versions).toBeUndefined();
+      expect(lastYear.error).toContain('2025');
+      expect(lastYear.availableYears).toEqual([
+        { description: 'SKYTOWN 150', years: '0km 2026' },
+      ]);
     });
   });
 });
