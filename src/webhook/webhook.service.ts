@@ -35,6 +35,7 @@ import {
   DEFAULT_OPENAI_MODEL,
   renderCatalogForPrompt,
 } from './constants/business';
+import { closesHumanConversation } from './closers';
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -360,6 +361,28 @@ export class WebhookService {
         return;
       }
 
+      // A person from the office was the last to speak and the customer is just
+      // wrapping up ("gracias", "dale", "ok"): keep the message for the inbox and
+      // stay out of the way instead of answering with the welcome menu.
+      if (
+        !selectionId &&
+        closesHumanConversation(text, conversation.messages)
+      ) {
+        this.logger.log(
+          `Cierre de una charla atendida por una persona (${JSON.stringify(text.trim())}) — sin respuesta automática`,
+        );
+        await this.api
+          .saveMessage(
+            conversation.conversationId,
+            'user',
+            inbound?.content ?? text,
+            inbound?.media,
+            contactName,
+          )
+          .catch(() => undefined);
+        return;
+      }
+
       // The bot will answer this turn: show "escribiendo…" right away so the
       // wait for the reply (a model call can take seconds) doesn't feel dead.
       if (messageId) this.meta.showTyping(messageId, phoneNumberId);
@@ -401,7 +424,8 @@ export class WebhookService {
         phoneNumberId,
         llmEnabled: context.llmEnabled,
         history: conversation.messages.map(({ role, content }) => ({
-          role,
+          // An inbox reply ("agent") is the business speaking, like the bot.
+          role: role === 'agent' ? 'assistant' : role,
           content,
         })),
         inboundAt,

@@ -28,9 +28,12 @@ export interface ClientSummary {
 
 export interface ConversationMessage {
   id: number;
-  role: 'user' | 'assistant';
+  /** "agent" = typed by a person from the admin inbox. */
+  role: 'user' | 'assistant' | 'agent';
   content: string;
   createdAt: string;
+  /** "live" (bot), "app_echo" (a person from the WhatsApp Business app) or "history". */
+  source?: string | null;
 }
 
 export interface BotConversation {

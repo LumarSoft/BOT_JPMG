@@ -249,7 +249,13 @@ describe('WebhookService', () => {
         ],
       });
 
-      await service.handleMessage('5491155556666', 'gracias', 'P1', 'ag-1');
+      // A real question, not a "gracias": closers after a person are left unanswered on purpose.
+      await service.handleMessage(
+        '5491155556666',
+        '¿y cuánto sale la cuota?',
+        'P1',
+        'ag-1',
+      );
 
       const [request] = create.mock.calls[0] as [
         { messages: { role: string }[] },
@@ -608,6 +614,89 @@ describe('WebhookService', () => {
       await service.handleMessage('5491155556666', 'hola', 'P1', 'wamid-10');
 
       expect(meta.showTyping).not.toHaveBeenCalled();
+    });
+
+    it('stays quiet when the customer only closes a chat a person was handling', async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: true,
+      });
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        flowState: null,
+        client: null,
+        newSession: false,
+        botPaused: false,
+        messages: [
+          {
+            id: 1,
+            role: 'user',
+            content: 'ya está',
+            createdAt: '2026-10-07T11:00:00Z',
+            source: 'live',
+          },
+          {
+            id: 2,
+            role: 'assistant',
+            content: 'Dale, buenísimo',
+            createdAt: '2026-10-07T11:01:00Z',
+            source: 'app_echo',
+          },
+        ],
+      });
+
+      await service.handleMessage(
+        '5491155556666',
+        'Gracias Mili!',
+        'P1',
+        'wamid-11',
+      );
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        'Gracias Mili!',
+        undefined,
+        undefined,
+      );
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(meta.showTyping).not.toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
+      expect(meta.sendButtons).not.toHaveBeenCalled();
+    });
+
+    it('still answers a real question even right after a person spoke', async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: true,
+      });
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        flowState: null,
+        client: null,
+        newSession: false,
+        botPaused: false,
+        messages: [
+          {
+            id: 2,
+            role: 'assistant',
+            content: 'Dale, buenísimo',
+            createdAt: '2026-10-07T11:01:00Z',
+            source: 'app_echo',
+          },
+        ],
+      });
+
+      await service.handleMessage(
+        '5491155556666',
+        'gracias, y me pasás el cupón de octubre?',
+        'P1',
+        'wamid-12',
+      );
+
+      expect(flow.handle).toHaveBeenCalled();
     });
 
     it('stores the sender’s WhatsApp profile name with the inbound message', async () => {
