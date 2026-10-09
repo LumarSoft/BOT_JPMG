@@ -42,9 +42,18 @@ describe('buildCotizacionPrompt', () => {
 
     expect(prompt).toContain('*código + nombre*');
     expect(prompt).toContain('los puntos de "incluye"');
+    expect(prompt).toContain('una línea "No incluye:"');
     expect(prompt).toContain(
-      'respondé con la descripción y los beneficios EXACTOS de quote_vehicle',
+      'respondé SOLO con la descripción, "incluye" y "noIncluye" de quote_vehicle',
     );
     expect(prompt).toContain('reconstruí la cotización con las tools');
+  });
+
+  it('shows every car coverage and never infers what one covers from its name', () => {
+    const prompt = buildCotizacionPrompt({ ...base, vehicleType: 'auto' });
+
+    expect(prompt).toContain('presentá TODAS las coberturas');
+    expect(prompt).not.toContain('hasta 4 coberturas');
+    expect(prompt).toContain('no lo deduzcas del nombre');
   });
 });

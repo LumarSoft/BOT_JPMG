@@ -221,6 +221,8 @@ export interface QuoteCoverage {
   name: string;
   tagline: string | null;
   benefits: string[];
+  /** What it does not include. Optional: an older API does not send it. */
+  exclusions?: string[];
   highlighted: boolean;
   paymentOptions: QuotePaymentOption[];
 }

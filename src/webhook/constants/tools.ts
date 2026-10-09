@@ -116,7 +116,8 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           },
           coverageName: {
             type: 'string',
-            description: 'Nombre de la cobertura, ej: "Todo Total 1"',
+            description:
+              'Nombre de la cobertura tal como lo devolvió quote_vehicle, ej: "Robo e Incendio Total"',
           },
           price: {
             type: 'string',

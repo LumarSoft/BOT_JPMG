@@ -43,6 +43,8 @@ export interface RenderedCoverage {
   codigo: string;
   descripcion: string | null;
   incluye: string[];
+  /** What it does not cover — how the client tells B from B1. */
+  noIncluye: string[];
   recomendada: boolean;
   /** Card price (Triunfo payment code 1), null when not quoted. */
   conTarjeta: string | null;
@@ -92,6 +94,7 @@ export function renderQuote(quote: QuoteResult): {
     codigo: c.code,
     descripcion: c.tagline?.trim() || null,
     incluye: Array.isArray(c.benefits) ? c.benefits : [],
+    noIncluye: Array.isArray(c.exclusions) ? c.exclusions : [],
     recomendada: c.highlighted === true,
     conTarjeta: priceFor(c, CARD_PAYMENT_CODE),
     enEfectivo: priceFor(c, CASH_PAYMENT_CODE),

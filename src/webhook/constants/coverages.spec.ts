@@ -14,6 +14,7 @@ describe('renderQuote', () => {
           name: 'Todo Total Base',
           tagline: 'Pérdidas totales esenciales',
           benefits: ['Robo total', 'Incendio total'],
+          exclusions: ['Destrucción total por accidente'],
           highlighted: false,
           paymentOptions: [
             {
@@ -50,6 +51,7 @@ describe('renderQuote', () => {
         nombre: 'Todo Total Base',
         descripcion: 'Pérdidas totales esenciales',
         incluye: ['Robo total', 'Incendio total'],
+        noIncluye: ['Destrucción total por accidente'],
         recomendada: false,
       }),
       expect.objectContaining({
@@ -57,6 +59,8 @@ describe('renderQuote', () => {
         nombre: 'Todo Total Premium',
         descripcion: 'Pérdidas totales ampliadas',
         incluye: ['Robo total', 'Incendio total', 'Granizo total'],
+        // An API without exclusions yields an empty list, never undefined.
+        noIncluye: [],
         recomendada: true,
       }),
     ]);
