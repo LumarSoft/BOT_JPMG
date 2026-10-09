@@ -1,5 +1,6 @@
 import type { ConversationMessage } from '../api/api.types';
 import {
+  answeringAPerson,
   closesHumanConversation,
   isCloser,
   lastSpeakerIsHuman,
@@ -87,6 +88,31 @@ describe('closesHumanConversation', () => {
     expect(closesHumanConversation('y el cupón?', afterHuman)).toBe(false);
     expect(
       closesHumanConversation('Gracias!', [msg('assistant', 'live')]),
+    ).toBe(false);
+  });
+});
+
+describe('answeringAPerson across sessions', () => {
+  const now = Date.parse('2026-10-09T12:00:00.000Z');
+  const reply = (hoursAgo: number) => ({
+    content: 'Pasame las fotos',
+    createdAt: new Date(now - hoursAgo * 3_600_000).toISOString(),
+  });
+
+  it('treats a fresh session as an answer to a person who wrote a few hours ago', () => {
+    expect(answeringAPerson([], reply(3), now)).toBe(true);
+    expect(closesHumanConversation('Dale, gracias 😘', [], reply(3))).toBe(
+      answeringAPerson([], reply(3)),
+    );
+  });
+
+  it('stops once the person wrote more than half a day ago', () => {
+    expect(answeringAPerson([], reply(13), now)).toBe(false);
+  });
+
+  it('does not apply once the bot has spoken in this session', () => {
+    expect(
+      answeringAPerson([msg('user'), msg('assistant')], reply(1), now),
     ).toBe(false);
   });
 });

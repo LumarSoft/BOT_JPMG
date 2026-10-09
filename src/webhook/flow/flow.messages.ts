@@ -199,17 +199,40 @@ export function botIntro(botName?: string | null): string {
     : `Soy *el asistente de John Pellegrini Management Group* (JPMG)`;
 }
 
+/**
+ * How much the welcome introduces the bot. The full introduction goes once: a
+ * chat that already saw it (later in the same session) or that talked to us a
+ * few hours ago gets the question alone — repeating "Soy NICO…" on every turn
+ * read like a bot stuck in a loop.
+ */
+export type WelcomeIntro = 'full' | 'returning' | 'none';
+
+/** One-line opener for a reply that already answers the first message. */
+export function openingLine(
+  intro: WelcomeIntro,
+  botName?: string | null,
+): string | null {
+  if (intro === 'full') return `¡Hola! ${botIntro(botName)} 👋`;
+  if (intro === 'returning') return '¡Hola de nuevo! 👋';
+  return null;
+}
+
 export function welcomeMenu(
   firstName?: string,
   botName?: string | null,
+  intro: WelcomeIntro = 'full',
 ): OutgoingMessage {
   const name = displayName(firstName);
   const hi = name ? `¡Hola, ${name}! ` : '¡Hola! ';
+  const body =
+    intro === 'full'
+      ? `${hi}${botIntro(botName)} 👋 Estoy para darte una mano. Para arrancar, decime: ¿ya sos cliente nuestro?`
+      : intro === 'returning'
+        ? '¡Hola de nuevo! 👋 Para arrancar, decime: ¿ya sos cliente nuestro?'
+        : 'Para ayudarte, decime: ¿ya sos cliente nuestro?';
   return {
     kind: 'buttons',
-    body:
-      `${hi}${botIntro(botName)} 👋 ` +
-      `Estoy para darte una mano. Para arrancar, decime: ¿ya sos cliente nuestro?`,
+    body,
     buttons: [
       { id: OPT.cliente, title: 'Sí, soy cliente' },
       { id: OPT.noCliente, title: 'Todavía no' },

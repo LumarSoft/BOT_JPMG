@@ -1,4 +1,4 @@
-import type { ConversationMessage } from '../api/api.types';
+import type { ConversationMessage, HumanReply } from '../api/api.types';
 import { fold } from './text';
 
 /**
@@ -165,6 +165,40 @@ export function lastSpeakerIsHuman(messages: ConversationMessage[]): boolean {
 }
 
 /**
+ * How long after a person from the office wrote that the customer is still
+ * taken to be answering that person. A session lasts minutes, so "dale, cuando
+ * llegue a casa me fijo" a couple of hours later opens a fresh one.
+ */
+export const HUMAN_FOLLOWUP_MS = 12 * 60 * 60_000;
+
+/** Whether a person from the office wrote to this chat within the follow-up window. */
+export function recentHumanReply(
+  reply: HumanReply | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!reply) return false;
+  const at = Date.parse(reply.createdAt);
+  return Number.isFinite(at) && now - at <= HUMAN_FOLLOWUP_MS;
+}
+
+/**
+ * Whether the customer is answering a person from the office rather than the
+ * bot: that person spoke last in this session, or — in a session where the bot
+ * has not said anything yet — wrote to them in the last hours.
+ */
+export function answeringAPerson(
+  messages: ConversationMessage[],
+  lastHumanReply?: HumanReply | null,
+  now: number = Date.now(),
+): boolean {
+  if (lastSpeakerIsHuman(messages)) return true;
+  const botSpoke = messages.some(
+    (m) => m.role === 'assistant' && m.source !== 'app_echo',
+  );
+  return !botSpoke && recentHumanReply(lastHumanReply, now);
+}
+
+/**
  * The customer is closing a conversation a person had with them. Answering
  * with the welcome menu here is what made the office switch the bot off every
  * morning: a human said goodbye and the bot barged in on the "gracias".
@@ -172,6 +206,7 @@ export function lastSpeakerIsHuman(messages: ConversationMessage[]): boolean {
 export function closesHumanConversation(
   text: string,
   messages: ConversationMessage[],
+  lastHumanReply?: HumanReply | null,
 ): boolean {
-  return lastSpeakerIsHuman(messages) && isCloser(text);
+  return isCloser(text) && answeringAPerson(messages, lastHumanReply);
 }

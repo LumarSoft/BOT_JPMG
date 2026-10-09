@@ -368,7 +368,11 @@ export class WebhookService {
       // stay out of the way instead of answering with the welcome menu.
       if (
         !selectionId &&
-        closesHumanConversation(text, conversation.messages)
+        closesHumanConversation(
+          text,
+          conversation.messages,
+          conversation.lastHumanReply,
+        )
       ) {
         this.logger.log(
           `Cierre de una charla atendida por una persona (${JSON.stringify(text.trim())}) — sin respuesta automática`,
@@ -431,6 +435,8 @@ export class WebhookService {
           content,
         })),
         inboundAt,
+        lastHumanReply: conversation.lastHumanReply ?? null,
+        previousActivityAt: conversation.previousActivityAt ?? null,
       },
     );
 
@@ -895,11 +901,16 @@ export class WebhookService {
     // The image remains available in the inbox even when there is no open
     // claim yet, but the guided flow must not advance as if it were attached.
     if (attachmentResult.attached === false) {
-      await this.meta.sendText(
-        to,
-        'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.',
-        phoneNumberId,
-      );
+      // Inside a claim step the photo was expected and the claim is missing;
+      // anywhere else we simply don't know what the photo is for (a moto to
+      // quote got "registremos la denuncia"), so ask instead of assuming.
+      const reply = tipo
+        ? 'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.'
+        : '📎 ¡Recibí tu foto! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.';
+      await this.api
+        .saveMessage(conversation.conversationId, 'assistant', reply)
+        .catch(() => undefined);
+      await this.meta.sendText(to, reply, phoneNumberId);
       return;
     }
 
@@ -942,9 +953,10 @@ export class WebhookService {
       return;
     }
 
-    // Outside the guided flow: generic acknowledgement (attaches to the open claim).
+    // Outside the guided flow: the API only joins a loose photo to a claim
+    // filed in the last 48 h, so this is the claim the customer just made.
     const reply =
-      '📎 Recibí tu foto y la sumé a tu denuncia. Si tenés más, mandámelas.';
+      '📎 Recibí tu foto y la sumé a la denuncia que hiciste. Si tenés más, mandámelas.';
     await this.api
       .saveMessage(conversation.conversationId, 'assistant', reply)
       .catch(() => undefined);

@@ -48,6 +48,16 @@ export interface BotConversation {
    * fresh. Lets the bot resume the exact step after a restart instead of greeting
    * from scratch. Cleared by the API when a new session starts. */
   flowState: string | null;
+  /** Last message a person from the office wrote in this chat within 24 h,
+   * whatever the session. Absent from an older API. */
+  lastHumanReply?: HumanReply | null;
+  /** When the chat had activity before this message, across sessions. */
+  previousActivityAt?: string | null;
+}
+
+export interface HumanReply {
+  content: string;
+  createdAt: string;
 }
 
 export interface PendingWarning {

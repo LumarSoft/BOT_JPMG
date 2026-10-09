@@ -1,4 +1,4 @@
-import type { ClientSummary } from '../../api/api.types';
+import type { ClientSummary, HumanReply } from '../../api/api.types';
 
 /**
  * Conversation steps driven by the state machine. The model interprets
@@ -116,4 +116,8 @@ export interface FlowContext {
   history?: Array<{ role: string; content: string }>;
   /** When the API stored the message being handled (ISO). */
   inboundAt?: string;
+  /** Last thing a person from the office wrote here within 24 h, any session. */
+  lastHumanReply?: HumanReply | null;
+  /** When this number last talked to us before this message (ISO), any session. */
+  previousActivityAt?: string | null;
 }

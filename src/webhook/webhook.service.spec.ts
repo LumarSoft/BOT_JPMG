@@ -1121,10 +1121,39 @@ describe('WebhookService', () => {
         attachment,
         undefined,
       );
-      expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
-        'denuncia',
-      );
+      // Outside a claim step nobody said the photo is for a claim (a moto to
+      // quote got "registremos la denuncia"): ask what it is for.
+      const reply = (meta.sendText.mock.calls as string[][])[0][1];
+      expect(reply).toContain('para qué es');
+      expect(reply).not.toContain('denuncia');
       expect(flow.handle).not.toHaveBeenCalled();
+    });
+
+    it('asks to file the claim first when a claim photo step has no claim', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: false,
+        flowState: JSON.stringify({ step: 'SINIESTRO_FOTO_TARJETA', data: {} }),
+      });
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      api.attachAdjunto.mockResolvedValue({
+        siniestroId: null,
+        adjuntosCount: 0,
+        attached: false,
+        attachments: [],
+      });
+
+      await service.handleMedia('5491155556666', 'media-x', 'P1', 'wm-x');
+
+      expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
+        'registremos la denuncia',
+      );
     });
 
     it('guides the user when there is no open claim (404)', async () => {

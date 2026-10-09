@@ -5,6 +5,7 @@ import { FlowService, takeOutDocsState } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
 import { IdentificationInterpreter } from './identification-interpreter.service';
+import { IntentInterpreter } from './intent-interpreter.service';
 import { identificationFromText } from './identification';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 
@@ -31,6 +32,9 @@ describe('FlowService', () => {
   };
   let extractor: { extract: jest.Mock };
   let interpreter: { interpret: jest.Mock };
+  // Reading of free text with content. Unavailable by default, which is the
+  // pre-existing behaviour every other test relies on.
+  let intents: { interpret: jest.Mock };
 
   const KEY = 'pn:wa';
   const leadCtx: FlowContext = {
@@ -101,12 +105,16 @@ describe('FlowService', () => {
         });
       }),
     };
+    intents = {
+      interpret: jest.fn().mockRejectedValue(new Error('sin modelo')),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FlowService,
         { provide: ApiService, useValue: api },
         { provide: SiniestroExtractor, useValue: extractor },
         { provide: IdentificationInterpreter, useValue: interpreter },
+        { provide: IntentInterpreter, useValue: intents },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue('0800-TOW') },
@@ -1561,6 +1569,220 @@ describe('FlowService', () => {
         body: expect.stringContaining('Ya le pasé el pedido a un asesor'),
       });
       expect(res.state?.step).toBe('CLIENT_MENU');
+    });
+  });
+
+  describe('first message with content', () => {
+    const withModel: FlowContext = { ...leadCtx, phoneNumberId: 'P1' };
+    const body = (res: { messages: unknown[] }) => JSON.stringify(res.messages);
+
+    it('goes straight to identification for a policy request, introducing itself once', async () => {
+      intents.interpret.mockResolvedValue('documentos');
+
+      const res = await send(
+        { text: 'Cuando puedas mandame la póliza del camión' },
+        withModel,
+      );
+
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.audience).toBe('client');
+      expect((res.messages[0] as { body: string }).body).toContain(
+        'Soy *Nico*',
+      );
+      expect(body(res)).toContain('DNI del titular');
+      expect(body(res)).not.toContain('ya sos cliente');
+    });
+
+    it('lets the FAQ model answer a question instead of asking "¿ya sos cliente?"', async () => {
+      intents.interpret.mockResolvedValue('consulta');
+
+      const res = await send(
+        {
+          text: 'Si se me cae el televisor, ¿está cubierto en el combinado familiar?',
+        },
+        withModel,
+      );
+
+      expect(res.handoff).toBe('faq');
+      expect(res.messages).toEqual([]);
+    });
+
+    it('opens the claim menu for a crash, without asking if they are a client', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+
+      const res = await send(
+        { text: 'Me chocaron recién en Oroño' },
+        withModel,
+      );
+
+      expect(stored?.step).toBe('SINIESTRO_TYPE');
+      expect(body(res)).not.toContain('ya sos cliente');
+    });
+
+    it('does not spend a model call on a bare greeting', async () => {
+      const res = await send({ text: 'Buenas tardes!' }, withModel);
+
+      expect(intents.interpret).not.toHaveBeenCalled();
+      expect(body(res)).toContain('Soy *Nico*');
+      expect(body(res)).toContain('ya sos cliente');
+    });
+
+    it('falls back to the welcome menu when the model is unavailable', async () => {
+      const res = await send({ text: 'Mandame la póliza' }, withModel);
+
+      expect(body(res)).toContain('ya sos cliente');
+      expect(stored?.step).toBe('ROOT');
+    });
+
+    it('greets someone who talked to us a few hours ago without the full introduction', async () => {
+      const res = await send(
+        { text: 'hola' },
+        {
+          ...withModel,
+          previousActivityAt: new Date(
+            Date.now() - 2 * 3_600_000,
+          ).toISOString(),
+        },
+      );
+
+      expect(body(res)).toContain('Hola de nuevo');
+      expect(body(res)).not.toContain('Soy *Nico*');
+    });
+
+    it('takes "asesor" as a request for a person, also as the first message', async () => {
+      const res = await send({ text: 'Asesor' }, withModel);
+
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+      expect(body(res)).toContain('motivo');
+      expect(intents.interpret).not.toHaveBeenCalled();
+    });
+
+    it('passes a request for a person with its reason straight to the office', async () => {
+      const text = 'Quiero hablar con un asesor por la cuota de octubre';
+
+      await send({ text }, withModel);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(1, text);
+      expect(stored?.step).toBe('ROOT');
+    });
+
+    it('reads an identified client question instead of sending it to Documentación', async () => {
+      intents.interpret.mockResolvedValue('consulta');
+      const client = {
+        id: 1,
+        firstName: 'ANA',
+        lastName: 'GOMEZ',
+        dni: '1',
+        email: '',
+        phone: null,
+        city: null,
+      };
+
+      const res = await send(
+        { text: '¿Mi póliza cubre cristales?' },
+        { ...withModel, client },
+      );
+
+      expect(res.handoff).toBe('faq');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+  });
+
+  describe('customer going on with a person from the office', () => {
+    const lastHumanReply = {
+      content: 'Pasame las fotos que tenés',
+      createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+    const ctx: FlowContext = {
+      ...leadCtx,
+      phoneNumberId: 'P1',
+      lastHumanReply,
+    };
+
+    it('stays quiet and flags the chat while the office is open', async () => {
+      intents.interpret.mockResolvedValue('seguimiento');
+
+      const res = await send({ text: 'Ya te las mandé por mail' }, ctx);
+
+      expect(res.messages).toEqual([]);
+      expect(res.handoff).toBeUndefined();
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Ya te las mandé por mail'),
+      );
+      const [call] = intents.interpret.mock.calls[0] as [
+        { lastHumanReply: { content: string } | null },
+      ];
+      expect(call.lastHumanReply?.content).toBe('Pasame las fotos que tenés');
+    });
+
+    it('tells the customer their message was passed on when the office is closed', async () => {
+      intents.interpret.mockResolvedValue('seguimiento');
+      api.getHours.mockResolvedValue({
+        formatted: 'Lunes a viernes de 8 a 16 hs',
+        isOpenNow: false,
+        todayClosure: null,
+        message: '',
+        closedNote: 'Ahora estamos fuera de horario.',
+      });
+
+      const res = await send({ text: 'Estoy en el sanatorio' }, ctx);
+
+      expect(JSON.stringify(res.messages)).toContain(
+        'persona que te venía atendiendo',
+      );
+      expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+    });
+
+    it('serves a clear request without introducing the bot', async () => {
+      intents.interpret.mockResolvedValue('documentos');
+
+      const res = await send({ text: 'Mandame el cupón de pago' }, ctx);
+
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+    });
+  });
+
+  describe('after the welcome menu', () => {
+    const withModel: FlowContext = { ...leadCtx, phoneNumberId: 'P1' };
+
+    it('takes "Asesor" as a request for a person instead of a FAQ question', async () => {
+      await send({ text: 'hola' }, withModel);
+
+      const res = await send({ text: 'Asesor' }, withModel);
+
+      expect(res.handoff).toBeUndefined();
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+    });
+
+    it('does not introduce the bot again when the request needs the client question', async () => {
+      await send({ text: 'hola' }, withModel);
+
+      const res = await send({ text: 'necesito la póliza' }, withModel);
+
+      const text = JSON.stringify(res.messages);
+      expect(text).toContain('ya sos cliente');
+      expect(text).not.toContain('Soy *Nico*');
+    });
+
+    it('routes what the model read, without asking again', async () => {
+      await send({ text: 'hola' }, withModel);
+      intents.interpret.mockResolvedValue('pagos');
+
+      const res = await send({ text: 'cuanto debo?' }, withModel);
+
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+    });
+
+    it('shows the menu again without the introduction', async () => {
+      await send({ text: 'hola' }, withModel);
+
+      const res = await send({ text: 'menú' }, withModel);
+
+      expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
+      expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
     });
   });
 });

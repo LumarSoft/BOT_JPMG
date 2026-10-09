@@ -3,6 +3,11 @@ import {
   type IdentificationAction,
 } from './identification-interpreter.service';
 import { identificationFromText } from './identification';
+import {
+  IntentInterpreter,
+  type OpeningIntent,
+} from './intent-interpreter.service';
+import { recentHumanReply } from '../closers';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
@@ -18,7 +23,6 @@ import type {
   UserInput,
 } from './flow.types';
 import {
-  botIntro,
   clientMenu,
   CLIENT_MENU_OPTS,
   cotizarMenu,
@@ -36,6 +40,7 @@ import {
   formatEstadoCuenta,
   formatSiniestros,
   leadMenu,
+  openingLine,
   OPT,
   PLAN_PREFIX,
   planDetails,
@@ -49,6 +54,7 @@ import {
   siniestroTypeMenu,
   stuckMenu,
   welcomeMenu,
+  type WelcomeIntro,
 } from './flow.messages';
 import type {
   CatalogField,
@@ -94,6 +100,21 @@ const QUOTE_FILLER = new Set(
     'hacer sacar al y o'
   ).split(' '),
 );
+
+/**
+ * Someone who talked to us this recently gets "¡Hola de nuevo!" instead of the
+ * full introduction: a new session starts after minutes of silence, and the
+ * same person was introduced to NICO three times in one afternoon.
+ */
+const RETURNING_WINDOW_MS = 12 * 60 * 60_000;
+
+/** Asking for a person. Run against folded text (see `fold`). */
+const ADVISOR_RE =
+  /^(un |el |al |con un |con el )?(asesor|asesora|representante|humano|una persona)\b|\b(hablar|comunic\w*|contact\w*|llam\w*|quiero|queria|necesito|pasame|pasas|derivame)\b.*\b(asesor|asesora|representante|humano|persona real|una persona)\b/;
+
+/** Only asking for a person, with nothing about what for. Folded text. */
+const BARE_ADVISOR_RE =
+  /^(?:quiero |necesito )?(?:hablar con )?(?:un |una |el |al )?(?:asesor|asesora|representante|humano|persona)[\s.!]*$/;
 
 /** A message that asks for a quote. Run against folded text (see `fold`). */
 const QUOTE_INTENT_RE =
@@ -302,6 +323,7 @@ export class FlowService {
     config: ConfigService,
     private readonly extractor: SiniestroExtractor,
     private readonly identification: IdentificationInterpreter,
+    private readonly intents: IntentInterpreter,
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
   }
@@ -354,17 +376,32 @@ export class FlowService {
       return this.handleAsesorMotivo(input, ctx, key);
     }
 
-    // First contact (no state): greet and branch on whether they're a client.
+    // First contact (no state): answer what the message asks when it asks
+    // something, and greet with the menu when it is only a greeting.
     if (!existing) {
+      const bareGreeting = !sel && GREETING_RE.test(input.text.trim());
+      // A person from the office was just talking to them: no introduction.
+      const personRecently = recentHumanReply(ctx.lastHumanReply);
       if (ctx.client) {
         const hello = returningGreeting(ctx.client.firstName);
         this.setState(key, 'CLIENT_MENU', {}, 'client');
         // The message that reopened the chat must not be lost. The old menu is
         // still on the user's screen after a session expires, so a returning
         // client taps "Pagos" and used to get only the greeting + the menu
-        // again. If the tap (or the text) names a menu option, answer it in the
-        // same turn. Stale ids from a picker (plan_/pol_) aren't menu options,
-        // so they correctly fall through to the menu.
+        // again. A tap names a menu option; typed text is read by the model
+        // (keywords sent "¿mi póliza cubre cristales?" to Documentación) and
+        // only falls back to the keywords when the model is unavailable.
+        // Stale ids from a picker (plan_/pol_) aren't menu options, so they
+        // correctly fall through to the menu.
+        if (!sel && !bareGreeting) {
+          const routed = await this.routeOpening(
+            input,
+            ctx,
+            key,
+            personRecently ? null : hello,
+          );
+          if (routed) return routed;
+        }
         const opt = sel ?? this.matchClientIntent(input.text);
         if (opt && CLIENT_MENU_OPTS.has(opt)) {
           return this.prepend(
@@ -380,7 +417,7 @@ export class FlowService {
           key,
           input.text,
           { messages: [{ kind: 'text', body: hello }, clientMenu()] },
-          !sel && GREETING_RE.test(input.text.trim()),
+          bareGreeting,
         );
       }
       this.setState(key, 'ROOT');
@@ -390,6 +427,8 @@ export class FlowService {
       if (sel && ROOT_OPTS.has(sel)) {
         return this.handleRoot(input, ctx, key);
       }
+      const intro = this.introFor(ctx);
+      const opener = personRecently ? null : openingLine(intro, ctx.botName);
       // The very first message already asks for a quote ("hola, quiero cotizar
       // mi auto"): a quote doesn't need "¿ya sos cliente?", and every extra
       // round-trip is one more billed message and one more wait. Introduce
@@ -397,17 +436,27 @@ export class FlowService {
       // answers directly (its prompt introduces itself on a first message).
       if (!sel && QUOTE_INTENT_RE.test(fold(input.text))) {
         const result = await this.enterCotizar(input, ctx, key);
-        return result.handoff
-          ? result
-          : this.prepend(`¡Hola! ${botIntro(ctx.botName)} 👋`, result);
+        return result.handoff ? result : this.withOpener(opener, result);
       }
       if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
         return this.guard(ctx, key, 'baja_poliza');
+      if (!sel && ADVISOR_RE.test(fold(input.text).trim()))
+        return this.withOpener(
+          opener,
+          await this.advisorRequest(input, ctx, key),
+        );
+      // Anything with content — a question, an audio, a request — is answered
+      // instead of met with "¿ya sos cliente?". Most first messages are not a
+      // bare "hola", and the menu ignored what they said.
+      if (!sel && !bareGreeting) {
+        const routed = await this.routeOpening(input, ctx, key, opener);
+        if (routed) return routed;
+      }
       return this.rememberGreeting(
         key,
         input.text,
-        { messages: [welcomeMenu(undefined, ctx.botName)] },
-        !sel && GREETING_RE.test(input.text.trim()),
+        { messages: [welcomeMenu(undefined, ctx.botName, intro)] },
+        bareGreeting,
       );
     }
 
@@ -642,11 +691,11 @@ export class FlowService {
 
   // ─── Root / menus ─────────────────────────────────────────
 
-  private handleRoot(
+  private async handleRoot(
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult | Promise<FlowResult> {
+  ): Promise<FlowResult> {
     const t = input.text.toLowerCase();
     const sel = input.selectionId;
 
@@ -703,7 +752,17 @@ export class FlowService {
     )
       return this.guard(ctx, key, 'baja_poliza');
 
-    // Client-scoped intents → acknowledge + re-ask with the welcome menu buttons.
+    // "Asesor" is what the bot itself tells people to write; here it used to
+    // reach the FAQ model, which answered "escribí menú y elegí Cotización".
+    if (ADVISOR_RE.test(fold(input.text).trim()))
+      return this.advisorRequest(input, ctx, key);
+
+    // ── 3. Read what they want and go there, without asking again ──
+    const routed = await this.routeOpening(input, ctx, key, null);
+    if (routed) return routed;
+
+    // Model unavailable: client-scoped words still get the question, but
+    // without introducing the bot a second time.
     if (
       /\bsiniestro|\bdenuncia|\baccidente|\bchoque|\brob|\bp[oó]liza|\bpago|\bcuota|\bdocument|\btarjeta|\bgr[uú]a|\bauxilio|\bcobertura/.test(
         t,
@@ -713,15 +772,199 @@ export class FlowService {
         messages: [
           {
             kind: 'text',
-            body: 'Claro, con gusto te ayudo. Para eso primero necesito saber si ya sos cliente nuestro:',
+            body: 'Claro, con gusto te ayudo.',
           },
-          welcomeMenu(ctx.client?.firstName, ctx.botName),
+          welcomeMenu(undefined, ctx.botName, 'none'),
         ],
       };
     }
 
-    // ── 3. Last resort: LLM responds naturally (state stays ROOT) ──
+    // ── 4. Last resort: LLM responds naturally (state stays ROOT) ──
     return { messages: [], handoff: 'faq' };
+  }
+
+  /**
+   * How the welcome introduces the bot on a first message: in full the first
+   * time, "¡Hola de nuevo!" for someone who talked to us in the last hours.
+   */
+  private introFor(ctx: FlowContext): WelcomeIntro {
+    const last = ctx.previousActivityAt
+      ? Date.parse(ctx.previousActivityAt)
+      : NaN;
+    return Number.isFinite(last) && Date.now() - last <= RETURNING_WINDOW_MS
+      ? 'returning'
+      : 'full';
+  }
+
+  private withOpener(opener: string | null, result: FlowResult): FlowResult {
+    return opener ? this.prepend(opener, result) : result;
+  }
+
+  /** The model's reading of a message, or null when it can't be had. */
+  private async readIntent(
+    input: UserInput,
+    ctx: FlowContext,
+  ): Promise<OpeningIntent | null> {
+    if (ctx.llmEnabled === false || !ctx.phoneNumberId) return null;
+    const reply =
+      ctx.lastHumanReply && recentHumanReply(ctx.lastHumanReply)
+        ? {
+            content: ctx.lastHumanReply.content,
+            minutesAgo: Math.round(
+              (Date.now() - Date.parse(ctx.lastHumanReply.createdAt)) / 60_000,
+            ),
+          }
+        : null;
+    try {
+      const intent = await this.intents.interpret({
+        text: input.text,
+        phoneNumberId: ctx.phoneNumberId,
+        identifiedClient: !!ctx.client,
+        lastHumanReply: reply,
+      });
+      this.logger.log(`Mensaje interpretado como "${intent}"`);
+      return intent;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo interpretar el mensaje: ${this.errMsg(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Takes a message that says what it wants straight to it — with `opener`
+   * ("¡Hola! Soy NICO…") in front when this is the first reply. Returns null
+   * for a plain greeting or when the model can't read it, so the caller shows
+   * its menu as before. A request for one's own policy, payments or a claim
+   * implies being a client, so those skip "¿ya sos cliente?" and go straight
+   * to identification.
+   */
+  private async routeOpening(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+    opener: string | null,
+  ): Promise<FlowResult | null> {
+    const intent = await this.readIntent(input, ctx);
+    switch (intent) {
+      case null:
+      case 'saludo':
+        return null;
+      case 'cotizar': {
+        const result = await this.enterCotizar(input, ctx, key);
+        return result.handoff ? result : this.withOpener(opener, result);
+      }
+      case 'siniestro':
+        this.setState(key, 'SINIESTRO_TYPE', {}, 'client');
+        return this.withOpener(opener, { messages: [siniestroTypeMenu()] });
+      case 'documentos':
+        return this.withOpener(
+          opener,
+          await this.guardAsClient(ctx, key, 'documentos'),
+        );
+      case 'pagos':
+        return this.withOpener(
+          opener,
+          await this.guardAsClient(ctx, key, 'pagos'),
+        );
+      case 'baja':
+        return this.withOpener(
+          opener,
+          await this.guardAsClient(ctx, key, 'baja_poliza'),
+        );
+      case 'grua':
+        return this.withOpener(opener, {
+          messages: [{ kind: 'text', body: this.gruaText() }],
+        });
+      case 'asesor':
+        return this.withOpener(
+          opener,
+          await this.advisorRequest(input, ctx, key),
+        );
+      case 'consulta':
+        // The FAQ model answers it and introduces itself on a first message.
+        return { messages: [], handoff: 'faq' };
+      case 'seguimiento':
+        return (
+          (await this.personFollowUp(input, ctx)) ?? {
+            messages: [],
+            handoff: 'faq',
+          }
+        );
+    }
+  }
+
+  /** Runs a client action for someone who has not said they are a client yet. */
+  private guardAsClient(
+    ctx: FlowContext,
+    key: string,
+    action: ClientAction,
+  ): Promise<FlowResult> {
+    if (!ctx.client) {
+      const current = this.load(key)?.state;
+      this.setState(
+        key,
+        current?.step ?? 'ROOT',
+        current?.data ?? {},
+        'client',
+      );
+    }
+    return this.guard(ctx, key, action);
+  }
+
+  /**
+   * A request for a person. With a reason ("quiero hablar con alguien por la
+   * cuota") it goes to the office right away; a bare "asesor" asks what for,
+   * like the client menu does.
+   */
+  private async advisorRequest(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    if (BARE_ADVISOR_RE.test(fold(input.text).trim())) {
+      this.setState(key, 'ASESOR_MOTIVO');
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: `Contame brevemente el motivo y un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).`,
+          },
+        ],
+      };
+    }
+    return this.handleAsesorMotivo(input, ctx, key);
+  }
+
+  /**
+   * The customer is going on with something a person from the office was
+   * handling ("ya te mandé las fotos", "estoy en el sanatorio"). The bot stays
+   * out of it: the chat is flagged for that person, and the customer only hears
+   * from the bot when the office is closed, so they know when to expect an
+   * answer. Null when no person wrote recently — then it is just a message.
+   */
+  private async personFollowUp(
+    input: UserInput,
+    ctx: FlowContext,
+  ): Promise<FlowResult | null> {
+    if (!recentHumanReply(ctx.lastHumanReply)) return null;
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Siguió la charla con el equipo: ${input.text}`,
+      )
+      .catch(() => undefined);
+    const closed = await this.closedNote();
+    if (!closed) return { messages: [] };
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: `Le paso tu mensaje a la persona que te venía atendiendo 🙌${closed}`,
+        },
+      ],
+    };
   }
 
   private async handleClientMenu(
@@ -1717,18 +1960,25 @@ export class FlowService {
     await this.api
       .requestHandoff(ctx.conversationId, input.text)
       .catch(() => undefined);
-    this.setState(key, 'CLIENT_MENU');
-    return {
-      messages: [
-        {
-          kind: 'text',
-          body:
-            `Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
-        },
-        clientMenu(),
-      ],
+    const note = {
+      kind: 'text' as const,
+      body:
+        `Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
+        (await this.closedNote()),
     };
+    // Back to the menu of whoever they said they are. Someone who asked for a
+    // person on their first message never said, so no menu follows.
+    const audience = this.audienceOf(key, ctx);
+    if (audience === 'lead') {
+      this.setState(key, 'LEAD_MENU');
+      return { messages: [note, leadMenu()] };
+    }
+    if (audience === 'client') {
+      this.setState(key, 'CLIENT_MENU');
+      return { messages: [note, clientMenu()] };
+    }
+    this.setState(key, 'ROOT');
+    return { messages: [note] };
   }
 
   private async handleLeadContact(
@@ -2508,7 +2758,8 @@ export class FlowService {
       return { messages: [leadMenu()] };
     }
     this.setState(key, 'ROOT');
-    return { messages: [welcomeMenu(undefined, ctx.botName)] };
+    // Shown again later in the chat: the bot already introduced itself.
+    return { messages: [welcomeMenu(undefined, ctx.botName, 'none')] };
   }
 
   /**
