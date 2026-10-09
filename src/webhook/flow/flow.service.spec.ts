@@ -1666,6 +1666,75 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('ROOT');
     });
 
+    it('does not take a claim involving "una persona" as a request for an advisor', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+
+      await send(
+        { text: 'Quiero denunciar un choque con una persona herida' },
+        withModel,
+      );
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('SINIESTRO_TYPE');
+    });
+
+    it('asks for the reason when the first message is only a greeting and "asesor"', async () => {
+      await send({ text: 'Hola, quiero hablar con un asesor' }, withModel);
+
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it.each(['cancelar', 'Volver', 'salir'])(
+      'shows the welcome for "%s" as a first message without asking the model',
+      async (text) => {
+        const res = await send({ text }, withModel);
+
+        expect(intents.interpret).not.toHaveBeenCalled();
+        expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
+      },
+    );
+
+    it('replies with the error message when the API fails on a first message', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockRejectedValue(new Error('API caída'));
+      const client = {
+        id: 1,
+        firstName: 'ANA',
+        lastName: 'GOMEZ',
+        dni: '1',
+        email: '',
+        phone: null,
+        city: null,
+      };
+
+      const res = await send(
+        { text: 'cuánto debo?' },
+        { ...withModel, client },
+      );
+
+      expect(JSON.stringify(res.messages)).toContain(
+        'Tuvimos un inconveniente',
+      );
+    });
+
+    it('does not read messages once the sender used up the hourly model calls', async () => {
+      const res = await send(
+        { text: 'Mandame la póliza' },
+        { ...withModel, llmRateLimited: true },
+      );
+
+      expect(intents.interpret).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
+    });
+
+    it('shows the welcome for "menú" as a first message without asking the model', async () => {
+      const res = await send({ text: 'menú' }, withModel);
+
+      expect(intents.interpret).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
+    });
+
     it('reads an identified client question instead of sending it to Documentación', async () => {
       intents.interpret.mockResolvedValue('consulta');
       const client = {
@@ -1697,6 +1766,7 @@ describe('FlowService', () => {
       ...leadCtx,
       phoneNumberId: 'P1',
       lastHumanReply,
+      answeringPerson: true,
     };
 
     it('stays quiet and flags the chat while the office is open', async () => {
@@ -1706,10 +1776,8 @@ describe('FlowService', () => {
 
       expect(res.messages).toEqual([]);
       expect(res.handoff).toBeUndefined();
-      expect(api.requestHandoff).toHaveBeenCalledWith(
-        1,
-        expect.stringContaining('Ya te las mandé por mail'),
-      );
+      // No reason: the API keeps one pending matter however many follow.
+      expect(api.requestHandoff).toHaveBeenCalledWith(1);
       const [call] = intents.interpret.mock.calls[0] as [
         { lastHumanReply: { content: string } | null },
       ];
@@ -1732,6 +1800,23 @@ describe('FlowService', () => {
         'persona que te venía atendiendo',
       );
       expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+    });
+
+    it('answers a reply to its own question even if a person wrote earlier', async () => {
+      // The person wrote this morning, but the bot is the one who just asked.
+      intents.interpret.mockResolvedValue('seguimiento');
+
+      const res = await send(
+        { text: 'sí' },
+        { ...ctx, answeringPerson: false },
+      );
+
+      expect(res.handoff).toBe('faq');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      const [call] = intents.interpret.mock.calls[0] as [
+        { lastHumanReply: unknown },
+      ];
+      expect(call.lastHumanReply).toBeNull();
     });
 
     it('serves a clear request without introducing the bot', async () => {
@@ -1774,6 +1859,17 @@ describe('FlowService', () => {
 
       expect(stored?.step).toBe('IDENTIFY');
       expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+    });
+
+    it('never sends a stale button tap to the model', async () => {
+      await send({ text: 'hola' }, withModel);
+
+      await send(
+        { selectionId: 'pol_563', text: 'CITROEN BERLINGO' },
+        withModel,
+      );
+
+      expect(intents.interpret).not.toHaveBeenCalled();
     });
 
     it('shows the menu again without the introduction', async () => {

@@ -223,6 +223,69 @@ describe('WebhookService', () => {
     expect(sent).not.toContain('palio');
   });
 
+  it('tells the flow whether the customer is answering a person or the bot', async () => {
+    const humanReply = {
+      content: 'Pasame las fotos',
+      createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+    api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+    api.saveMessage.mockResolvedValue({});
+    api.getConversation.mockResolvedValueOnce({
+      conversationId: 1,
+      client: null,
+      newSession: true,
+      messages: [],
+      botPaused: false,
+      flowState: null,
+      lastHumanReply: humanReply,
+    });
+    flow.handle.mockResolvedValueOnce({ messages: [], state: null });
+
+    await service.handleMessage(
+      '5491155556666',
+      'ya te las mandé',
+      'P1',
+      'f-1',
+    );
+
+    expect(flow.handle).toHaveBeenLastCalledWith(
+      'P1:5491155556666',
+      expect.anything(),
+      expect.objectContaining({
+        answeringPerson: true,
+        lastHumanReply: humanReply,
+      }),
+    );
+
+    // Same person, but the bot has spoken in this session since.
+    api.getConversation.mockResolvedValueOnce({
+      conversationId: 1,
+      client: null,
+      newSession: false,
+      messages: [
+        { id: 1, role: 'user', content: 'hola', createdAt: '' },
+        {
+          id: 2,
+          role: 'assistant',
+          content: '¿ya sos cliente?',
+          createdAt: '',
+        },
+      ],
+      botPaused: false,
+      flowState: JSON.stringify({ step: 'ROOT', data: {} }),
+      lastHumanReply: humanReply,
+    });
+    flow.handle.mockResolvedValueOnce({ messages: [], state: null });
+
+    await service.handleMessage('5491155556666', 'sí', 'P1', 'f-2');
+
+    expect(flow.handle).toHaveBeenLastCalledWith(
+      'P1:5491155556666',
+      expect.anything(),
+      expect.objectContaining({ answeringPerson: false }),
+    );
+  });
+
   describe('LLM turn', () => {
     beforeEach(() => {
       api.getContext.mockResolvedValue({
@@ -1127,6 +1190,62 @@ describe('WebhookService', () => {
       expect(reply).toContain('para qué es');
       expect(reply).not.toContain('denuncia');
       expect(flow.handle).not.toHaveBeenCalled();
+    });
+
+    it('stays out of a photo sent to a person from the office', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: true,
+        messages: [],
+        botPaused: false,
+        flowState: null,
+        lastHumanReply: {
+          content: 'Pasame las fotos que tenés',
+          createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+        },
+      });
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      api.attachAdjunto.mockResolvedValue({
+        siniestroId: null,
+        adjuntosCount: 0,
+        attached: false,
+        attachments: [],
+      });
+
+      await service.handleMedia('5491155556666', 'media-p', 'P1', 'wm-p');
+
+      expect(meta.sendText).not.toHaveBeenCalled();
+    });
+
+    it('does not suggest typing "siniestro" while the claim details are being collected', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: false,
+        flowState: JSON.stringify({ step: 'SINIESTRO_DATOS', data: {} }),
+      });
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('img'),
+        mimeType: 'image/jpeg',
+      });
+      api.attachAdjunto.mockResolvedValue({
+        siniestroId: null,
+        adjuntosCount: 0,
+        attached: false,
+        attachments: [],
+      });
+
+      await service.handleMedia('5491155556666', 'media-d', 'P1', 'wm-d');
+
+      const reply = (meta.sendText.mock.calls as string[][])[0][1];
+      expect(reply).toContain('Terminemos primero los datos');
+      expect(reply).not.toContain('Escribime');
     });
 
     it('asks to file the claim first when a claim photo step has no claim', async () => {

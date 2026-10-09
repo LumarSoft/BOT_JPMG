@@ -120,4 +120,9 @@ export interface FlowContext {
   lastHumanReply?: HumanReply | null;
   /** When this number last talked to us before this message (ISO), any session. */
   previousActivityAt?: string | null;
+  /** The customer is answering a person from the office, not the bot: that
+   * person spoke last (see `answeringAPerson` in closers.ts). */
+  answeringPerson?: boolean;
+  /** This sender used up the hourly model calls: skip optional model reads. */
+  llmRateLimited?: boolean;
 }

@@ -35,7 +35,7 @@ import {
   DEFAULT_OPENAI_MODEL,
   renderCatalogForPrompt,
 } from './constants/business';
-import { closesHumanConversation } from './closers';
+import { answeringAPerson, closesHumanConversation } from './closers';
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -437,6 +437,13 @@ export class WebhookService {
         inboundAt,
         lastHumanReply: conversation.lastHumanReply ?? null,
         previousActivityAt: conversation.previousActivityAt ?? null,
+        answeringPerson: answeringAPerson(
+          conversation.messages,
+          conversation.lastHumanReply,
+        ),
+        // Reading the message is optional: past the hourly cap the flow
+        // falls back to its menus instead of spending another call.
+        llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
       },
     );
 
@@ -901,12 +908,23 @@ export class WebhookService {
     // The image remains available in the inbox even when there is no open
     // claim yet, but the guided flow must not advance as if it were attached.
     if (attachmentResult.attached === false) {
-      // Inside a claim step the photo was expected and the claim is missing;
-      // anywhere else we simply don't know what the photo is for (a moto to
-      // quote got "registremos la denuncia"), so ask instead of assuming.
+      // A photo for the person the customer is talking to (Mili asked for it)
+      // is already in the inbox: the bot stays out of that conversation.
+      if (
+        !tipo &&
+        answeringAPerson(conversation.messages, conversation.lastHumanReply)
+      ) {
+        return;
+      }
+      // Inside a claim photo step the photo was expected and the claim is
+      // missing. While the claim's details are still being collected, it is
+      // simply early. Anywhere else we don't know what the photo is for (a moto
+      // to quote got "registremos la denuncia"), so ask instead of assuming.
       const reply = tipo
         ? 'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.'
-        : '📎 ¡Recibí tu foto! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.';
+        : flowState?.step.startsWith('SINIESTRO_')
+          ? '📎 Guardé tu foto. Terminemos primero los datos de la denuncia y después te pido las fotos.'
+          : '📎 ¡Recibí tu foto! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.';
       await this.api
         .saveMessage(conversation.conversationId, 'assistant', reply)
         .catch(() => undefined);
@@ -1475,6 +1493,15 @@ export class WebhookService {
    * call and returns false once the sender exceeds LLM_CALLS_PER_HOUR within the
    * window. Keeps the OpenAI spend per number bounded as a last-resort backstop.
    */
+  /** Whether the sender still has model calls left this hour (does not use one). */
+  private hasLlmBudget(key: string): boolean {
+    const now = Date.now();
+    const recent = (this.llmCalls.get(key) ?? []).filter(
+      (t) => now - t < LLM_WINDOW_MS,
+    );
+    return recent.length < LLM_CALLS_PER_HOUR;
+  }
+
   private allowLlmCall(key: string): boolean {
     const now = Date.now();
     const recent = (this.llmCalls.get(key) ?? []).filter(
