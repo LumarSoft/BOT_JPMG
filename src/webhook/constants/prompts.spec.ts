@@ -56,4 +56,14 @@ describe('buildCotizacionPrompt', () => {
     expect(prompt).not.toContain('hasta 4 coberturas');
     expect(prompt).toContain('no lo deduzcas del nombre');
   });
+
+  it('maps client words to coverage terms and answers follow-ups without quoting again', () => {
+    const prompt = buildCotizacionPrompt({ ...base, vehicleType: 'auto' });
+
+    expect(prompt).toContain(
+      'parabrisas, luneta, ventanillas o vidrios = *cristales*',
+    );
+    expect(prompt).toContain('no la vuelvas a llamar');
+    expect(prompt).toContain('Una pregunta sobre una cobertura NO es elegirla');
+  });
 });

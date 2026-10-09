@@ -62,7 +62,9 @@ const MAX_TOOL_ROUNDS = 8;
 /** Output token caps per sub-flow. Cotización needs room to list coverages;
  * FAQ replies are short by design. Lower caps = lower cost and tighter answers. */
 const MAX_TOKENS: Record<'cotizacion' | 'faq', number> = {
-  cotizacion: 800,
+  // A quote lists every offered coverage with what it includes and excludes:
+  // five of them take ~460 tokens, and the office can enable more codes.
+  cotizacion: 1200,
   faq: 350,
 };
 
