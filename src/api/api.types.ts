@@ -140,7 +140,7 @@ export interface PolizaSummary {
   validFrom: string | null;
   validTo: string | null;
   paymentMethod: string | null;
-  vehiculo: VehiculoSummary | null;
+  vehicle: VehiculoSummary | null;
   /** Payment standing; `alDia` is false with a rejected or past-due installment. */
   estadoPago?: EstadoPago;
 }
@@ -164,7 +164,7 @@ export interface EstadoCuentaPoliza {
   riskType: string;
   lastMovement: string;
   paymentMethod: string | null;
-  vehiculo: VehiculoSummary | null;
+  vehicle: VehiculoSummary | null;
   cuotasPagas: number;
   cuotasImpagas: CuotaImpaga[];
   tieneRechazos: boolean;

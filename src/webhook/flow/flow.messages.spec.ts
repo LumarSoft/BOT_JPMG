@@ -25,7 +25,7 @@ const ranger: EstadoCuentaPoliza = {
   riskType: 'auto',
   lastMovement: 'VIGENTE',
   paymentMethod: null,
-  vehiculo: {
+  vehicle: {
     licensePlate: 'AH070ZY',
     brand: 'FORD',
     model: 'RANGER 3.0 TDI DC 4X4',
@@ -41,7 +41,7 @@ const sinVehiculo: EstadoCuentaPoliza = {
   riskType: 'other',
   lastMovement: 'VIGENTE',
   paymentMethod: null,
-  vehiculo: null,
+  vehicle: null,
   cuotasPagas: 0,
   cuotasImpagas: [
     {
@@ -75,8 +75,8 @@ describe('formatEstadoCuenta', () => {
 describe('polizaPicker', () => {
   it('labels rows by vehicle and never leaks the raw risk type', () => {
     const polizas = [
-      { ...ranger, vehiculo: ranger.vehiculo } as unknown as PolizaSummary,
-      { ...sinVehiculo, vehiculo: null } as unknown as PolizaSummary,
+      { ...ranger, vehicle: ranger.vehicle } as unknown as PolizaSummary,
+      { ...sinVehiculo, vehicle: null } as unknown as PolizaSummary,
     ];
 
     const message = polizaPicker(polizas, '¿Sobre qué póliza?');

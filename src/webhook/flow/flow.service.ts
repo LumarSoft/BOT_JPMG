@@ -1309,7 +1309,7 @@ export class FlowService {
   private bajaConfirmMessage(poliza: PolizaSummary): OutgoingMessage {
     return {
       kind: 'buttons',
-      body: `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificateNumber}*${poliza.vehiculo?.licensePlate ? ` (${poliza.vehiculo.licensePlate})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
+      body: `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificateNumber}*${poliza.vehicle?.licensePlate ? ` (${poliza.vehicle.licensePlate})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
       buttons: [
         { id: OPT.confirmar, title: 'Solicitar baja' },
         { id: OPT.cancelar, title: 'Cancelar' },
@@ -3075,12 +3075,12 @@ export class FlowService {
     const t = text.toLowerCase();
 
     for (const p of polizas) {
-      const dom = p.vehiculo?.licensePlate;
+      const dom = p.vehicle?.licensePlate;
       if (dom && t.includes(dom.toLowerCase())) return p;
     }
 
     for (const p of polizas) {
-      const v = p.vehiculo;
+      const v = p.vehicle;
       if (!v) continue;
       const terms = [v.brand, v.model]
         .filter(Boolean)

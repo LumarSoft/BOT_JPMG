@@ -132,8 +132,8 @@ function riskLabel(riskType: string): string {
  * Shared by the pickers, the claim confirmation and the account statement so the
  * client always recognises the policy by the same name.
  */
-function polizaLabel(p: Pick<PolizaSummary, 'riskType' | 'vehiculo'>): string {
-  const v = p.vehiculo;
+function polizaLabel(p: Pick<PolizaSummary, 'riskType' | 'vehicle'>): string {
+  const v = p.vehicle;
   if (v && (v.brand || v.model)) {
     return [v.brand, v.model].filter(Boolean).join(' ');
   }
@@ -142,15 +142,15 @@ function polizaLabel(p: Pick<PolizaSummary, 'riskType' | 'vehiculo'>): string {
 
 /** Secondary line for a policy: certificate number plus plate when there is one. */
 function polizaRef(
-  p: Pick<PolizaSummary, 'certificateNumber' | 'vehiculo'>,
+  p: Pick<PolizaSummary, 'certificateNumber' | 'vehicle'>,
 ): string {
-  const dominio = p.vehiculo?.licensePlate;
+  const dominio = p.vehicle?.licensePlate;
   return `Póliza ${p.certificateNumber}${dominio ? ` · ${dominio}` : ''}`;
 }
 
 /** One-line mention for the office: "CHEVROLET CORSA (Póliza 1741715 · ABC123)". */
 export function polizaMention(
-  p: Pick<PolizaSummary, 'riskType' | 'vehiculo' | 'certificateNumber'>,
+  p: Pick<PolizaSummary, 'riskType' | 'vehicle' | 'certificateNumber'>,
 ): string {
   return `${polizaLabel(p)} (${polizaRef(p)})`;
 }

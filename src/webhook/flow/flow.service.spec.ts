@@ -73,7 +73,7 @@ describe('FlowService', () => {
           validFrom: null,
           validTo: null,
           paymentMethod: null,
-          vehiculo: {
+          vehicle: {
             licensePlate: 'ABC123',
             brand: 'CHEVROLET',
             model: 'CORSA',
@@ -530,7 +530,7 @@ describe('FlowService', () => {
       validFrom: null,
       validTo: null,
       paymentMethod: null,
-      vehiculo: { licensePlate: 'ABC123', brand: 'CHEVROLET', model: 'CORSA' },
+      vehicle: { licensePlate: 'ABC123', brand: 'CHEVROLET', model: 'CORSA' },
       estadoPago,
     });
 
