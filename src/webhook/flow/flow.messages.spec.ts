@@ -23,7 +23,7 @@ const ranger: EstadoCuentaPoliza = {
   id: 2,
   certificado: '1905860',
   riskType: 'auto',
-  status: 'VIGENTE',
+  movimiento: 'VIGENTE',
   paymentMethod: null,
   vehiculo: {
     dominio: 'AH070ZY',
@@ -39,7 +39,7 @@ const sinVehiculo: EstadoCuentaPoliza = {
   id: 1,
   certificado: '1045599',
   riskType: 'other',
-  status: 'VIGENTE',
+  movimiento: 'VIGENTE',
   paymentMethod: null,
   vehiculo: null,
   cuotasPagas: 0,

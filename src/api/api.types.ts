@@ -21,7 +21,7 @@ export interface ClientSummary {
   firstName: string;
   lastName: string;
   dni: string;
-  email: string;
+  email: string | null;
   phone: string | null;
   city: string | null;
 }
@@ -135,7 +135,8 @@ export interface PolizaSummary {
   certificado: string;
   company: string;
   riskType: string;
-  status: string;
+  /** Triunfo's last movement on the policy ("REFACTURACION"…), not its validity. */
+  movimiento: string;
   vigenciaDesde: string | null;
   vigenciaHasta: string | null;
   paymentMethod: string | null;
@@ -161,7 +162,7 @@ export interface EstadoCuentaPoliza {
   id: number;
   certificado: string;
   riskType: string;
-  status: string;
+  movimiento: string;
   paymentMethod: string | null;
   vehiculo: VehiculoSummary | null;
   cuotasPagas: number;
