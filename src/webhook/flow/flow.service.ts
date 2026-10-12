@@ -1421,7 +1421,7 @@ export class FlowService {
         {
           kind: 'text',
           body:
-            `${papers} te los manda la oficina por este chat 🙌 Ya les pasé tu pedido de ${label}. ` +
+            `${papers} te los manda la oficina por este chat 🙌 Ya les pasé tu pedido para ${label}. ` +
             `Te los envían en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
             (await this.closedNote()),
         },
