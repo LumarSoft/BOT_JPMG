@@ -1678,10 +1678,10 @@ export class FlowService {
     const poliza = polizas.find((p) => p.id === state.data.polizaId);
 
     const siniestro = await this.api.createSiniestro(ctx.conversationId, {
-      polizaId: state.data.polizaId as number,
-      tipo: this.tipoFromRisk(poliza?.riskType),
-      fecha: state.data.fechaIso as string,
-      descripcion: state.data.descripcion as string,
+      policyId: state.data.polizaId as number,
+      type: this.tipoFromRisk(poliza?.riskType),
+      occurredAt: state.data.fechaIso as string,
+      description: state.data.descripcion as string,
     });
 
     // Start the guided photo capture. Each photo the client sends from here is

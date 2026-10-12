@@ -178,14 +178,15 @@ export interface PolizaDocumento {
 
 export interface SiniestroSummary {
   id: number;
-  tipo: string;
-  descripcion: string;
-  fecha: string;
-  estado: string;
+  type: string;
+  description: string;
+  /** When the incident happened (ISO). */
+  occurredAt: string;
+  status: 'pending' | 'in_progress' | 'resolved';
   /** Official Triunfo claim number — set by the admin after filing it manually in Triunfo's web. */
-  nroSiniestroCompania: string | null;
+  insurerClaimNumber: string | null;
   createdAt: string;
-  poliza: { id: number; certificado: string; riskType: string };
+  policy: { id: number; certificado: string; riskType: string };
 }
 
 export interface IdentifyResult {

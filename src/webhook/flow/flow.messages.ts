@@ -677,19 +677,20 @@ export function formatSiniestros(siniestros: SiniestroSummary[]): string {
     return 'No tenés denuncias de siniestro registradas. Si querés iniciar una, elegí *Denuncia nueva*.';
   }
 
-  const estados: Record<string, string> = {
-    pendiente: '🟡 Pendiente de carga en la compañía',
-    en_proceso: '🔵 En proceso',
-    resuelto: '🟢 Resuelto',
+  const estados: Record<SiniestroSummary['status'], string> = {
+    pending: '🟡 Pendiente de carga en la compañía',
+    in_progress: '🔵 En proceso',
+    resolved: '🟢 Resuelto',
   };
 
   const blocks = siniestros.map((s) => {
-    const estado = estados[s.estado] ?? s.estado;
-    const oficial = s.nroSiniestroCompania
-      ? `\n  N° oficial Triunfo: ${s.nroSiniestroCompania}`
+    const estado = estados[s.status] ?? s.status;
+    const oficial = s.insurerClaimNumber
+      ? `\n  N° oficial Triunfo: ${s.insurerClaimNumber}`
       : '\n  Aún sin número oficial (en carga).';
     return (
-      `• *${s.tipo}* — ${fmtDate(s.fecha)}\n` + `  Estado: ${estado}${oficial}`
+      `• *${s.type}* — ${fmtDate(s.occurredAt)}\n` +
+      `  Estado: ${estado}${oficial}`
     );
   });
 

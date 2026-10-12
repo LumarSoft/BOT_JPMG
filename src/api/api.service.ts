@@ -322,10 +322,10 @@ export class ApiService {
   async createSiniestro(
     conversationId: number,
     payload: {
-      polizaId: number;
-      tipo: string;
-      fecha: string;
-      descripcion: string;
+      policyId: number;
+      type: string;
+      occurredAt: string;
+      description: string;
     },
   ): Promise<SiniestroSummary> {
     const { data } = await this.http.post<SiniestroSummary>(

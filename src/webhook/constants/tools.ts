@@ -65,7 +65,7 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'get_siniestros',
       description:
-        'Lista las denuncias de siniestro del cliente identificado con su estado interno de seguimiento (pendiente, en_proceso, resuelto).',
+        'Lista las denuncias de siniestro del cliente identificado con su estado interno de seguimiento (status: pending = pendiente de carga, in_progress = en proceso, resolved = resuelto).',
       parameters: { type: 'object', properties: {} },
     },
   },

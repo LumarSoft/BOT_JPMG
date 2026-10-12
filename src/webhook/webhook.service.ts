@@ -1589,10 +1589,10 @@ export class WebhookService {
         case 'create_siniestro':
           return JSON.stringify(
             await this.api.createSiniestro(conversationId, {
-              polizaId: Number(args.polizaId),
-              tipo: String(args.tipo),
-              fecha: String(args.fecha),
-              descripcion: String(args.descripcion),
+              policyId: Number(args.polizaId),
+              type: String(args.tipo),
+              occurredAt: String(args.fecha),
+              description: String(args.descripcion),
             }),
           );
         case 'search_vehicle_brands': {

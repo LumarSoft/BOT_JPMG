@@ -384,13 +384,13 @@ describe('FlowService', () => {
       await send({ selectionId: OPT.confirmar, text: '' }, ctx);
       expect(api.createSiniestro).toHaveBeenCalledWith(
         1,
-        expect.objectContaining({ polizaId: 833, fecha: '2026-10-03' }),
+        expect.objectContaining({ policyId: 833, occurredAt: '2026-10-03' }),
       );
       const [, filed] = api.createSiniestro.mock.calls[0] as [
         number,
-        { descripcion: string },
+        { description: string },
       ];
-      expect(filed.descripcion).toContain('Personas en el vehículo: 2');
+      expect(filed.description).toContain('Personas en el vehículo: 2');
     });
 
     it('asks for the street number when only a corner was given, and accepts "no sé"', async () => {
@@ -502,10 +502,10 @@ describe('FlowService', () => {
       expect(api.createSiniestro).toHaveBeenCalledWith(
         clientCtx.conversationId,
         expect.objectContaining({
-          polizaId: 833,
-          tipo: 'auto',
-          fecha: todayIso,
-          descripcion:
+          policyId: 833,
+          type: 'auto',
+          occurredAt: todayIso,
+          description:
             'choqué contra un árbol de frente\nHora: 14:30\nLocalidad: Rosario\nCalle: San Martín\nAltura / referencia: 1234',
         }),
       );
@@ -638,7 +638,7 @@ describe('FlowService', () => {
 
       expect(api.createSiniestro).toHaveBeenCalledWith(
         clientCtx.conversationId,
-        expect.objectContaining({ fecha: isoDaysAgo(days) }),
+        expect.objectContaining({ occurredAt: isoDaysAgo(days) }),
       );
     });
 
