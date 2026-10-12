@@ -48,7 +48,7 @@ describe('WebhookService', () => {
       requestHandoff: jest.fn().mockResolvedValue(undefined),
       attachLeadAdjunto: jest
         .fn()
-        .mockResolvedValue({ leadId: 42, adjuntosCount: 1 }),
+        .mockResolvedValue({ leadId: 42, attachmentCount: 1 }),
       quoteVehicle: jest.fn().mockResolvedValue({
         quoteNumber: '123',
         validUntil: '2026-10-30',
@@ -1109,7 +1109,7 @@ describe('WebhookService', () => {
         buffer: Buffer.from('img'),
         mimeType: 'image/jpeg',
       });
-      api.attachAdjunto.mockResolvedValue({ siniestroId: 9, adjuntosCount: 2 });
+      api.attachAdjunto.mockResolvedValue({ claimId: 9, attachmentCount: 2 });
 
       await service.handleMedia('5491155556666', 'media-1', 'P1', 'wm1');
 
@@ -1135,8 +1135,8 @@ describe('WebhookService', () => {
         size: 123,
       };
       api.attachAdjunto.mockResolvedValue({
-        siniestroId: 9,
-        adjuntosCount: 1,
+        claimId: 9,
+        attachmentCount: 1,
         attached: true,
         attachments: [attachment],
       });
@@ -1164,8 +1164,8 @@ describe('WebhookService', () => {
         size: 99,
       };
       api.attachAdjunto.mockResolvedValue({
-        siniestroId: null,
-        adjuntosCount: 0,
+        claimId: null,
+        attachmentCount: 0,
         attached: false,
         attachments: [attachment],
       });
@@ -1210,8 +1210,8 @@ describe('WebhookService', () => {
         mimeType: 'image/jpeg',
       });
       api.attachAdjunto.mockResolvedValue({
-        siniestroId: null,
-        adjuntosCount: 0,
+        claimId: null,
+        attachmentCount: 0,
         attached: false,
         attachments: [],
       });
@@ -1235,8 +1235,8 @@ describe('WebhookService', () => {
         mimeType: 'image/jpeg',
       });
       api.attachAdjunto.mockResolvedValue({
-        siniestroId: null,
-        adjuntosCount: 0,
+        claimId: null,
+        attachmentCount: 0,
         attached: false,
         attachments: [],
       });
@@ -1262,8 +1262,8 @@ describe('WebhookService', () => {
         mimeType: 'image/jpeg',
       });
       api.attachAdjunto.mockResolvedValue({
-        siniestroId: null,
-        adjuntosCount: 0,
+        claimId: null,
+        attachmentCount: 0,
         attached: false,
         attachments: [],
       });
@@ -1312,8 +1312,8 @@ describe('WebhookService', () => {
         mimeType: 'image/jpeg',
       });
       api.attachAdjunto.mockResolvedValue({
-        siniestroId: 9,
-        adjuntosCount: 2,
+        claimId: 9,
+        attachmentCount: 2,
       });
 
       await service.handleMedia(

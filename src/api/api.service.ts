@@ -391,7 +391,7 @@ export class ApiService {
     tipo: string,
   ): Promise<{
     leadId: number;
-    adjuntosCount: number;
+    attachmentCount: number;
     attached?: boolean;
     attachments?: MessageMedia[];
   }> {
@@ -403,7 +403,7 @@ export class ApiService {
     );
     const { data } = await this.http.post<{
       leadId: number;
-      adjuntosCount: number;
+      attachmentCount: number;
       attached?: boolean;
       attachments?: MessageMedia[];
     }>(
@@ -555,7 +555,7 @@ export class ApiService {
   ): Promise<{ id: number }> {
     const { data } = await this.http.post<{ id: number }>(
       `/bot/conversation/${conversationId}/request-policy-cancellation`,
-      { polizaId },
+      { policyId: polizaId },
     );
     return data;
   }

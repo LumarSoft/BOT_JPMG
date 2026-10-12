@@ -606,8 +606,8 @@ export function polizaPicker(
 
 export function docPicker(docs: PolizaDocumento[]): OutgoingMessage {
   const rows: ListRow[] = docs.map((d) => ({
-    id: `${DOC_PREFIX}${d.codigo}`,
-    title: d.nombre,
+    id: `${DOC_PREFIX}${d.code}`,
+    title: d.name,
   }));
   return {
     kind: 'list',
@@ -651,10 +651,10 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
     // The client recognises the policy by the insured asset, not by its
     // certificate number — same label the claim flow uses.
     const head = `*${polizaLabel(p)}*\n_${polizaRef(p)}_`;
-    if (p.cuotasImpagas.length === 0) {
-      return `${head}\n✅ Sin cuotas impagas. ${p.cuotasPagas} cuota(s) paga(s).`;
+    if (p.unpaidInstallments.length === 0) {
+      return `${head}\n✅ Sin cuotas impagas. ${p.paidInstallments} cuota(s) paga(s).`;
     }
-    const cuotas = p.cuotasImpagas
+    const cuotas = p.unpaidInstallments
       .map((c) => {
         const tag =
           c.status === 'rejected'
@@ -665,7 +665,7 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
         return `  • Cuota ${c.number}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag})`;
       })
       .join('\n');
-    const aviso = p.tieneRechazos
+    const aviso = p.hasRejectedInstallments
       ? '\n⚠️ Hay un rechazo de débito. Un asesor te va a contactar para regularizarlo.'
       : '';
     return `${head}\n${cuotas}${aviso}`;
@@ -701,7 +701,7 @@ export function formatSiniestros(siniestros: SiniestroSummary[]): string {
 
 export function formatDocumento(doc: PolizaDocumento): string {
   return (
-    `📄 *${doc.nombre}*\n${doc.url}\n\n` +
+    `📄 *${doc.name}*\n${doc.url}\n\n` +
     `Podés llevarla en el celular, no es obligatorio tenerla impresa.`
   );
 }

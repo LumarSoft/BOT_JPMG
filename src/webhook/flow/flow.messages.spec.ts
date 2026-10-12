@@ -30,9 +30,9 @@ const ranger: EstadoCuentaPoliza = {
     brand: 'FORD',
     model: 'RANGER 3.0 TDI DC 4X4',
   },
-  cuotasPagas: 1,
-  cuotasImpagas: [],
-  tieneRechazos: false,
+  paidInstallments: 1,
+  unpaidInstallments: [],
+  hasRejectedInstallments: false,
 };
 
 const sinVehiculo: EstadoCuentaPoliza = {
@@ -42,8 +42,8 @@ const sinVehiculo: EstadoCuentaPoliza = {
   lastMovement: 'VIGENTE',
   paymentMethod: null,
   vehicle: null,
-  cuotasPagas: 0,
-  cuotasImpagas: [
+  paidInstallments: 0,
+  unpaidInstallments: [
     {
       number: 3,
       amount: '19754',
@@ -51,7 +51,7 @@ const sinVehiculo: EstadoCuentaPoliza = {
       status: 'overdue',
     },
   ],
-  tieneRechazos: false,
+  hasRejectedInstallments: false,
 };
 
 describe('formatEstadoCuenta', () => {

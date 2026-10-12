@@ -92,7 +92,7 @@ describe('FlowService', () => {
       }),
       identifyClient: jest.fn().mockResolvedValue({
         client: { firstName: 'Ana', lastName: 'Gómez' },
-        polizasCount: 1,
+        policyCount: 1,
       }),
     };
     extractor = { extract: jest.fn() };
@@ -517,10 +517,10 @@ describe('FlowService', () => {
       expect(done.state?.step).toBe('SINIESTRO_FOTO_TARJETA');
     });
 
-    const polizaCon = (estadoPago: {
-      alDia: boolean;
-      cuotasRechazadas: number;
-      cuotasVencidas: number;
+    const polizaCon = (paymentStatus: {
+      upToDate: boolean;
+      rejectedInstallments: number;
+      overdueInstallments: number;
     }) => ({
       id: 833,
       certificateNumber: '1741715',
@@ -531,7 +531,7 @@ describe('FlowService', () => {
       validTo: null,
       paymentMethod: null,
       vehicle: { licensePlate: 'ABC123', brand: 'CHEVROLET', model: 'CORSA' },
-      estadoPago,
+      paymentStatus,
     });
 
     async function pickPolicyForClaim() {
@@ -543,7 +543,7 @@ describe('FlowService', () => {
 
     it('does not take a claim on a policy with a rejected payment and alerts an advisor', async () => {
       api.getPolizas.mockResolvedValue([
-        polizaCon({ alDia: false, cuotasRechazadas: 1, cuotasVencidas: 0 }),
+        polizaCon({ upToDate: false, rejectedInstallments: 1, overdueInstallments: 0 }),
       ]);
 
       const result = await pickPolicyForClaim();
@@ -559,7 +559,7 @@ describe('FlowService', () => {
 
     it('does not take a claim on a policy with overdue installments', async () => {
       api.getPolizas.mockResolvedValue([
-        polizaCon({ alDia: false, cuotasRechazadas: 0, cuotasVencidas: 2 }),
+        polizaCon({ upToDate: false, rejectedInstallments: 0, overdueInstallments: 2 }),
       ]);
 
       const result = await pickPolicyForClaim();
@@ -571,7 +571,7 @@ describe('FlowService', () => {
 
     it('continues the claim when the policy is paid up', async () => {
       api.getPolizas.mockResolvedValue([
-        polizaCon({ alDia: true, cuotasRechazadas: 0, cuotasVencidas: 0 }),
+        polizaCon({ upToDate: true, rejectedInstallments: 0, overdueInstallments: 0 }),
       ]);
 
       await pickPolicyForClaim();

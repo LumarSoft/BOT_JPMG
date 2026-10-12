@@ -141,14 +141,14 @@ export interface PolizaSummary {
   validTo: string | null;
   paymentMethod: string | null;
   vehicle: VehiculoSummary | null;
-  /** Payment standing; `alDia` is false with a rejected or past-due installment. */
-  estadoPago?: EstadoPago;
+  /** Payment standing; `upToDate` is false with a rejected or past-due installment. */
+  paymentStatus?: PaymentStatus;
 }
 
-export interface EstadoPago {
-  alDia: boolean;
-  cuotasRechazadas: number;
-  cuotasVencidas: number;
+export interface PaymentStatus {
+  upToDate: boolean;
+  rejectedInstallments: number;
+  overdueInstallments: number;
 }
 
 export interface CuotaImpaga {
@@ -165,14 +165,14 @@ export interface EstadoCuentaPoliza {
   lastMovement: string;
   paymentMethod: string | null;
   vehicle: VehiculoSummary | null;
-  cuotasPagas: number;
-  cuotasImpagas: CuotaImpaga[];
-  tieneRechazos: boolean;
+  paidInstallments: number;
+  unpaidInstallments: CuotaImpaga[];
+  hasRejectedInstallments: boolean;
 }
 
 export interface PolizaDocumento {
-  codigo: string;
-  nombre: string;
+  code: string;
+  name: string;
   url: string;
 }
 
@@ -191,7 +191,7 @@ export interface SiniestroSummary {
 
 export interface IdentifyResult {
   client: ClientSummary;
-  polizasCount: number;
+  policyCount: number;
 }
 
 export type VehicleTypeParam = 'auto' | 'moto';
@@ -248,8 +248,8 @@ export interface QuoteResult {
 }
 
 export interface AttachAdjuntosResult {
-  siniestroId: number | null;
-  adjuntosCount: number;
+  claimId: number | null;
+  attachmentCount: number;
   /** Optional only for rolling compatibility with an older API during deploy. */
   attached?: boolean;
   attachments?: MessageMedia[];

@@ -1393,19 +1393,19 @@ export class FlowService {
     }
 
     const poliza = polizas.find((p) => p.id === polizaId)!;
-    const pago = poliza.estadoPago;
-    if (pago && !pago.alDia) {
+    const pago = poliza.paymentStatus;
+    if (pago && !pago.upToDate) {
       // Reason worded so the office files it under siniestros, not pagos
       // (see classifyMatter in the API: payment words take precedence).
       const motivo =
-        pago.cuotasRechazadas > 0
+        pago.rejectedInstallments > 0
           ? 'un cobro rechazado'
           : 'saldo vencido impago';
       return this.siniestroBloqueado(
         key,
         ctx,
         `Denuncia de siniestro no registrada: la póliza ${poliza.certificateNumber} figura con ${motivo}.`,
-        pago.cuotasRechazadas > 0
+        pago.rejectedInstallments > 0
           ? `La póliza *${poliza.certificateNumber}* registra un *pago rechazado*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlo.`
           : `La póliza *${poliza.certificateNumber}* registra *cuotas vencidas sin pagar*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlas.`,
       );
@@ -1966,7 +1966,7 @@ export class FlowService {
   ): FlowResult {
     const docs =
       (state.data.docs as
-        | { codigo: string; nombre: string; url: string }[]
+        | { code: string; name: string; url: string }[]
         | undefined) ?? [];
     let codigo = this.parseStringRef(input.selectionId, DOC_PREFIX);
 
@@ -1974,7 +1974,7 @@ export class FlowService {
       codigo = this.matchDocByText(input.text, docs);
     }
 
-    const doc = docs.find((d) => d.codigo === codigo);
+    const doc = docs.find((d) => d.code === codigo);
 
     if (!doc) {
       // Can't identify document — LLM asks naturally; state stays DOC_TYPE.
@@ -3111,16 +3111,16 @@ export class FlowService {
    */
   private matchDocByText(
     text: string,
-    docs: { codigo: string; nombre: string; url: string }[],
+    docs: { code: string; name: string; url: string }[],
   ): string | null {
     const t = text.toLowerCase();
     for (const doc of docs) {
-      const words = doc.nombre
+      const words = doc.name
         .toLowerCase()
         .split(/\s+/)
         .filter((w) => w.length > 4);
       if (words.length > 0 && words.some((w) => t.includes(w)))
-        return doc.codigo;
+        return doc.code;
     }
     return null;
   }
