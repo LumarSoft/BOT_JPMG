@@ -25,6 +25,8 @@ export const OPT = {
   cotizacion: 'm_cotizacion',
   pagos: 'm_pagos',
   documentos: 'm_documentos',
+  // Not shown in the menu: typed requests for payment coupons route here.
+  cupones: 'm_cupones',
   bajaPoliza: 'm_baja_poliza',
   grua: 'm_grua',
   asesor: 'm_asesor',
@@ -62,6 +64,7 @@ export const CLIENT_MENU_OPTS = new Set<string>([
   OPT.cotizacion,
   OPT.pagos,
   OPT.documentos,
+  OPT.cupones,
   OPT.bajaPoliza,
   OPT.grua,
   OPT.asesor,
@@ -71,6 +74,8 @@ export const CLIENT_MENU_OPTS = new Set<string>([
 export const ROOT_OPTS = new Set<string>([OPT.cliente, OPT.noCliente]);
 
 export const POLIZA_PREFIX = 'pol_';
+/** "Todas mis pólizas" row of the coupon picker. */
+export const ALL_POLIZAS_ID = `${POLIZA_PREFIX}todas`;
 export const DOC_PREFIX = 'doc_';
 export const PLAN_PREFIX = 'plan_';
 
@@ -132,7 +137,9 @@ function riskLabel(riskType: string): string {
  * Shared by the pickers, the claim confirmation and the account statement so the
  * client always recognises the policy by the same name.
  */
-function polizaLabel(p: Pick<PolizaSummary, 'riskType' | 'vehicle'>): string {
+export function polizaLabel(
+  p: Pick<PolizaSummary, 'riskType' | 'vehicle'>,
+): string {
   const v = p.vehicle;
   if (v && (v.brand || v.model)) {
     return [v.brand, v.model].filter(Boolean).join(' ');
@@ -595,12 +602,16 @@ export function siniestroTypeMenu(): OutgoingMessage {
 export function polizaPicker(
   polizas: PolizaSummary[],
   body: string,
+  options: { allRow?: boolean } = {},
 ): OutgoingMessage {
   const rows: ListRow[] = polizas.map((p) => ({
     id: `${POLIZA_PREFIX}${p.id}`,
     title: polizaLabel(p),
     description: polizaRef(p),
   }));
+  // A WhatsApp list holds at most 10 rows.
+  if (options.allRow && rows.length > 1 && rows.length < 10)
+    rows.push({ id: ALL_POLIZAS_ID, title: 'Todas mis pólizas' });
   return { kind: 'list', body, button: 'Elegir póliza', rows };
 }
 

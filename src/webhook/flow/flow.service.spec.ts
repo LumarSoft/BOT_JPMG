@@ -543,7 +543,11 @@ describe('FlowService', () => {
 
     it('does not take a claim on a policy with a rejected payment and alerts an advisor', async () => {
       api.getPolizas.mockResolvedValue([
-        polizaCon({ upToDate: false, rejectedInstallments: 1, overdueInstallments: 0 }),
+        polizaCon({
+          upToDate: false,
+          rejectedInstallments: 1,
+          overdueInstallments: 0,
+        }),
       ]);
 
       const result = await pickPolicyForClaim();
@@ -559,7 +563,11 @@ describe('FlowService', () => {
 
     it('does not take a claim on a policy with overdue installments', async () => {
       api.getPolizas.mockResolvedValue([
-        polizaCon({ upToDate: false, rejectedInstallments: 0, overdueInstallments: 2 }),
+        polizaCon({
+          upToDate: false,
+          rejectedInstallments: 0,
+          overdueInstallments: 2,
+        }),
       ]);
 
       const result = await pickPolicyForClaim();
@@ -571,7 +579,11 @@ describe('FlowService', () => {
 
     it('continues the claim when the policy is paid up', async () => {
       api.getPolizas.mockResolvedValue([
-        polizaCon({ upToDate: true, rejectedInstallments: 0, overdueInstallments: 0 }),
+        polizaCon({
+          upToDate: true,
+          rejectedInstallments: 0,
+          overdueInstallments: 0,
+        }),
       ]);
 
       await pickPolicyForClaim();
@@ -1573,6 +1585,169 @@ describe('FlowService', () => {
         body: expect.stringContaining('Ya le pasé el pedido a un asesor'),
       });
       expect(res.state?.step).toBe('CLIENT_MENU');
+    });
+  });
+
+  describe('cupones de pago', () => {
+    const clientCtx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Marcelo',
+        lastName: 'Sosa',
+        dni: '24492194',
+      } as FlowContext['client'],
+      llmEnabled: false,
+    };
+    const ranger = {
+      id: 834,
+      certificateNumber: '2000001',
+      company: 'Triunfo',
+      riskType: 'auto',
+      validFrom: null,
+      validTo: null,
+      paymentMethod: null,
+      vehicle: { licensePlate: 'AD456EF', brand: 'FORD', model: 'RANGER' },
+    };
+    const bodies = (res: { messages: unknown[] }) =>
+      JSON.stringify(res.messages);
+
+    it('pasa el pedido a la oficina sin mostrar documentos ni el estado de cuenta', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Pide los cupones de pago de su póliza CHEVROLET CORSA (Póliza 1741715 · ABC123). El bot no puede obtenerlos de Triunfo: enviárselos por este chat.',
+      );
+      expect(api.getDocumentos).not.toHaveBeenCalled();
+      expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+      expect(bodies(res)).toContain(
+        'Los cupones de pago te los manda la oficina por este chat',
+      );
+      expect(bodies(res)).toContain('tu CHEVROLET CORSA');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('no vuelve a pedir la póliza ni deriva de nuevo si insiste', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ text: 'necesito la cuponera' }, clientCtx);
+      const again = await send(
+        { text: 'son los 3 cupones para pagar' },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(api.getPolizas).toHaveBeenCalledTimes(1);
+      expect(bodies(again)).toContain(
+        'Ya le pasé a la oficina tu pedido de los cupones de pago de tu CHEVROLET CORSA',
+      );
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('con varias pólizas ofrece elegir una o todas', async () => {
+      api.getPolizas.mockResolvedValue([...(await api.getPolizas()), ranger]);
+      await send({ text: 'hola' }, clientCtx);
+      const picker = await send({ text: 'los cupones' }, clientCtx);
+
+      expect(stored?.step).toBe('CUPON_POLIZA');
+      expect(bodies(picker)).toContain('pol_todas');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+
+      const res = await send({ selectionId: 'pol_todas', text: '' }, clientCtx);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining(
+          'Pide los cupones de pago de todas sus pólizas: CHEVROLET CORSA (Póliza 1741715 · ABC123); FORD RANGER (Póliza 2000001 · AD456EF)',
+        ),
+      );
+      expect(bodies(res)).toContain('todas tus pólizas');
+    });
+
+    it('con varias pólizas deriva la elegida y repregunta si no la reconoce', async () => {
+      api.getPolizas.mockResolvedValue([...(await api.getPolizas()), ranger]);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ text: 'mandame los cupones' }, clientCtx);
+
+      const retry = await send({ text: 'cualquier cosa' }, clientCtx);
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('CUPON_POLIZA');
+      expect(bodies(retry)).toContain('No reconocí esa póliza');
+
+      await send({ selectionId: 'pol_834', text: '' }, clientCtx);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining(
+          'Pide los cupones de pago de su póliza FORD RANGER (Póliza 2000001 · AD456EF)',
+        ),
+      );
+    });
+
+    it('junta los cupones y la póliza en un solo pedido', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        {
+          text: 'me podrías pasar cupón de pago y póliza de la patente ABC123',
+        },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Pide los cupones de pago y la documentación'),
+      );
+      expect(bodies(res)).toContain(
+        'Los cupones de pago y la documentación te los manda la oficina',
+      );
+    });
+
+    it('identifica primero a quien no está identificado y después deriva', async () => {
+      await send({ selectionId: OPT.cliente, text: '' });
+      // The identification model reads the request while asking for the DNI.
+      interpreter.interpret.mockResolvedValueOnce({
+        dni: null,
+        plate: null,
+        action: 'cupones',
+        clarification: 'Pasame el DNI del titular o la patente.',
+      });
+      await send({ text: 'necesito los cupones de pago' });
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.data.pendingAction).toBe('cupones');
+
+      const res = await send({ text: '24492194' });
+      expect(api.identifyClient).toHaveBeenCalled();
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Pide los cupones de pago de su póliza'),
+      );
+      expect(bodies(res)).toContain('te los manda la oficina');
+    });
+
+    it('una pregunta de precio con cuponera sigue siendo cotización', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { text: 'es el mismo precio pagando con cuponera?' },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).not.toBe('CUPON_POLIZA');
+    });
+
+    it('tampoco repite el pedido de documentación', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+      await send({ selectionId: 'pol_833', text: '' }, clientCtx);
+      const again = await send(
+        { selectionId: OPT.documentos, text: '' },
+        clientCtx,
+      );
+
+      expect(api.getDocumentos).toHaveBeenCalledTimes(1);
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(bodies(again)).toContain(
+        'Ya le pasé a la oficina tu pedido de la documentación de tu CHEVROLET CORSA',
+      );
     });
   });
 

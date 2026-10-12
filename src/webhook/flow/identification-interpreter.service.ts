@@ -8,6 +8,7 @@ export const IDENTIFICATION_ACTIONS = [
   'menu',
   'pagos',
   'documentos',
+  'cupones',
   'siniestro_nueva',
   'siniestro_consultar',
   'baja_poliza',
@@ -41,7 +42,7 @@ Convertí los números dictados a cifras, conservando TODOS los dígitos y su or
 Un DNI completo tiene 7 u 8 dígitos. Nunca rellenes dígitos faltantes, adivines o elijas arbitrariamente entre dos documentos. No uses nombres, teléfonos, CUIT, fechas ni números de póliza como DNI.
 Una patente puede tener ABC123 o AB123CD (también A123ABC para motos); reconocé letras dictadas si son inequívocas. No corrijas por tu cuenta letras o dígitos inciertos.
 Si la persona se corrige en el mismo mensaje, usá el dato final explícito. Si consulta por un familiar, el documento es del titular consultado, no necesariamente de quien escribe.
-Leé el contexto para entender qué está pidiendo. Si expresa claramente una nueva intención, devolvé action. "Quiero denunciar un choque" = siniestro_nueva; "ver mis siniestros" = siniestro_consultar; "la tarjeta/póliza/certificado" = documentos; "ver deuda/cuotas" = pagos; "pedir la baja" = baja_poliza. No ejecutes ninguna acción ni afirmes que consultaste una base.
+Leé el contexto para entender qué está pidiendo. Si expresa claramente una nueva intención, devolvé action. "Quiero denunciar un choque" = siniestro_nueva; "ver mis siniestros" = siniestro_consultar; "la tarjeta/póliza/certificado" = documentos; "los cupones o la cuponera para pagar" = cupones; "ver deuda/cuotas" = pagos; "pedir la baja" = baja_poliza. No ejecutes ninguna acción ni afirmes que consultaste una base.
 Si solo aporta un dato, action=null y se conserva la gestión pendiente. Si cambia de tema sin aportar identificación, dni y plate=null y pedí el DNI del titular o la patente. En esta etapa no pidas detalles del siniestro ni otra información: primero identificá al titular. No digas que no existe un cliente sin haberlo consultado.
 Si no hay identificación completa o es ambigua, devolvé ambos identificadores null y una pregunta corta en español argentino que aclare qué falta. No tomes documentos de mensajes anteriores como si fueran una nueva identificación, salvo una referencia explícita e inequívoca.
 Si indica un DNI y patente claros del mismo titular, priorizá DNI y devolvé plate=null. Si ambos pertenecen a personas diferentes y no queda claro por quién consulta, pedí aclaración.

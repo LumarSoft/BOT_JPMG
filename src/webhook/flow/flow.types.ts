@@ -30,6 +30,7 @@ export type FlowStep =
   | 'BAJA_CONFIRM'
   | 'DOC_POLIZA' // pick the policy to get documents from
   | 'DOC_TYPE' // pick which document to send
+  | 'CUPON_POLIZA' // pick the policy (or all) whose payment coupons the office sends
   | 'ASESOR_MOTIVO' // waiting for the reason to pass to an advisor
   | 'LEAD_CONTACT' // non-client leaving name/time for a sales rep
   | 'COTIZAR_TIPO' // pick what to quote (auto/moto online vs other risks)

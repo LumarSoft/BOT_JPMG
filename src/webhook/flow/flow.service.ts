@@ -22,6 +22,7 @@ import type {
   UserInput,
 } from './flow.types';
 import {
+  ALL_POLIZAS_ID,
   clientMenu,
   CLIENT_MENU_OPTS,
   cotizarMenu,
@@ -45,6 +46,7 @@ import {
   planDetails,
   planPicker,
   POLIZA_PREFIX,
+  polizaLabel,
   polizaPicker,
   polizaMention,
   returningGreeting,
@@ -125,6 +127,17 @@ const OPENING_COMMAND_RE =
   /^(?:menu|cancelar|cancela|volver|atras|finalizar|terminar|salir|chau|chao|adios)[\s.!]*$/;
 
 /** A message that asks for a quote. Run against folded text (see `fold`). */
+/**
+ * Payment coupons ("cupón", "los cupones", "la cuponera"). Triunfo gives us no
+ * way to fetch them, so they get their own path to the office instead of the
+ * documents picker, which ended in "no tengo los documentos" every time.
+ * Folded text.
+ */
+const CUPON_RE = /\bcupon(?:es|era|eras)?\b/;
+
+/** Policy papers asked for together with the coupons. Folded text. */
+const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
+
 const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
 
@@ -310,9 +323,16 @@ type ClientAction =
   | 'menu'
   | 'pagos'
   | 'documentos'
+  | 'cupones'
   | 'siniestro_nueva'
   | 'siniestro_consultar'
   | 'baja_poliza';
+
+/** Extra details of the request that started a client action. */
+interface ActionOptions {
+  /** Coupons asked for together with the policy papers ("cupón y póliza"). */
+  withDocs?: boolean;
+}
 
 /**
  * Conversation state machine for transactional flows. The model interprets
@@ -675,6 +695,8 @@ export class FlowService {
         return this.handleDocPoliza(state, input, ctx, key);
       case 'DOC_TYPE':
         return this.handleDocType(state, input, key);
+      case 'CUPON_POLIZA':
+        return this.handleCuponPoliza(state, input, ctx, key);
       case 'ASESOR_MOTIVO':
         return this.handleAsesorMotivo(input, ctx, key);
       case 'LEAD_CONTACT':
@@ -900,15 +922,18 @@ export class FlowService {
         this.setState(key, 'SINIESTRO_TYPE', {}, 'client');
         return this.withOpener(opener, { messages: [siniestroTypeMenu()] });
       case 'documentos':
+      case 'pagos': {
+        // The model files coupons under documentos or pagos; neither path can
+        // deliver them.
+        const t = fold(input.text);
+        const action: ClientAction = CUPON_RE.test(t) ? 'cupones' : intent;
         return this.withOpener(
           opener,
-          await this.guardAsClient(ctx, key, 'documentos'),
+          await this.guardAsClient(ctx, key, action, {
+            withDocs: DOCS_TOO_RE.test(t),
+          }),
         );
-      case 'pagos':
-        return this.withOpener(
-          opener,
-          await this.guardAsClient(ctx, key, 'pagos'),
-        );
+      }
       case 'baja':
         return this.withOpener(
           opener,
@@ -941,6 +966,7 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
     action: ClientAction,
+    opts: ActionOptions = {},
   ): Promise<FlowResult> {
     if (!ctx.client) {
       const current = this.load(key)?.state;
@@ -951,7 +977,7 @@ export class FlowService {
         'client',
       );
     }
-    return this.guard(ctx, key, action);
+    return this.guard(ctx, key, action, opts);
   }
 
   /**
@@ -1025,6 +1051,10 @@ export class FlowService {
         return this.guard(ctx, key, 'baja_poliza');
       case OPT.documentos:
         return this.guard(ctx, key, 'documentos');
+      case OPT.cupones:
+        return this.guard(ctx, key, 'cupones', {
+          withDocs: DOCS_TOO_RE.test(fold(input.text)),
+        });
       case OPT.grua:
         return {
           messages: [{ kind: 'text', body: this.gruaText() }, clientMenu()],
@@ -1096,9 +1126,13 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
     action: ClientAction,
+    opts: ActionOptions = {},
   ): Promise<FlowResult> {
     if (!ctx.client) {
-      this.setState(key, 'IDENTIFY', { pendingAction: action });
+      this.setState(key, 'IDENTIFY', {
+        pendingAction: action,
+        ...(opts.withDocs ? { pendingWithDocs: true } : {}),
+      });
       return {
         messages: [
           {
@@ -1108,7 +1142,7 @@ export class FlowService {
         ],
       };
     }
-    return this.runAction(action, ctx, key);
+    return this.runAction(action, ctx, key, opts);
   }
 
   private async handleIdentify(
@@ -1213,7 +1247,9 @@ export class FlowService {
     // link, so the conversation-scoped action calls resolve the client fine.
     return this.prepend(
       '✅ ¡Listo, te identifiqué!',
-      await this.runAction(action, ctx, key),
+      await this.runAction(action, ctx, key, {
+        withDocs: state.data.pendingWithDocs === true,
+      }),
     );
   }
 
@@ -1222,7 +1258,10 @@ export class FlowService {
     action: ClientAction,
     ctx: FlowContext,
     key: string,
+    opts: ActionOptions = {},
   ): Promise<FlowResult> {
+    const repeated = await this.alreadyRequested(action, ctx, key);
+    if (repeated) return repeated;
     switch (action) {
       case 'menu':
         this.setState(key, 'CLIENT_MENU');
@@ -1285,7 +1324,142 @@ export class FlowService {
           ],
         };
       }
+      case 'cupones': {
+        const polizas = await this.api.getPolizas(ctx.conversationId);
+        if (polizas.length === 0) return this.noPolizas(key);
+        const withDocs = opts.withDocs === true;
+        if (polizas.length === 1)
+          return this.requestCupones(polizas, false, withDocs, ctx, key);
+        this.setState(key, 'CUPON_POLIZA', {
+          polizas,
+          ...(withDocs ? { withDocs } : {}),
+        });
+        return {
+          messages: [
+            polizaPicker(
+              polizas,
+              withDocs
+                ? '¿De qué póliza necesitás los cupones y la documentación?'
+                : '¿De qué póliza necesitás los cupones de pago?',
+              { allRow: true },
+            ),
+          ],
+        };
+      }
     }
+  }
+
+  private async handleCuponPoliza(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    const withDocs = state.data.withDocs === true;
+    const t = fold(input.text);
+    if (
+      input.selectionId === ALL_POLIZAS_ID ||
+      /\b(todas|todos|ambas|ambos|las dos|los dos)\b/.test(t)
+    )
+      return this.requestCupones(polizas, true, withDocs, ctx, key);
+
+    const id = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+    const poliza =
+      polizas.find((p) => p.id === id) ??
+      this.matchPolizaByText(input.text, polizas);
+    if (poliza) return this.requestCupones([poliza], false, withDocs, ctx, key);
+
+    return this.retry(key, state, [
+      polizaPicker(
+        polizas,
+        'No reconocí esa póliza. Elegí una de la lista, o escribí *menú* para volver.',
+        { allRow: true },
+      ),
+    ]);
+  }
+
+  /**
+   * Passes a coupon request to the office, which sends the coupons by hand in
+   * this same chat: Triunfo has no service that returns them. Remembered for
+   * the rest of the menu visit so asking again is acknowledged, not restarted.
+   */
+  private async requestCupones(
+    polizas: PolizaSummary[],
+    all: boolean,
+    withDocs: boolean,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const what = withDocs
+      ? 'los cupones de pago y la documentación'
+      : 'los cupones de pago';
+    const which =
+      polizas.length === 1
+        ? `de su póliza ${polizaMention(polizas[0])}`
+        : `de todas sus pólizas: ${polizas.map(polizaMention).join('; ')}`;
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Pide ${what} ${which}. El bot no puede obtenerlos de Triunfo: enviárselos por este chat.`,
+      )
+      .catch(() => undefined);
+
+    const label = all
+      ? 'todas tus pólizas'
+      : polizas.length === 1
+        ? `tu ${polizaLabel(polizas[0])}`
+        : 'tus pólizas';
+    this.setState(key, 'CLIENT_MENU', {
+      requested: { action: 'cupones', what, label },
+    });
+    const papers = withDocs
+      ? 'Los cupones de pago y la documentación'
+      : 'Los cupones de pago';
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `${papers} te los manda la oficina por este chat 🙌 Ya les pasé tu pedido de ${label}. ` +
+            `Te los envían en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
+        },
+        clientMenu(),
+      ],
+    };
+  }
+
+  /**
+   * The same request made again right after it went to the office — the loop
+   * a customer fell into asking three times for "los 3 cupones": each time the
+   * bot asked for the policy again and answered the same thing.
+   */
+  private async alreadyRequested(
+    action: ClientAction,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    const current = this.load(key)?.state;
+    const requested =
+      current?.step === 'CLIENT_MENU'
+        ? (current.data.requested as
+            | { action: ClientAction; what: string; label: string }
+            | undefined)
+        : undefined;
+    if (!requested || requested.action !== action) return null;
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Ya le pasé a la oficina tu pedido de ${requested.what} de ${requested.label} 👍 ` +
+            `Te los mandan por este chat en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()) +
+            '\n\nSi necesitás otra cosa, escribí *menú*.',
+        },
+      ],
+    };
   }
 
   private handleBajaPoliza(
@@ -1940,13 +2114,19 @@ export class FlowService {
       await this.api
         .requestHandoff(ctx.conversationId, reason)
         .catch(() => undefined);
-      this.setState(key, 'CLIENT_MENU');
+      this.setState(key, 'CLIENT_MENU', {
+        requested: {
+          action: 'documentos',
+          what: 'la documentación',
+          label: poliza ? `tu ${polizaLabel(poliza)}` : 'tu póliza',
+        },
+      });
       return {
         messages: [
           {
             kind: 'text',
             body:
-              'No tengo los documentos de esa póliza para enviarte ahora. Ya le pasé el pedido a un asesor para que te los mande ' +
+              'No tengo los documentos de esa póliza para enviarte ahora. Ya le pasé el pedido a un asesor para que te los mande por este chat ' +
               `(${attentionHoursOf(ctx.attentionHours)}).` +
               (await this.closedNote()),
           },
@@ -2678,7 +2858,7 @@ export class FlowService {
     if (/\bpagar\b|\bpagos?\b|\bcuota\b|\bdeuda\b|\bvencimiento\b/.test(t))
       return 'pago';
     if (
-      /\btarjeta\b|\bcertificad|\bcupon\b|\bdocumentacion\b|\bdocumentos?\b/.test(
+      /\btarjeta\b|\bcertificad|\bcupon(?:es|era|eras)?\b|\bdocumentacion\b|\bdocumentos?\b/.test(
         t,
       )
     )
@@ -2716,13 +2896,13 @@ export class FlowService {
       )
         return 'siniestro';
       if (
-        /\b(mis?) (cuotas?|pagos?|deudas?|vencimientos?)\b|\bpagar (mi|mis)\b|\bestado de (cuenta|pagos?)\b|\bcuanto debo\b|\bdeuda\b|\bcupon de pago\b/.test(
+        /\b(mis?) (cuotas?|pagos?|deudas?|vencimientos?)\b|\bpagar (mi|mis)\b|\bestado de (cuenta|pagos?)\b|\bcuanto debo\b|\bdeuda\b|\bcupon(?:es)? de pago\b/.test(
           t,
         )
       )
         return 'pago';
       if (
-        /\btarjeta (verde|de circulacion|del seguro)\b|\bcertificado de cobertura\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?)\b|\b(necesito|quiero|descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis) (poliza|certificado|tarjeta|cupon|documentacion)\b/.test(
+        /\btarjeta (verde|de circulacion|del seguro)\b|\bcertificado de cobertura\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?|cuponeras?)\b|\b(necesito|quiero|descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis|los) (poliza|certificado|tarjeta|cupon|cupones|cuponera|documentacion)\b/.test(
           t,
         )
       )
@@ -3026,6 +3206,8 @@ export class FlowService {
     )
       return OPT.siniestros;
     if (/precio/.test(t)) return OPT.cotizacion;
+    // Before pagos: "el cupón de pago" asks for the coupon, not the debt.
+    if (CUPON_RE.test(t)) return OPT.cupones;
     if (/pago|cuota|deuda|debito|cobr|rechaz/.test(t)) return OPT.pagos;
     if (/document|poliza|tarjeta|certificado|cupon/.test(t))
       return OPT.documentos;
@@ -3119,8 +3301,7 @@ export class FlowService {
         .toLowerCase()
         .split(/\s+/)
         .filter((w) => w.length > 4);
-      if (words.length > 0 && words.some((w) => t.includes(w)))
-        return doc.code;
+      if (words.length > 0 && words.some((w) => t.includes(w))) return doc.code;
     }
     return null;
   }
