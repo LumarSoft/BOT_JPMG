@@ -21,14 +21,14 @@ describe('leadMenu', () => {
 
 const ranger: EstadoCuentaPoliza = {
   id: 2,
-  certificado: '1905860',
+  certificateNumber: '1905860',
   riskType: 'auto',
-  movimiento: 'VIGENTE',
+  lastMovement: 'VIGENTE',
   paymentMethod: null,
   vehiculo: {
-    dominio: 'AH070ZY',
-    marca: 'FORD',
-    modelo: 'RANGER 3.0 TDI DC 4X4',
+    licensePlate: 'AH070ZY',
+    brand: 'FORD',
+    model: 'RANGER 3.0 TDI DC 4X4',
   },
   cuotasPagas: 1,
   cuotasImpagas: [],
@@ -37,15 +37,15 @@ const ranger: EstadoCuentaPoliza = {
 
 const sinVehiculo: EstadoCuentaPoliza = {
   id: 1,
-  certificado: '1045599',
+  certificateNumber: '1045599',
   riskType: 'other',
-  movimiento: 'VIGENTE',
+  lastMovement: 'VIGENTE',
   paymentMethod: null,
   vehiculo: null,
   cuotasPagas: 0,
   cuotasImpagas: [
     {
-      numeroCuota: 3,
+      number: 3,
       amount: '19754',
       dueDate: '2026-07-23',
       status: 'overdue',

@@ -66,14 +66,18 @@ describe('FlowService', () => {
       getPolizas: jest.fn().mockResolvedValue([
         {
           id: 833,
-          certificado: '1741715',
+          certificateNumber: '1741715',
           company: 'Triunfo',
           riskType: 'auto',
           status: 'vigente',
-          vigenciaDesde: null,
-          vigenciaHasta: null,
+          validFrom: null,
+          validTo: null,
           paymentMethod: null,
-          vehiculo: { dominio: 'ABC123', marca: 'CHEVROLET', modelo: 'CORSA' },
+          vehiculo: {
+            licensePlate: 'ABC123',
+            brand: 'CHEVROLET',
+            model: 'CORSA',
+          },
         },
       ]),
       createSiniestro: jest.fn().mockResolvedValue({ id: 99 }),
@@ -519,14 +523,14 @@ describe('FlowService', () => {
       cuotasVencidas: number;
     }) => ({
       id: 833,
-      certificado: '1741715',
+      certificateNumber: '1741715',
       company: 'Triunfo',
       riskType: 'auto',
       status: 'vigente',
-      vigenciaDesde: null,
-      vigenciaHasta: null,
+      validFrom: null,
+      validTo: null,
       paymentMethod: null,
-      vehiculo: { dominio: 'ABC123', marca: 'CHEVROLET', modelo: 'CORSA' },
+      vehiculo: { licensePlate: 'ABC123', brand: 'CHEVROLET', model: 'CORSA' },
       estadoPago,
     });
 

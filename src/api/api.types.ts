@@ -123,22 +123,22 @@ export interface ProductCatalogItem {
 }
 
 export interface VehiculoSummary {
-  dominio: string | null;
-  marca: string | null;
-  modelo: string | null;
-  anio?: number | null;
-  cobertura?: string | null;
+  licensePlate: string | null;
+  brand: string | null;
+  model: string | null;
+  year?: number | null;
+  coverage?: string | null;
 }
 
 export interface PolizaSummary {
   id: number;
-  certificado: string;
+  certificateNumber: string;
   company: string;
   riskType: string;
   /** Triunfo's last movement on the policy ("REFACTURACION"…), not its validity. */
-  movimiento: string;
-  vigenciaDesde: string | null;
-  vigenciaHasta: string | null;
+  lastMovement: string;
+  validFrom: string | null;
+  validTo: string | null;
   paymentMethod: string | null;
   vehiculo: VehiculoSummary | null;
   /** Payment standing; `alDia` is false with a rejected or past-due installment. */
@@ -152,7 +152,7 @@ export interface EstadoPago {
 }
 
 export interface CuotaImpaga {
-  numeroCuota: number;
+  number: number;
   amount: string;
   dueDate: string | null;
   status: string; // "pending" | "overdue" | "rejected"
@@ -160,9 +160,9 @@ export interface CuotaImpaga {
 
 export interface EstadoCuentaPoliza {
   id: number;
-  certificado: string;
+  certificateNumber: string;
   riskType: string;
-  movimiento: string;
+  lastMovement: string;
   paymentMethod: string | null;
   vehiculo: VehiculoSummary | null;
   cuotasPagas: number;

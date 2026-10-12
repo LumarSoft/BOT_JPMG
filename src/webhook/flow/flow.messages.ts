@@ -134,21 +134,23 @@ function riskLabel(riskType: string): string {
  */
 function polizaLabel(p: Pick<PolizaSummary, 'riskType' | 'vehiculo'>): string {
   const v = p.vehiculo;
-  if (v && (v.marca || v.modelo)) {
-    return [v.marca, v.modelo].filter(Boolean).join(' ');
+  if (v && (v.brand || v.model)) {
+    return [v.brand, v.model].filter(Boolean).join(' ');
   }
   return riskLabel(p.riskType);
 }
 
 /** Secondary line for a policy: certificate number plus plate when there is one. */
-function polizaRef(p: Pick<PolizaSummary, 'certificado' | 'vehiculo'>): string {
-  const dominio = p.vehiculo?.dominio;
-  return `Póliza ${p.certificado}${dominio ? ` · ${dominio}` : ''}`;
+function polizaRef(
+  p: Pick<PolizaSummary, 'certificateNumber' | 'vehiculo'>,
+): string {
+  const dominio = p.vehiculo?.licensePlate;
+  return `Póliza ${p.certificateNumber}${dominio ? ` · ${dominio}` : ''}`;
 }
 
 /** One-line mention for the office: "CHEVROLET CORSA (Póliza 1741715 · ABC123)". */
 export function polizaMention(
-  p: Pick<PolizaSummary, 'riskType' | 'vehiculo' | 'certificado'>,
+  p: Pick<PolizaSummary, 'riskType' | 'vehiculo' | 'certificateNumber'>,
 ): string {
   return `${polizaLabel(p)} (${polizaRef(p)})`;
 }
@@ -660,7 +662,7 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
             : c.status === 'overdue'
               ? '⚠️ vencida'
               : 'pendiente';
-        return `  • Cuota ${c.numeroCuota}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag})`;
+        return `  • Cuota ${c.number}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag})`;
       })
       .join('\n');
     const aviso = p.tieneRechazos

@@ -1309,7 +1309,7 @@ export class FlowService {
   private bajaConfirmMessage(poliza: PolizaSummary): OutgoingMessage {
     return {
       kind: 'buttons',
-      body: `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificado}*${poliza.vehiculo?.dominio ? ` (${poliza.vehiculo.dominio})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
+      body: `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificateNumber}*${poliza.vehiculo?.licensePlate ? ` (${poliza.vehiculo.licensePlate})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
       buttons: [
         { id: OPT.confirmar, title: 'Solicitar baja' },
         { id: OPT.cancelar, title: 'Cancelar' },
@@ -1344,7 +1344,7 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: `Registré tu solicitud de baja de la póliza *${poliza.certificado}*. La oficina recibió la notificación y te confirmará la gestión. La póliza todavía no fue dada de baja.`,
+          body: `Registré tu solicitud de baja de la póliza *${poliza.certificateNumber}*. La oficina recibió la notificación y te confirmará la gestión. La póliza todavía no fue dada de baja.`,
         },
       ],
     };
@@ -1404,10 +1404,10 @@ export class FlowService {
       return this.siniestroBloqueado(
         key,
         ctx,
-        `Denuncia de siniestro no registrada: la póliza ${poliza.certificado} figura con ${motivo}.`,
+        `Denuncia de siniestro no registrada: la póliza ${poliza.certificateNumber} figura con ${motivo}.`,
         pago.cuotasRechazadas > 0
-          ? `La póliza *${poliza.certificado}* registra un *pago rechazado*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlo.`
-          : `La póliza *${poliza.certificado}* registra *cuotas vencidas sin pagar*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlas.`,
+          ? `La póliza *${poliza.certificateNumber}* registra un *pago rechazado*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlo.`
+          : `La póliza *${poliza.certificateNumber}* registra *cuotas vencidas sin pagar*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlas.`,
       );
     }
 
@@ -3075,14 +3075,14 @@ export class FlowService {
     const t = text.toLowerCase();
 
     for (const p of polizas) {
-      const dom = p.vehiculo?.dominio;
+      const dom = p.vehiculo?.licensePlate;
       if (dom && t.includes(dom.toLowerCase())) return p;
     }
 
     for (const p of polizas) {
       const v = p.vehiculo;
       if (!v) continue;
-      const terms = [v.marca, v.modelo]
+      const terms = [v.brand, v.model]
         .filter(Boolean)
         .map((s) => s!.toLowerCase());
       if (terms.some((term) => term.length > 2 && t.includes(term))) return p;
