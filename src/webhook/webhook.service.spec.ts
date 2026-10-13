@@ -530,6 +530,7 @@ describe('WebhookService', () => {
         }),
         9,
         { ...memory, selected: memory.candidates[1] },
+        false,
       );
 
       expect(api.quoteVehicle).toHaveBeenCalledWith('auto', {
@@ -547,6 +548,7 @@ describe('WebhookService', () => {
           args: string,
           conversationId: number,
           remembered?: typeof memory,
+          knownGnc?: boolean,
         ) => Promise<string>;
       };
       api.quoteVehicle.mockRejectedValue({
@@ -562,9 +564,15 @@ describe('WebhookService', () => {
       });
 
       const first = JSON.parse(
-        await privateService.executeTool('quote_vehicle', args, 9, memory),
+        await privateService.executeTool(
+          'quote_vehicle',
+          args,
+          9,
+          memory,
+          false,
+        ),
       ) as { officeNotified?: boolean; nextStep?: string };
-      await privateService.executeTool('quote_vehicle', args, 9, memory);
+      await privateService.executeTool('quote_vehicle', args, 9, memory, false);
 
       expect(first.officeNotified).toBe(true);
       expect(typeof first.nextStep).toBe('string');
@@ -584,6 +592,7 @@ describe('WebhookService', () => {
           args: string,
           conversationId: number,
           remembered?: typeof memory,
+          knownGnc?: boolean,
         ) => Promise<string>;
       };
       api.quoteVehicle.mockResolvedValue({
@@ -620,6 +629,7 @@ describe('WebhookService', () => {
           }),
           9,
           memory,
+          false,
         ),
       ) as {
         cotizacionIncompleta?: boolean;
@@ -644,6 +654,8 @@ describe('WebhookService', () => {
           name: string,
           args: string,
           conversationId: number,
+          remembered?: undefined,
+          knownGnc?: boolean,
         ) => Promise<string>;
       };
       api.quoteVehicle.mockResolvedValue({
@@ -665,10 +677,41 @@ describe('WebhookService', () => {
             postalCode: 2000,
           }),
           9,
+          undefined,
+          false,
         ),
       ) as { cotizacionIncompleta?: boolean };
 
       expect(result.cotizacionIncompleta).toBeUndefined();
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it('does not quote a car before knowing whether it has GNC', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+          remembered?: undefined,
+          knownGnc?: boolean,
+        ) => Promise<string>;
+      };
+
+      const result = JSON.parse(
+        await privateService.executeTool(
+          'quote_vehicle',
+          JSON.stringify({
+            vehicleType: 'auto',
+            codia: 120632,
+            manufactureYear: 2024,
+            postalCode: 2000,
+          }),
+          9,
+        ),
+      ) as { error?: string };
+
+      expect(result.error).toContain('GNC');
+      expect(api.quoteVehicle).not.toHaveBeenCalled();
       expect(api.requestHandoff).not.toHaveBeenCalled();
     });
 
@@ -678,6 +721,8 @@ describe('WebhookService', () => {
           name: string,
           args: string,
           conversationId: number,
+          remembered?: undefined,
+          knownGnc?: boolean,
         ) => Promise<string>;
       };
       api.quoteVehicle.mockRejectedValue({
@@ -696,6 +741,8 @@ describe('WebhookService', () => {
             postalCode: 2000,
           }),
           9,
+          undefined,
+          false,
         ),
       ) as { officeNotified?: boolean };
 
@@ -709,6 +756,8 @@ describe('WebhookService', () => {
           name: string,
           args: string,
           conversationId: number,
+          remembered?: undefined,
+          knownGnc?: boolean,
         ) => Promise<string>;
       };
 
@@ -786,6 +835,143 @@ describe('WebhookService', () => {
 
       expect(next.candidates).toHaveLength(2);
       expect(next.selected).toBeUndefined();
+    });
+  });
+
+  describe('quote facts that outlive the history window', () => {
+    type Memory = {
+      vehicleType: 'auto' | 'moto';
+      brandName?: string;
+      candidates: Array<{ codia: number; description: string }>;
+      selected?: { codia: number; description: string };
+      hasGnc?: boolean;
+      quoted?: {
+        manufactureYear: number;
+        postalCode: number;
+        outcome: string;
+        coverages: string[];
+      };
+    };
+    const astra = { codia: 120236, description: 'ASTRA II GL 2.0 5 PTAS' };
+    const memory: Memory = {
+      vehicleType: 'auto',
+      brandName: 'CHEVROLET',
+      candidates: [
+        { codia: 120239, description: 'ASTRA II GL 2.0 4 PTAS' },
+        astra,
+      ],
+      selected: astra,
+    };
+    const priv = () =>
+      service as unknown as {
+        rememberQuote: (m: Memory, args: string, result: string) => Memory;
+        rememberVehicleSearch: (
+          m: Memory,
+          result: string,
+          args: string,
+        ) => Memory;
+        selectRememberedVehicle: (m: Memory, text: string) => Memory;
+        renderRememberedVehicle: (m: Memory) => string;
+        readQuoteVehicleMemory: (state: unknown) => Memory | undefined;
+      };
+    const args = JSON.stringify({
+      vehicleType: 'auto',
+      codia: 120236,
+      manufactureYear: 2009,
+      postalCode: 2000,
+    });
+
+    it('keeps the year, postal code and outcome of a quote', () => {
+      const next = priv().rememberQuote(
+        memory,
+        args,
+        JSON.stringify({ coberturas: [{ codigo: 'A' }, { codigo: 'B1' }] }),
+      );
+      expect(next.quoted).toEqual({
+        manufactureYear: 2009,
+        postalCode: 2000,
+        outcome: 'cotizada',
+        coverages: ['A', 'B1'],
+      });
+    });
+
+    it('records an incomplete quote and a failed one, but not a rejected year', () => {
+      expect(
+        priv().rememberQuote(
+          memory,
+          args,
+          JSON.stringify({
+            cotizacionIncompleta: true,
+            coberturas: [{ codigo: 'A' }],
+          }),
+        ).quoted?.outcome,
+      ).toBe('incompleta');
+      expect(
+        priv().rememberQuote(
+          memory,
+          args,
+          JSON.stringify({ error: 'timeout', officeNotified: true }),
+        ).quoted?.outcome,
+      ).toBe('sin_respuesta');
+      expect(
+        priv().rememberQuote(
+          memory,
+          args,
+          JSON.stringify({ error: 'Modelo y año inválidos', status: 400 }),
+        ).quoted,
+      ).toBeUndefined();
+    });
+
+    it('keeps settled facts when the same vehicle is searched again, drops them for another', () => {
+      const settled: Memory = {
+        ...memory,
+        hasGnc: true,
+        quoted: {
+          manufactureYear: 2009,
+          postalCode: 2000,
+          outcome: 'incompleta',
+          coverages: ['A'],
+        },
+      };
+      const same = priv().rememberVehicleSearch(
+        settled,
+        JSON.stringify({
+          brand: { id: 12, name: 'CHEVROLET' },
+          versions: [astra],
+        }),
+        args,
+      );
+      expect(same.quoted?.postalCode).toBe(2000);
+      expect(same.hasGnc).toBe(true);
+
+      const other = priv().selectRememberedVehicle(settled, '1');
+      expect(other.selected?.codia).toBe(120239);
+      expect(other.quoted).toBeUndefined();
+      expect(other.hasGnc).toBeUndefined();
+    });
+
+    it('tells the model the facts it may no longer see, and survives a restart', () => {
+      const settled: Memory = {
+        ...memory,
+        hasGnc: true,
+        quoted: {
+          manufactureYear: 2009,
+          postalCode: 2000,
+          outcome: 'incompleta',
+          coverages: ['A'],
+        },
+      };
+      const restored = priv().readQuoteVehicleMemory({
+        step: 'LLM_COTIZACION',
+        data: { quoteVehicle: JSON.parse(JSON.stringify(settled)) as unknown },
+      });
+      expect(restored).toEqual(settled);
+
+      const prompt = priv().renderRememberedVehicle(settled);
+      expect(prompt).toContain('año 2009');
+      expect(prompt).toContain('código postal 2000');
+      expect(prompt).toContain('GNC: sí tiene');
+      expect(prompt).toContain('Nunca digas que no hay cobertura con robo');
     });
   });
 

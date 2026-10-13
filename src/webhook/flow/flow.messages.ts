@@ -7,6 +7,7 @@ import type {
   SiniestroSummary,
 } from '../../api/api.types';
 import type { ListRow, OutgoingMessage, ReplyButton } from './flow.types';
+import { fold } from '../text';
 
 /**
  * Deterministic copy and menu builders. Every message the bot sends in a
@@ -557,6 +558,36 @@ const GNC_BUTTONS: ReplyButton[] = [
   { id: 'gnc_si', title: 'Sí, tiene GNC' },
   { id: 'gnc_no', title: 'No tiene GNC' },
 ];
+
+/**
+ * Whether a client message says the car has GNC: the button they tapped (its
+ * label arrives as the text), a bare yes/no right after the bot asked, or an
+ * explicit mention ("tiene GNC", "sin GNC"). Undefined when it says nothing —
+ * the quote must not go out on a guess (the model used to assume "no").
+ */
+export function gncAnswer(
+  text: string,
+  previousBotText?: string,
+): boolean | undefined {
+  const label = text.trim().toLowerCase();
+  const button = GNC_BUTTONS.find((b) => b.title.toLowerCase() === label);
+  if (button) return button.id === 'gnc_si';
+  const t = fold(text);
+  if (/\bgnc\b/.test(t) && !/\bno se\b/.test(t)) {
+    if (
+      /\b(?:sin|no tiene|no usa|no lleva|no es a|no)\s+(?:el\s+)?gnc\b/.test(t)
+    )
+      return false;
+    if (/\b(?:tiene|con|usa|lleva|a)\s+(?:el\s+)?gnc\b/.test(t)) return true;
+  }
+  // The stored question carries its button labels after it, so it is not
+  // necessarily the end of the message.
+  if (previousBotText && /\bgnc\s*\?/.test(fold(previousBotText))) {
+    if (/^(?:si|sip|claro|correcto|afirmativo|tiene)\b/.test(t)) return true;
+    if (/^(?:no|nop|nope|negativo)\b/.test(t)) return false;
+  }
+  return undefined;
+}
 
 /** A numbered list means the message is still offering options — not a yes/no. */
 const NUMBERED_LIST_RE = /^\s*\d+[.)]\s/m;

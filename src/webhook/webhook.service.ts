@@ -20,6 +20,7 @@ import {
 } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
 import {
+  gncAnswer,
   gncButtons,
   pluralizeClaimPhotoReply,
   toWhatsAppMarkdown,
@@ -49,12 +50,26 @@ interface QuoteVehicleCandidate {
   description: string;
 }
 
+/** What the last quote_vehicle call for the selected vehicle asked and got. */
+interface QuotedFacts {
+  manufactureYear: number;
+  postalCode: number;
+  /** cotizada = priced; incompleta = Triunfo did not value it (RC only);
+   * sin_respuesta = the quote service failed. Both failures alert the office. */
+  outcome: 'cotizada' | 'incompleta' | 'sin_respuesta';
+  coverages: string[];
+}
+
 interface QuoteVehicleMemory {
   vehicleType: 'auto' | 'moto';
   brandId?: number;
   brandName?: string;
   candidates: QuoteVehicleCandidate[];
   selected?: QuoteVehicleCandidate;
+  // The model only sees the last 10 messages: on a long chat the year, postal
+  // code and GNC answer scroll out and it asked for them again (#87, 12/10).
+  hasGnc?: boolean;
+  quoted?: QuotedFacts;
 }
 
 const QUOTE_VEHICLE_MEMORY = 'quoteVehicle';
@@ -1187,6 +1202,13 @@ export class WebhookService {
     const selected = candidates.find(
       (candidate) => candidate.codia === value.selected?.codia,
     );
+    const quoted = value.quoted;
+    const validQuoted =
+      !!quoted &&
+      Number.isInteger(quoted.manufactureYear) &&
+      Number.isInteger(quoted.postalCode) &&
+      ['cotizada', 'incompleta', 'sin_respuesta'].includes(quoted.outcome) &&
+      Array.isArray(quoted.coverages);
     return {
       vehicleType: value.vehicleType,
       ...(Number.isInteger(value.brandId) && Number(value.brandId) > 0
@@ -1197,7 +1219,77 @@ export class WebhookService {
         : {}),
       candidates,
       ...(selected ? { selected } : {}),
+      ...(selected && typeof value.hasGnc === 'boolean'
+        ? { hasGnc: value.hasGnc }
+        : {}),
+      ...(selected && validQuoted
+        ? {
+            quoted: {
+              ...quoted,
+              coverages: quoted.coverages
+                .filter((c): c is string => typeof c === 'string')
+                .slice(0, 20),
+            },
+          }
+        : {}),
     };
+  }
+
+  /** The client's last answer about GNC in this quote, if any. */
+  private gncFromChat(
+    messages: BotConversation['messages'],
+    text: string,
+  ): boolean | undefined {
+    let answer: boolean | undefined;
+    let previousBot: string | undefined;
+    for (const message of messages) {
+      if (message.role !== 'user') {
+        previousBot = message.content;
+        continue;
+      }
+      answer = gncAnswer(message.content, previousBot) ?? answer;
+    }
+    return gncAnswer(text, previousBot) ?? answer;
+  }
+
+  /** Keeps what a quote_vehicle call asked and how it went, for later turns. */
+  private rememberQuote(
+    memory: QuoteVehicleMemory | undefined,
+    rawArgs: string,
+    rawResult: string,
+  ): QuoteVehicleMemory | undefined {
+    if (!memory?.selected) return memory;
+    try {
+      const args = JSON.parse(rawArgs) as Record<string, unknown>;
+      const result = JSON.parse(rawResult) as {
+        error?: unknown;
+        officeNotified?: unknown;
+        cotizacionIncompleta?: unknown;
+        coberturas?: Array<{ codigo?: unknown }>;
+      };
+      const manufactureYear = Number(args.manufactureYear);
+      const postalCode = Number(args.postalCode);
+      if (!Number.isInteger(manufactureYear) || !Number.isInteger(postalCode))
+        return memory;
+      // A rejected year or model is the client's data to fix, not a quote.
+      if (result.error !== undefined && result.officeNotified !== true)
+        return memory;
+      const outcome: QuotedFacts['outcome'] =
+        result.error !== undefined
+          ? 'sin_respuesta'
+          : result.cotizacionIncompleta === true
+            ? 'incompleta'
+            : 'cotizada';
+      const coverages = (result.coberturas ?? [])
+        .map((c) => c.codigo)
+        .filter((c): c is string => typeof c === 'string');
+      return {
+        ...memory,
+        quoted: { manufactureYear, postalCode, outcome, coverages },
+      };
+    } catch {
+      return memory;
+    }
   }
 
   /** Fail-closed gate used immediately before automated outbound messages. */
@@ -1250,7 +1342,7 @@ export class WebhookService {
         lineMatches.length === 1
           ? lineMatches[0]
           : memory.candidates[position - 1];
-      if (selected) return { ...memory, selected };
+      if (selected) return this.withSelected(memory, selected);
     }
 
     const matches = memory.candidates.filter((candidate) => {
@@ -1259,11 +1351,23 @@ export class WebhookService {
         .trim();
       return description.length > 0 && normalized.includes(description);
     });
-    if (matches.length === 1) return { ...memory, selected: matches[0] };
+    if (matches.length === 1) return this.withSelected(memory, matches[0]);
     if (memory.candidates.length === 1) {
-      return { ...memory, selected: memory.candidates[0] };
+      return this.withSelected(memory, memory.candidates[0]);
     }
     return memory;
+  }
+
+  /** Another version drops what was settled for the previous one. */
+  private withSelected(
+    memory: QuoteVehicleMemory,
+    selected: QuoteVehicleCandidate,
+  ): QuoteVehicleMemory {
+    if (!memory.selected || memory.selected.codia === selected.codia)
+      return { ...memory, selected };
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { hasGnc, quoted, ...rest } = memory;
+    return { ...rest, selected };
   }
 
   private renderRememberedVehicle(
@@ -1275,7 +1379,35 @@ export class WebhookService {
     return (
       '\n\n## VEHÍCULO VERIFICADO POR EL SISTEMA\n' +
       `La persona ya eligió *${brand}${selected.description}*. Su CODIA verificado es \`${selected.codia}\`. ` +
-      'Usá exactamente ese CODIA en quote_vehicle; nunca envíes 0 ni inventes otro código. No vuelvas a pedir la versión.'
+      'Usá exactamente ese CODIA en quote_vehicle; nunca envíes 0 ni inventes otro código. No vuelvas a pedir la versión.' +
+      this.renderSettledFacts(memory)
+    );
+  }
+
+  /**
+   * Year, postal code, GNC and how the last quote went, written into the
+   * prompt: the messages that carried them may be out of the model's window.
+   */
+  private renderSettledFacts(memory: QuoteVehicleMemory): string {
+    const quoted = memory.quoted;
+    const facts = [
+      quoted ? `año ${quoted.manufactureYear}` : null,
+      quoted ? `código postal ${quoted.postalCode}` : null,
+      memory.hasGnc === undefined
+        ? null
+        : `GNC: ${memory.hasGnc ? 'sí tiene' : 'no tiene'}`,
+    ].filter(Boolean);
+    if (facts.length === 0) return '';
+    const outcome = !quoted
+      ? ''
+      : quoted.outcome === 'cotizada'
+        ? ` Ya se cotizó con esos datos: coberturas ${quoted.coverages.join(', ') || 'ninguna'}. Si necesitás los precios y el resultado ya no está en la charla, volvé a llamar quote_vehicle con estos mismos datos, sin preguntarle nada.`
+        : quoted.outcome === 'incompleta'
+          ? ' La última cotización salió incompleta: la compañía no pudo valuar el vehículo y solo cotizó Responsabilidad Civil (A); la oficina ya está avisada y un asesor le manda la cotización completa. Nunca digas que no hay cobertura con robo u otras. Si la persona pide reintentar, llamá quote_vehicle con estos mismos datos.'
+          : ' La última vez el cotizador no respondió y la oficina ya está avisada. Si la persona pide reintentar, llamá quote_vehicle con estos mismos datos.';
+    return (
+      `\nDatos ya confirmados en esta cotización (no los vuelvas a pedir ni a confirmar): ${facts.join(', ')}.` +
+      outcome
     );
   }
 
@@ -1323,6 +1455,10 @@ export class WebhookService {
         (candidate) => candidate.codia === previous?.selected?.codia,
       );
       const selected = candidates.length === 1 ? candidates[0] : priorSelected;
+      // Searching the same vehicle again (it happens on long chats) keeps the
+      // year, postal code and GNC already settled for it.
+      const sameVehicle =
+        !!selected && selected.codia === previous?.selected?.codia;
       return {
         vehicleType,
         ...(Number.isInteger(Number(result.brand?.id)) &&
@@ -1334,6 +1470,10 @@ export class WebhookService {
           : {}),
         candidates,
         ...(selected ? { selected } : {}),
+        ...(sameVehicle && previous?.hasGnc !== undefined
+          ? { hasGnc: previous.hasGnc }
+          : {}),
+        ...(sameVehicle && previous?.quoted ? { quoted: previous.quoted } : {}),
       };
     } catch {
       return previous;
@@ -1384,6 +1524,16 @@ export class WebhookService {
         .reverse()
         .find((message) => message.role !== 'user')?.content,
     );
+    // From what the client said (or what was kept from it), never from the
+    // model: asked to pass it, the model filled in "no" without asking.
+    const knownGnc =
+      this.gncFromChat(conversation.messages, text) ??
+      quoteVehicleMemory?.hasGnc;
+    const withGnc = (memory: QuoteVehicleMemory | undefined) =>
+      memory?.selected && knownGnc !== undefined
+        ? { ...memory, hasGnc: knownGnc }
+        : memory;
+    quoteVehicleMemory = withGnc(quoteVehicleMemory);
     const baseSystem =
       handoff === 'cotizacion'
         ? buildCotizacionPrompt({
@@ -1490,6 +1640,7 @@ export class WebhookService {
                 toolCall.function.arguments,
                 conversation.conversationId,
                 quoteVehicleMemory,
+                knownGnc,
               );
             }
             // One request per turn even if the model repeats the call.
@@ -1514,11 +1665,20 @@ export class WebhookService {
             content: results[i],
           });
           if (toolCall.function.name === 'find_vehicle') {
-            quoteVehicleMemory = this.rememberVehicleSearch(
+            quoteVehicleMemory = withGnc(
+              this.rememberVehicleSearch(
+                quoteVehicleMemory,
+                results[i],
+                toolCall.function.arguments,
+                vehicleType,
+              ),
+            );
+          }
+          if (toolCall.function.name === 'quote_vehicle') {
+            quoteVehicleMemory = this.rememberQuote(
               quoteVehicleMemory,
-              results[i],
               toolCall.function.arguments,
-              vehicleType,
+              results[i],
             );
           }
         });
@@ -1739,6 +1899,7 @@ export class WebhookService {
     rawArgs: string,
     conversationId: number,
     rememberedVehicle?: QuoteVehicleMemory,
+    knownGnc?: boolean,
   ): Promise<string> {
     let args: Record<string, unknown>;
     try {
@@ -1836,6 +1997,14 @@ export class WebhookService {
             this.logger.warn(
               `quote_vehicle recibió CODIA inválido (${String(args.codia)}); uso el CODIA verificado ${codiaNum}`,
             );
+          }
+          // GNC is the one question a car quote can't skip (the advisor needs
+          // it). Left to the prompt alone the model sometimes quoted without it.
+          if (vehicleType === 'auto' && knownGnc === undefined) {
+            return JSON.stringify({
+              error:
+                'No se cotizó: falta saber si el auto tiene GNC. Preguntale "¿Tu auto tiene GNC?" sola, al final de tu mensaje, y cotizá cuando responda.',
+            });
           }
           const brandFromCodia = Math.floor(codiaNum / 10000);
           let quote: Awaited<ReturnType<ApiService['quoteVehicle']>>;

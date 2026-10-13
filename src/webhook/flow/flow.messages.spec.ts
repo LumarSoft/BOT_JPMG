@@ -2,6 +2,7 @@ import type { EstadoCuentaPoliza, PolizaSummary } from '../../api/api.types';
 import {
   displayName,
   formatEstadoCuenta,
+  gncAnswer,
   gncButtons,
   leadMenu,
   polizaPicker,
@@ -164,4 +165,40 @@ describe('gncButtons', () => {
       ),
     ).toBeNull();
   });
+});
+
+describe('gncAnswer', () => {
+  it.each([
+    ['Sí, tiene GNC', true],
+    ['No tiene GNC', false],
+    ['no tiene gnc', false],
+    ['Astra 2009, tiene GNC', true],
+    ['es a gnc', true],
+    ['corsa 2010 sin gnc, cp 2000', false],
+    ['¿qué es el GNC?', undefined],
+    ['no sé si tiene GNC', undefined],
+    ['quiero saber si conviene el gnc', undefined],
+    ['2', undefined],
+    ['si', undefined],
+  ])('reads %s on its own', (text, expected) =>
+    expect(gncAnswer(text)).toBe(expected),
+  );
+
+  it.each([
+    ['si', true],
+    ['Sí claro', true],
+    ['no', false],
+    ['nop', false],
+    ['2000', undefined],
+  ])('reads %s right after the bot asked', (text, expected) =>
+    expect(gncAnswer(text, 'Perfecto. ¿Tu auto tiene GNC?')).toBe(expected),
+  );
+
+  it('reads a typed answer to the question as it is stored, with its buttons', () =>
+    expect(
+      gncAnswer('no', '¿Tu auto tiene GNC?\n[Sí, tiene GNC] [No tiene GNC]'),
+    ).toBe(false));
+
+  it('ignores a yes to a question that was not about GNC', () =>
+    expect(gncAnswer('si', '¿El código postal es 2000?')).toBeUndefined());
 });
