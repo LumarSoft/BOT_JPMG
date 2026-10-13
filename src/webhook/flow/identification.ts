@@ -50,8 +50,41 @@ const units: Record<string, number> = {
   novecientos: 900,
 };
 
-/** Reads numeric DNI, spoken groups/digits and Argentine plates without
- * treating the surrounding sentence ("mi DNI es…") as a plate. */
+const CUIT_WEIGHTS = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+
+/** An 11-digit CUIT/CUIL whose check digit is right — companies in the cartera
+ * are stored by CUIT, and a valid check digit keeps a phone number out. */
+export function isCuit(digits: string): boolean {
+  if (!/^(?:20|23|24|27|30|33|34)\d{9}$/.test(digits)) return false;
+  const sum = CUIT_WEIGHTS.reduce(
+    (acc, w, i) => acc + w * Number(digits[i]),
+    0,
+  );
+  const check = 11 - (sum % 11);
+  const expected = check === 11 ? 0 : check === 10 ? 9 : check;
+  return expected === Number(digits[10]);
+}
+
+const isDocument = (s: string) => /^\d{7,8}$/.test(s) || isCuit(s);
+
+/** Picks the one document a message gives. A person's CUIL next to their own
+ * DNI ("DNI 37334584, CUIL 20-37334584-9") is the same document, not two. */
+function singleDocument(documents: string[]): string | null {
+  const distinct = [...new Set(documents)];
+  if (distinct.length === 1) return distinct[0];
+  const dnis = distinct.filter((d) => d.length < 11);
+  if (
+    dnis.length === 1 &&
+    distinct.every(
+      (d) => d === dnis[0] || Number(d.slice(2, 10)) === Number(dnis[0]),
+    )
+  )
+    return dnis[0];
+  return null;
+}
+
+/** Reads numeric DNI or CUIT, spoken groups/digits and Argentine plates
+ * without treating the surrounding sentence ("mi DNI es…") as a plate. */
 export function identificationFromText(
   text: string,
 ): { dni: string } | { plate: string } | null {
@@ -61,11 +94,11 @@ export function identificationFromText(
     .toLowerCase();
   const numeric: string[] =
     folded.match(/(?<![\p{L}\d])\d(?:[\d .-]*\d)?(?![\p{L}\d])/gu) ?? [];
-  const dnis = numeric
-    .map((s) => s.replace(/\D/g, ''))
-    .filter((s) => /^\d{7,8}$/.test(s));
-  if (dnis.length === 1) return { dni: dnis[0] };
-  if (dnis.length > 1) return null;
+  const documents = numeric.map((s) => s.replace(/\D/g, '')).filter(isDocument);
+  if (documents.length) {
+    const dni = singleDocument(documents);
+    return dni ? { dni } : null;
+  }
 
   const plates: string[] =
     folded.match(
@@ -133,6 +166,7 @@ export function identificationFromText(
       }
       return digits;
     })
-    .filter((s) => /^\d{7,8}$/.test(s));
-  return candidates.length === 1 ? { dni: candidates[0] } : null;
+    .filter(isDocument);
+  const dni = candidates.length ? singleDocument(candidates) : null;
+  return dni ? { dni } : null;
 }

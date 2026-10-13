@@ -11,11 +11,15 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'identify_client',
       description:
-        'Identifica al cliente por DNI del titular o patente del vehículo y vincula la conversación. Obligatorio antes de consultar pólizas, estado de cuenta, documentos o siniestros.',
+        'Identifica al cliente por DNI (o CUIT) del titular o patente del vehículo y vincula la conversación. Obligatorio antes de consultar pólizas, estado de cuenta, documentos o siniestros.',
       parameters: {
         type: 'object',
         properties: {
-          dni: { type: 'string', description: 'DNI del titular, solo números' },
+          dni: {
+            type: 'string',
+            description:
+              'DNI del titular, o CUIT/CUIL si es una empresa; solo números',
+          },
           plate: {
             type: 'string',
             description: 'Patente del vehículo (ej: AB123CD)',

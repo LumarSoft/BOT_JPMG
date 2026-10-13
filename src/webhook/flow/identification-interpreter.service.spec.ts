@@ -72,6 +72,7 @@ describe('IdentificationInterpreter', () => {
   it.each([
     { ...valid, dni: '123' },
     { ...valid, dni: '27345679' },
+    { ...valid, dni: '30123456782', evidence: '30123456782' },
     { ...valid, evidence: 'invented' },
     { ...valid, plate: 'AB123CD' },
     { ...valid, action: 'invented' },
@@ -79,6 +80,13 @@ describe('IdentificationInterpreter', () => {
   ])('rejects invalid or ungrounded results %#', async (output) => {
     const { service } = setup(output);
     await expect(service.interpret(input)).rejects.toThrow();
+  });
+  it('accepts a company CUIT grounded in the message', async () => {
+    const output = { ...valid, dni: '30123456781', evidence: '30-12345678-1' };
+    const { service } = setup(output);
+    await expect(
+      service.interpret({ ...input, text: 'Es empresa, CUIT 30-12345678-1' }),
+    ).resolves.toEqual(output);
   });
   it('accepts clarification without looking up a client', async () => {
     const output = {

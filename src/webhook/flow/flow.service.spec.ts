@@ -784,6 +784,17 @@ describe('FlowService', () => {
       expect(res.messages.some((m) => m.kind === 'list')).toBe(true);
     });
 
+    it('identifies a company by its CUIT', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: '30-12345678-1' });
+
+      expect(api.identifyClient).toHaveBeenCalledWith(1, {
+        dni: '30123456781',
+      });
+      expect(res.state?.step).toBe('CLIENT_MENU');
+    });
+
     it('asks again when the DNI is not found', async () => {
       api.identifyClient.mockRejectedValueOnce(
         Object.assign(new Error('Not found'), {

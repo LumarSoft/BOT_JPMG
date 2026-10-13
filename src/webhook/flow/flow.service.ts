@@ -942,7 +942,7 @@ export class FlowService {
         messages: [
           {
             kind: 'text',
-            body: '¡Genial! Para ayudarte necesito identificarte. Pasame el *DNI del titular* o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
+            body: '¡Genial! Para ayudarte necesito identificarte. Pasame el *DNI del titular* (o el *CUIT* si es una empresa) o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
           },
         ],
       };
@@ -1338,7 +1338,7 @@ export class FlowService {
         messages: [
           {
             kind: 'text',
-            body: 'Para acceder a tus datos necesito identificarte. Pasame el *DNI del titular* o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
+            body: 'Para acceder a tus datos necesito identificarte. Pasame el *DNI del titular* (o el *CUIT* si es una empresa) o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
           },
         ],
       };
@@ -1358,7 +1358,7 @@ export class FlowService {
         messages: [
           {
             kind: 'text',
-            body: 'Pasame el *DNI del titular* o la *patente* para identificarte.',
+            body: 'Pasame el *DNI del titular* (o el *CUIT* si es una empresa) o la *patente* para identificarte.',
           },
         ],
       };
@@ -1400,7 +1400,7 @@ export class FlowService {
                 kind: 'text',
                 body:
                   meaning.clarification ??
-                  'Para continuar, decime el DNI del titular o la patente.',
+                  'Para continuar, decime el DNI del titular (o el CUIT si es una empresa) o la patente.',
               },
             ],
           };
@@ -1422,7 +1422,7 @@ export class FlowService {
       return this.retry(key, state, [
         {
           kind: 'text',
-          body: 'No pude reconocer el documento o la patente. Decime el DNI completo (7 u 8 números) o la patente, por ejemplo *AB123CD*.',
+          body: 'No pude reconocer el documento o la patente. Decime el DNI completo (7 u 8 números), el CUIT si es una empresa (11 números) o la patente, por ejemplo *AB123CD*.',
         },
       ]);
     }
@@ -1437,7 +1437,7 @@ export class FlowService {
         return this.retry(key, state, [
           {
             kind: 'text',
-            body: 'No encontré ningún cliente con ese dato. Verificá el DNI o la patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.',
+            body: 'No encontré ningún cliente con ese dato. Verificá el DNI, CUIT o patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.',
           },
         ]);
       }
