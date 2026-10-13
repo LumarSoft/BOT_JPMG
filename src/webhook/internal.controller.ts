@@ -1,7 +1,23 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { InternalAuthGuard } from './internal-auth.guard';
 import { MetaService } from './meta.service';
 import { FlowService } from './flow/flow.service';
+
+/** The parts of a multer upload this controller reads (memory storage). */
+interface UploadedMedia {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+}
 
 @UseGuards(InternalAuthGuard)
 @Controller('internal')
@@ -20,6 +36,41 @@ export class InternalController {
       this.meta.normalizePhone(body.to),
       body.text,
       body.phoneNumberId,
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Called by john-api when an advisor sends a photo or PDF from the panel.
+   * The API already validated type and size; 16 MB is its cap for PDFs.
+   */
+  @Post('send-media')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 16 * 1024 * 1024, files: 1 },
+    }),
+  )
+  async sendMedia(
+    @UploadedFile() file: UploadedMedia | undefined,
+    @Body()
+    body: {
+      to: string;
+      phoneNumberId: string;
+      caption?: string;
+      filename?: string;
+    },
+  ) {
+    if (!file) throw new BadRequestException('file is required');
+    await this.meta.sendMedia(
+      this.meta.normalizePhone(body.to),
+      body.phoneNumberId,
+      {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        // The text field keeps accents; the multipart filename arrives as latin1.
+        filename: body.filename || file.originalname,
+      },
+      body.caption,
     );
     return { ok: true };
   }

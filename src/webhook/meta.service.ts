@@ -178,38 +178,91 @@ export class MetaService {
       );
   }
 
+  /**
+   * Sends a photo (JPEG/PNG) or document an advisor attached in the panel:
+   * uploads the bytes to Meta, then sends the message with the media id.
+   * Unlike the bot's own replies this throws, so the panel never shows a file
+   * as sent when WhatsApp rejected it.
+   */
+  async sendMedia(
+    to: string,
+    phoneNumberId: string,
+    file: { buffer: Buffer; mimeType: string; filename: string },
+    caption?: string,
+  ): Promise<void> {
+    try {
+      const token = await this.resolveToken(phoneNumberId);
+      const form = new FormData();
+      form.append('messaging_product', 'whatsapp');
+      form.append('type', file.mimeType);
+      form.append(
+        'file',
+        new Blob([new Uint8Array(file.buffer)], { type: file.mimeType }),
+        file.filename,
+      );
+      const { data: uploaded } = await axios.post<{ id: string }>(
+        `https://graph.facebook.com/v25.0/${phoneNumberId}/media`,
+        form,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      const kind = file.mimeType.startsWith('image/') ? 'image' : 'document';
+      await this.post(phoneNumberId, {
+        to,
+        type: kind,
+        [kind]: {
+          id: uploaded.id,
+          ...(kind === 'document' ? { filename: file.filename } : {}),
+          ...(caption ? { caption } : {}),
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `❌ Error Meta enviando ${file.filename}: ${JSON.stringify(axios.isAxiosError(error) ? error.response?.data : String(error))}`,
+      );
+      throw error;
+    }
+  }
+
   /** Posts a message payload to the Meta Cloud API, swallowing errors (logged). */
   private async send(
     phoneNumberId: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    const url = `https://graph.facebook.com/v25.0/${phoneNumberId}/messages`;
-
     try {
-      const token = await this.resolveToken(phoneNumberId);
-      const { data } = await axios.post<{ messages?: { id: string }[] }>(
-        url,
-        { messaging_product: 'whatsapp', ...payload },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-      // On a Coexistence number Meta may echo our own API sends back as
-      // `smb_message_echoes`. Remembering the id lets the webhook tell "an
-      // employee is answering" apart from "this is my own reply bouncing back"
-      // — without it the bot would pause itself in every conversation.
-      this.sent.remember(data?.messages?.[0]?.id);
-      this.logger.log(
-        `📤 Para: ${payload.to as string} → ${outboundContentForLog(payload)}`,
-      );
+      await this.post(phoneNumberId, payload);
     } catch (error) {
       this.logger.error(
         `❌ Error Meta: ${JSON.stringify(axios.isAxiosError(error) ? error.response?.data : error)}`,
       );
     }
+  }
+
+  /** Posts a message payload to the Meta Cloud API; throws when Meta rejects it. */
+  private async post(
+    phoneNumberId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const url = `https://graph.facebook.com/v25.0/${phoneNumberId}/messages`;
+    const token = await this.resolveToken(phoneNumberId);
+    const { data } = await axios.post<{ messages?: { id: string }[] }>(
+      url,
+      { messaging_product: 'whatsapp', ...payload },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    // On a Coexistence number Meta may echo our own API sends back as
+    // `smb_message_echoes`. Remembering the id lets the webhook tell "an
+    // employee is answering" apart from "this is my own reply bouncing back"
+    // — without it the bot would pause itself in every conversation.
+    this.sent.remember(data?.messages?.[0]?.id);
+    this.logger.log(
+      `📤 Para: ${payload.to as string} → ${outboundContentForLog(payload)}`,
+    );
   }
 
   /**
