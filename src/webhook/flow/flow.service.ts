@@ -140,6 +140,14 @@ const CUPON_RE = /\bcupon(?:es|era|eras)?\b/;
 /** Policy papers asked for together with the coupons. Folded text. */
 const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
 
+/** Something in a request shaped like a DNI/CUIT (7+ digits, dots or dashes
+ * allowed) or a plate — only then is it worth asking the model to read it. */
+const MAYBE_IDENTIFICATION_RE =
+  /\d(?:[ .-]?\d){6,}|\b[a-z]{2}[ -]?\d{3}[ -]?[a-z]{2}\b|\b[a-z]{3}[ -]?\d{3}\b|\b[a-z]\d{3}[a-z]{3}\b/i;
+
+const NOT_FOUND_TEXT =
+  'No encontré ningún cliente con ese dato. Verificá el DNI, CUIT o patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.';
+
 /**
  * Steps where the customer is talking to the bot and may ask it to pass
  * something on to a person ("¿le podés decir a Milagros…?"). Guided steps
@@ -796,7 +804,7 @@ export class FlowService {
       return result.handoff ? result : this.withOpener(opener, result);
     }
     if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
-      return this.guard(ctx, key, 'baja_poliza');
+      return this.guard(ctx, key, 'baja_poliza', {}, input.text);
     if (!sel && ADVISOR_RE.test(fold(input.text).trim()))
       return this.withOpener(
         opener,
@@ -967,7 +975,7 @@ export class FlowService {
         fold(input.text),
       )
     )
-      return this.guard(ctx, key, 'baja_poliza');
+      return this.guard(ctx, key, 'baja_poliza', {}, input.text);
 
     // "Asesor" is what the bot itself tells people to write; here it used to
     // reach the FAQ model, which answered "escribí menú y elegí Cotización".
@@ -1103,15 +1111,19 @@ export class FlowService {
         const action: ClientAction = CUPON_RE.test(t) ? 'cupones' : intent;
         return this.withOpener(
           opener,
-          await this.guardAsClient(ctx, key, action, {
-            withDocs: DOCS_TOO_RE.test(t),
-          }),
+          await this.guardAsClient(
+            ctx,
+            key,
+            action,
+            { withDocs: DOCS_TOO_RE.test(t) },
+            input.text,
+          ),
         );
       }
       case 'baja':
         return this.withOpener(
           opener,
-          await this.guardAsClient(ctx, key, 'baja_poliza'),
+          await this.guardAsClient(ctx, key, 'baja_poliza', {}, input.text),
         );
       case 'grua':
         return this.withOpener(opener, {
@@ -1168,6 +1180,7 @@ export class FlowService {
     key: string,
     action: ClientAction,
     opts: ActionOptions = {},
+    said?: string,
   ): Promise<FlowResult> {
     if (!ctx.client) {
       const current = this.load(key)?.state;
@@ -1178,7 +1191,7 @@ export class FlowService {
         'client',
       );
     }
-    return this.guard(ctx, key, action, opts);
+    return this.guard(ctx, key, action, opts, said);
   }
 
   /**
@@ -1247,15 +1260,19 @@ export class FlowService {
       case OPT.cotizacion:
         return this.enterCotizar(input, ctx, key);
       case OPT.pagos:
-        return this.guard(ctx, key, 'pagos');
+        return this.guard(ctx, key, 'pagos', {}, input.text);
       case OPT.bajaPoliza:
-        return this.guard(ctx, key, 'baja_poliza');
+        return this.guard(ctx, key, 'baja_poliza', {}, input.text);
       case OPT.documentos:
-        return this.guard(ctx, key, 'documentos');
+        return this.guard(ctx, key, 'documentos', {}, input.text);
       case OPT.cupones:
-        return this.guard(ctx, key, 'cupones', {
-          withDocs: DOCS_TOO_RE.test(fold(input.text)),
-        });
+        return this.guard(
+          ctx,
+          key,
+          'cupones',
+          { withDocs: DOCS_TOO_RE.test(fold(input.text)) },
+          input.text,
+        );
       case OPT.grua:
         return {
           messages: [{ kind: 'text', body: this.gruaText() }, clientMenu()],
@@ -1287,7 +1304,7 @@ export class FlowService {
     key: string,
   ): FlowResult | Promise<FlowResult> {
     if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
-      return this.guard(ctx, key, 'baja_poliza');
+      return this.guard(ctx, key, 'baja_poliza', {}, input.text);
     const opt = input.selectionId ?? this.matchLeadIntent(input.text);
 
     switch (opt) {
@@ -1322,13 +1339,37 @@ export class FlowService {
 
   // ─── Identification ───────────────────────────────────────
 
-  /** Routes a client action: asks to identify first if needed, else runs it. */
+  /**
+   * Routes a client action: asks to identify first if needed, else runs it.
+   * `said` is the message that asked for it — when it already carries the DNI,
+   * CUIT or plate ("quiero dar de baja… dni 40119754") asking again would only
+   * cost a round-trip, and people often don't answer it.
+   */
   private async guard(
     ctx: FlowContext,
     key: string,
     action: ClientAction,
     opts: ActionOptions = {},
+    said?: string,
   ): Promise<FlowResult> {
+    if (!ctx.client && said) {
+      const params = await this.identificationIn(said, action, ctx);
+      if (params) {
+        const result = await this.identifyAndRun(
+          params,
+          action,
+          ctx,
+          key,
+          opts,
+        );
+        if (result) return result;
+        this.setState(key, 'IDENTIFY', {
+          pendingAction: action,
+          ...(opts.withDocs ? { pendingWithDocs: true } : {}),
+        });
+        return { messages: [{ kind: 'text', body: NOT_FOUND_TEXT }] };
+      }
+    }
     if (!ctx.client) {
       this.setState(key, 'IDENTIFY', {
         pendingAction: action,
@@ -1427,20 +1468,32 @@ export class FlowService {
       ]);
     }
 
+    const result = await this.identifyAndRun(params, action, ctx, key, {
+      withDocs: state.data.pendingWithDocs === true,
+    });
+    return (
+      result ?? this.retry(key, state, [{ kind: 'text', body: NOT_FOUND_TEXT }])
+    );
+  }
+
+  /**
+   * Links the conversation to the client and runs the pending action, or
+   * returns null when nobody matches.
+   */
+  private async identifyAndRun(
+    params: { dni: string } | { plate: string },
+    action: ClientAction,
+    ctx: FlowContext,
+    key: string,
+    opts: ActionOptions,
+  ): Promise<FlowResult | null> {
     try {
       await this.api.identifyClient(ctx.conversationId, params);
     } catch (error) {
       // 400 = the API rejected the shape (a DNI/plate of the wrong length, e.g.
       // "no me acuerdo"); for the user that's the same as not finding them.
       const status = axios.isAxiosError(error) ? error.response?.status : 0;
-      if (status === 404 || status === 400) {
-        return this.retry(key, state, [
-          {
-            kind: 'text',
-            body: 'No encontré ningún cliente con ese dato. Verificá el DNI, CUIT o patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.',
-          },
-        ]);
-      }
+      if (status === 404 || status === 400) return null;
       throw error;
     }
 
@@ -1448,10 +1501,40 @@ export class FlowService {
     // link, so the conversation-scoped action calls resolve the client fine.
     return this.prepend(
       '✅ ¡Listo, te identifiqué!',
-      await this.runAction(action, ctx, key, {
-        withDocs: state.data.pendingWithDocs === true,
-      }),
+      await this.runAction(action, ctx, key, opts),
     );
+  }
+
+  /**
+   * The DNI, CUIT or plate a request already carries, read with the same care
+   * as an answer to "pasame tu DNI": the model must quote it from the message,
+   * so a policy or phone number isn't taken for a document. Without a model
+   * only a single unambiguous document counts. Null when there's none.
+   */
+  private async identificationIn(
+    text: string,
+    action: ClientAction,
+    ctx: FlowContext,
+  ): Promise<{ dni: string } | { plate: string } | null> {
+    // Most requests carry nothing that looks like a document: skip the model.
+    if (!MAYBE_IDENTIFICATION_RE.test(text)) return null;
+    if (ctx.llmEnabled === false) return identificationFromText(text);
+    try {
+      const meaning = await this.identification.interpret({
+        text,
+        pendingAction: action,
+        history: ctx.history,
+        phoneNumberId: ctx.phoneNumberId ?? '',
+      });
+      if (meaning.clarification) return null;
+      return meaning.dni
+        ? { dni: meaning.dni }
+        : meaning.plate
+          ? { plate: meaning.plate }
+          : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Runs a client action assuming the conversation already has a client. */
@@ -1733,9 +1816,10 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const opt = input.selectionId ?? this.matchSiniestroIntent(input.text);
-    if (opt === OPT.sinNueva) return this.guard(ctx, key, 'siniestro_nueva');
+    if (opt === OPT.sinNueva)
+      return this.guard(ctx, key, 'siniestro_nueva', {}, input.text);
     if (opt === OPT.sinConsultar)
-      return this.guard(ctx, key, 'siniestro_consultar');
+      return this.guard(ctx, key, 'siniestro_consultar', {}, input.text);
     return { messages: [], handoff: 'faq' };
   }
 
@@ -3071,7 +3155,7 @@ export class FlowService {
     if (step !== 'LLM_COTIZACION' && step !== 'LLM_FAQ') return null;
 
     if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
-      return this.guard(ctx, key, 'baja_poliza');
+      return this.guard(ctx, key, 'baja_poliza', {}, input.text);
     const intent = this.matchGlobalIntent(input.text, step);
     if (!intent) return null;
     // "cotizar" is the cotización flow itself — not a topic change when we're

@@ -304,6 +304,50 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('CLIENT_MENU');
     });
 
+    it('uses the DNI the request already carries instead of asking for it', async () => {
+      const result = await send({
+        text: 'Hola quisiera dar de baja el seguro de la bicicleta rodado 29 que está a mi nombre Ana Gómez dni 27345678',
+      });
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
+      expect(stored?.step).toBe('BAJA_POLIZA');
+      expect(JSON.stringify(result.messages)).toContain('te identifiqué');
+      expect(JSON.stringify(result.messages)).not.toContain('Pasame el *DNI');
+    });
+
+    it('says so when the DNI in the request matches nobody', async () => {
+      api.identifyClient.mockRejectedValueOnce(
+        Object.assign(new Error('Not found'), {
+          isAxiosError: true,
+          response: { status: 404 },
+        }),
+      );
+      const result = await send({
+        text: 'quiero dar de baja mi seguro, dni 27345678',
+      });
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.data.pendingAction).toBe('baja_poliza');
+      expect(JSON.stringify(result.messages)).toContain(
+        'No encontré ningún cliente',
+      );
+    });
+
+    it('asks for the DNI without a model call when the request carries none', async () => {
+      await send({ text: 'quiero dar de baja mi seguro' });
+      expect(interpreter.interpret).not.toHaveBeenCalled();
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('IDENTIFY');
+    });
+
+    it('asks for the DNI when the model cannot read the request', async () => {
+      interpreter.interpret.mockRejectedValueOnce(new Error('timeout'));
+      const result = await send({
+        text: 'quiero dar de baja mi seguro, dni 27345678',
+      });
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(JSON.stringify(result.messages)).toContain('Pasame el *DNI');
+    });
+
     it('leaves a quote when the client asks to cancel a policy', async () => {
       stored = { step: 'LLM_COTIZACION', data: {}, audience: 'lead' };
       const result = await send({ text: 'quiero dar de baja mi seguro' });
@@ -2012,6 +2056,23 @@ describe('FlowService', () => {
       );
       expect(body(res)).toContain('DNI del titular');
       expect(body(res)).not.toContain('ya sos cliente');
+    });
+
+    it('identifies from the first message when it carries the DNI, introducing itself once', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+
+      const res = await send(
+        { text: 'Hola, quiero saber cuánto debo. Mi DNI es 27.345.678' },
+        withModel,
+      );
+
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
+      expect(api.getEstadoCuenta).toHaveBeenCalled();
+      expect((res.messages[0] as { body: string }).body).toContain(
+        'Soy *Nico*',
+      );
+      expect(body(res)).toContain('te identifiqué');
+      expect(body(res)).not.toContain('DNI del titular');
     });
 
     it('lets the FAQ model answer a question instead of asking "¿ya sos cliente?"', async () => {
