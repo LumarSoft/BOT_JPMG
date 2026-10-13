@@ -19,6 +19,10 @@ export interface FocusedPromptOptions {
   catalog?: string;
   /** Vehicle category already selected by the deterministic quote flow. */
   vehicleType?: 'auto' | 'moto';
+  /** Office people customers write to by name (Producer.staffNames). */
+  staffNames?: string[];
+  /** Office person this message named, already alerted by the flow. */
+  staffNotified?: string;
 }
 
 /** A line telling the model who the (already identified) client is, when known.
@@ -57,6 +61,18 @@ function commonStyle(attentionHours?: string | null): string {
 - Horario de atención: ${attentionHoursOf(attentionHours)}.`;
 }
 
+/**
+ * Who works at the office, so the model knows "Mili" is a person there and not
+ * someone it can't reach: it used to answer "no puedo comunicarme con Milagros".
+ */
+function staffContext(names?: string[], notified?: string): string {
+  if (!names?.length) return '';
+  const known = `\nEn la oficina (administración) atienden personas a las que los clientes a veces les escriben por nombre: ${names.join(', ')}. Vos sos el asistente, no ellas: no te hagas pasar por ellas. Cuando el cliente las nombra, el sistema les avisa; nunca digas que no podés comunicarte con ellas, y seguí ayudando con lo que necesite.`;
+  return notified
+    ? `${known}\nEn este mensaje el cliente nombró a ${notified} y ya le avisamos: decíselo en una frase corta ("Ya le avisé a ${notified} que le escribiste") y seguí ayudándolo.`
+    : known;
+}
+
 /** Appends optional per-producer tone guidance, when configured. */
 function extraPersona(producerPrompt?: string): string {
   const extra = producerPrompt?.trim();
@@ -73,7 +89,8 @@ export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
   const identity =
     buildIdentity(options.botName) +
     extraPersona(options.producerPrompt) +
-    clientContext(options.client);
+    clientContext(options.client) +
+    staffContext(options.staffNames, options.staffNotified);
   const vehicleContext = options.vehicleType
     ? `El tipo de vehículo ya está definido por el flujo: *${options.vehicleType}*. Usá \`${options.vehicleType}\` como vehicleType en TODAS las tools; no lo vuelvas a preguntar ni lo cambies.`
     : 'Identificá del contexto de la charla si es *auto* o *moto* y usá ese valor como vehicleType en TODAS las tools (si no quedó claro, preguntalo).';
@@ -134,7 +151,8 @@ export function buildFaqPrompt(options: FocusedPromptOptions): string {
   const identity =
     buildIdentity(options.botName) +
     extraPersona(options.producerPrompt) +
-    clientContext(options.client);
+    clientContext(options.client) +
+    staffContext(options.staffNames, options.staffNotified);
   return `${identity}
 
 Fecha de hoy: ${options.today}

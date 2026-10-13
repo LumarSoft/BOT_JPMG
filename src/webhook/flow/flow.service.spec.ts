@@ -1,7 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { ApiService } from '../../api/api.service';
-import { FlowService, staffNamed, takeOutDocsState } from './flow.service';
+import {
+  FlowService,
+  staffNamed,
+  takeOutDocsState,
+  withStaffNotice,
+} from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
 import { IdentificationInterpreter } from './identification-interpreter.service';
@@ -1758,7 +1763,29 @@ describe('FlowService', () => {
     };
     const bodies = (res: { messages: unknown[] }) =>
       JSON.stringify(res.messages);
-    const closed = () =>
+
+    it('le avisa a Mili y el bot sigue atendiendo', async () => {
+      const res = await send({ text: 'Buenos días Mili' }, staffCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Mensaje para Mili: "Buenos días Mili"',
+      );
+      expect(bodies(res)).toContain('Ya le avisé a Mili que le escribiste');
+      expect(bodies(res)).toContain('¿ya sos cliente nuestro?');
+      expect(stored?.data.forPerson).toBeUndefined();
+    });
+
+    it('el mensaje siguiente sigue el flujo normal sin volver a avisar', async () => {
+      await send({ text: 'Hola Milagros, como estas?' }, staffCtx);
+      const next = await send({ selectionId: OPT.cliente, text: '' }, staffCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(bodies(next)).not.toContain('avisé');
+    });
+
+    it('con la oficina cerrada igual atiende', async () => {
       api.getHours.mockResolvedValue({
         formatted: 'Lunes a viernes de 8 a 16 hs',
         isOpenNow: false,
@@ -1766,66 +1793,32 @@ describe('FlowService', () => {
         message: 'Ahora estamos cerrados.',
         closedNote: 'Hoy estamos cerrados; te respondemos mañana a las 8 hs.',
       });
-
-    it('no se presenta y le pasa el mensaje a la oficina', async () => {
-      const res = await send({ text: 'Buenos días Mili' }, staffCtx);
-
-      expect(res.messages).toEqual([]);
-      expect(api.requestHandoff).toHaveBeenCalledWith(
-        1,
-        'Mensaje para Mili: "Buenos días Mili"',
-      );
-      expect(stored).toMatchObject({
-        step: 'ROOT',
-        data: { forPerson: 'Mili' },
-      });
-    });
-
-    it('sigue con la oficina en los mensajes siguientes', async () => {
-      await send({ text: 'Hola Milagros, como estas?' }, staffCtx);
-      const next = await send(
-        { text: 'te consulto por el pago de la patente AB123CD' },
-        staffCtx,
-      );
-
-      expect(next.messages).toEqual([]);
-      expect(api.requestHandoff).toHaveBeenLastCalledWith(1, undefined);
-      expect(api.identifyClient).not.toHaveBeenCalled();
-    });
-
-    it('con la oficina cerrada avisa cuándo le responde', async () => {
-      closed();
       const res = await send({ text: 'MILI , COMO ESTAS' }, staffCtx);
 
-      expect(bodies(res)).toContain('Le paso tu mensaje a Mili 🙌');
-      expect(bodies(res)).toContain('te respondemos mañana');
-      expect(bodies(res)).not.toContain('Soy');
-
-      const next = await send({ text: 'es por la cuota' }, staffCtx);
-      expect(next.messages).toEqual([]);
+      expect(bodies(res)).toContain('Ya le avisé a Mili');
+      expect(bodies(res)).toContain('¿ya sos cliente nuestro?');
     });
 
-    it('"menú" vuelve al bot', async () => {
-      await send({ text: 'Hola Mili' }, staffCtx);
-      const res = await send({ text: 'menú' }, staffCtx);
+    it('"menú" no avisa a nadie', async () => {
+      stored = { step: 'CLIENT_MENU', data: {}, audience: 'client' };
+      await send({ text: 'menú' }, staffCtx);
 
-      expect(res.messages.length).toBeGreaterThan(0);
-      expect(stored?.data.forPerson).toBeUndefined();
+      expect(api.requestHandoff).not.toHaveBeenCalled();
     });
 
-    it('a mitad de una charla con el bot confirma que le pasa el mensaje', async () => {
+    it('a mitad de una charla le pide al modelo que lo diga y siga', async () => {
       stored = { step: 'LLM_FAQ', data: {}, audience: 'lead' };
       const res = await send(
         { text: 'Bueno, pero le podés decir a Milagros que me cotice la moto' },
         staffCtx,
       );
 
-      expect(bodies(res)).toContain('Le paso tu mensaje a Milagros 🙌');
       expect(api.requestHandoff).toHaveBeenCalledWith(
         1,
         expect.stringContaining('Mensaje para Milagros'),
       );
-      expect(stored?.step).toBe('LLM_FAQ');
+      expect(res.handoff).toBeDefined();
+      expect(res.staffNotified).toBe('Milagros');
     });
 
     it('no corta un paso guiado', async () => {
@@ -1838,10 +1831,22 @@ describe('FlowService', () => {
       );
     });
 
+    it('no interviene cuando Mili ya está atendiendo el chat', async () => {
+      await send(
+        { text: 'Gracias Mili, te paso el comprobante' },
+        { ...staffCtx, answeringPerson: true },
+      );
+
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Mensaje para'),
+      );
+    });
+
     it('sin nombres configurados saluda como siempre', async () => {
       const res = await send({ text: 'Buenos días Mili' }, leadCtx);
 
-      expect(res.messages.length).toBeGreaterThan(0);
+      expect(bodies(res)).not.toContain('avisé');
       expect(api.requestHandoff).not.toHaveBeenCalled();
     });
 
@@ -1854,6 +1859,40 @@ describe('FlowService', () => {
       expect(staffNamed('funciona milagrosamente', names)).toBeNull();
       expect(staffNamed('Camilita', names)).toBeNull();
       expect(staffNamed('Hola Nico', ['Nico'], 'NICO')).toBeNull();
+    });
+
+    it('ubica el aviso en la respuesta del bot', () => {
+      const wave = withStaffNotice(
+        {
+          messages: [
+            { kind: 'text', body: '¡Hola! Soy NICO 👋 ¿En qué te ayudo?' },
+          ],
+        },
+        'Mili',
+      );
+      expect(wave.messages[0]).toEqual({
+        kind: 'text',
+        body: '¡Hola! Soy NICO 👋 Ya le avisé a Mili que le escribiste. ¿En qué te ayudo?',
+      });
+      const plain = withStaffNotice(
+        {
+          messages: [
+            { kind: 'text', body: 'Los cupones te los manda la oficina' },
+          ],
+        },
+        'Mili',
+      );
+      expect(plain.messages.map((m) => m.body)).toEqual([
+        'Ya le avisé a Mili que le escribiste 🙌',
+        'Los cupones te los manda la oficina',
+      ]);
+      expect(withStaffNotice({ messages: [], handoff: 'faq' }, 'Mili')).toEqual(
+        {
+          messages: [],
+          handoff: 'faq',
+          staffNotified: 'Mili',
+        },
+      );
     });
   });
 

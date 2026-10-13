@@ -609,6 +609,7 @@ export class WebhookService {
         from,
         vehicleType,
         this.readQuoteVehicleMemory(result.state),
+        result.staffNotified,
       );
       // LLM/tool turns can take several seconds. Check again so an in-flight
       // response cannot escape after the global stop button was pressed.
@@ -1336,6 +1337,7 @@ export class WebhookService {
     from: string,
     vehicleType?: 'auto' | 'moto',
     rememberedVehicle?: QuoteVehicleMemory,
+    staffNotified?: string,
   ): Promise<{
     text: string;
     coverageLeadId?: number;
@@ -1370,6 +1372,8 @@ export class WebhookService {
             today,
             client: conversation.client,
             vehicleType,
+            staffNames: context.staffNames,
+            staffNotified,
           })
         : buildFaqPrompt({
             botName: context.botName,
@@ -1378,6 +1382,8 @@ export class WebhookService {
             today,
             client: conversation.client,
             catalog,
+            staffNames: context.staffNames,
+            staffNotified,
           });
     const system =
       handoff === 'cotizacion'

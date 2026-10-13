@@ -171,6 +171,32 @@ export function staffNamed(
   return null;
 }
 
+/**
+ * Tells the customer the office person was alerted, inside the bot's own
+ * reply: after the greeting's wave, as a short first line, or — when the model
+ * answers — through the prompt so it says it in its own words.
+ */
+export function withStaffNotice(result: FlowResult, name: string): FlowResult {
+  const notice = `Ya le avisé a ${name} que le escribiste`;
+  const [first, ...rest] = result.messages;
+  if (!first)
+    return result.handoff
+      ? { ...result, staffNotified: name }
+      : { ...result, messages: [{ kind: 'text', body: `${notice} 🙌` }] };
+  if (first.body.includes('👋'))
+    return {
+      ...result,
+      messages: [
+        { ...first, body: first.body.replace('👋', `👋 ${notice}.`) },
+        ...rest,
+      ],
+    };
+  return {
+    ...result,
+    messages: [{ kind: 'text', body: `${notice} 🙌` }, ...result.messages],
+  };
+}
+
 const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
 
@@ -424,6 +450,19 @@ export class FlowService {
     input: UserInput,
     ctx: FlowContext,
   ): Promise<FlowResult> {
+    // A message to an office person by name ("Hola Mili, ¿cómo estás?") alerts
+    // her, and the bot still works out what the customer needs: handing the
+    // chat over would leave every such conversation to the office.
+    const named = await this.notifyStaff(input, ctx, this.load(key)?.state);
+    const result = await this.computeTurn(key, input, ctx);
+    return named ? withStaffNotice(result, named) : result;
+  }
+
+  private async computeTurn(
+    key: string,
+    input: UserInput,
+    ctx: FlowContext,
+  ): Promise<FlowResult> {
     const existing = this.load(key);
     const sel = input.selectionId;
     // Payment proofs and missing credits need human review. Policy cancellations
@@ -435,18 +474,6 @@ export class FlowService {
       )
     ) {
       return this.handleAsesorMotivo(input, ctx, key);
-    }
-
-    // Written to a person of the office by name ("Hola Mili, ¿cómo estás?"):
-    // the customer expects her, not the bot's introduction.
-    if (!sel && !/^men[uú]$/i.test(input.text.trim())) {
-      const forPerson = await this.messageForPerson(
-        input,
-        ctx,
-        key,
-        existing?.state ?? null,
-      );
-      if (forPerson) return forPerson;
     }
 
     // First contact (no state): answer what the message asks when it asks
@@ -1007,58 +1034,30 @@ export class FlowService {
   }
 
   /**
-   * A message for an office person (Producer.staffNames) goes to the office.
-   * At the start of a chat the bot stays out of it — and of the rest of that
-   * conversation, until "menú" — speaking only to say when the office reopens.
-   * In the middle of a talk with the bot it confirms it passed the message on:
-   * it used to answer "no puedo comunicarme con Milagros".
+   * Alerts the office person a message names (Producer.staffNames) with a
+   * pending matter in the inbox. Returns her name so the reply can say so, or
+   * null. Left alone inside guided steps (a claim's details, photos) and when
+   * a person of the office is already answering this chat.
    */
-  private async messageForPerson(
+  private async notifyStaff(
     input: UserInput,
     ctx: FlowContext,
-    key: string,
-    state: FlowState | null,
-  ): Promise<FlowResult | null> {
-    const opening = !state || state.step === 'ROOT';
-    if (!opening && !PERSON_MENTION_STEPS.has(state.step)) return null;
-    const earlier =
-      opening && typeof state?.data.forPerson === 'string'
-        ? state.data.forPerson
-        : null;
-    const named = staffNamed(input.text, ctx.staffNames ?? [], ctx.botName);
-    const name = named ?? earlier;
-    if (!name) return null;
-
-    // The reason only on the first message: the API keeps one pending matter
-    // per chat however many messages follow (see personFollowUp).
+    state: FlowState | undefined,
+  ): Promise<string | null> {
+    if (input.selectionId || ctx.answeringPerson) return null;
     const text = input.text.trim();
+    if (/^men[uú]$/i.test(text)) return null;
+    if (state && state.step !== 'ROOT' && !PERSON_MENTION_STEPS.has(state.step))
+      return null;
+    const name = staffNamed(text, ctx.staffNames ?? [], ctx.botName);
+    if (!name) return null;
     await this.api
       .requestHandoff(
         ctx.conversationId,
-        earlier
-          ? undefined
-          : `Mensaje para ${name}: "${text.length > 300 ? `${text.slice(0, 300)}…` : text}"`,
+        `Mensaje para ${name}: "${text.length > 300 ? `${text.slice(0, 300)}…` : text}"`,
       )
       .catch(() => undefined);
-
-    if (!opening) {
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body: `Le paso tu mensaje a ${name} 🙌${await this.closedNote()}`,
-          },
-        ],
-      };
-    }
-    this.setState(key, 'ROOT', { ...(state?.data ?? {}), forPerson: name });
-    if (earlier) return { messages: [] };
-    const closed = await this.closedNote();
-    return {
-      messages: closed
-        ? [{ kind: 'text', body: `Le paso tu mensaje a ${name} 🙌${closed}` }]
-        : [],
-    };
+    return name;
   }
 
   /** Runs a client action for someone who has not said they are a client yet. */

@@ -85,6 +85,8 @@ export type LLMHandoff = 'cotizacion' | 'faq';
 export interface FlowResult {
   messages: OutgoingMessage[];
   handoff?: LLMHandoff;
+  /** Office person alerted by this message; the model mentions it in its reply. */
+  staffNotified?: string;
 }
 
 /**
