@@ -41,7 +41,11 @@ export type FlowStep =
   | 'LLM_COTIZACION' // conversational quote flow (handed to the LLM)
   | 'COT_DOC_DNI_FRENTE' // take-out documents after choosing a coverage: DNI front
   | 'COT_DOC_DNI_DORSO' // DNI back
-  | 'COT_DOC_TARJETA_AZUL' // tarjeta azul
+  | 'COT_DOC_CERO_KM' // "¿es 0 km?" when the quote did not say
+  | 'COT_DOC_TARJETA_AZUL' // tarjeta verde o azul (step id kept for chats mid-flow)
+  | 'COT_DOC_NO_RODAMIENTO' // 0 km: certificado de no rodamiento
+  | 'COT_DOC_FOTOS_VEHICULO' // used: photos of the vehicle, several, ends with "listo"
+  | 'COT_DOC_TARJETA_GNC' // with GNC: tarjeta de GNC
   | 'LLM_FAQ'; // free-text questions (handed to the LLM)
 
 export interface FlowState {

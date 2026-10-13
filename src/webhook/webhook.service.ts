@@ -14,7 +14,8 @@ import {
   LEAD_DOC_TIPO,
   PHOTO_RECEIVED,
   SINIESTRO_PHOTO_TIPO,
-  TAKE_OUT_DOCS_INTRO,
+  takeOutDocsIntro,
+  type TakeOutDocs,
   takeOutDocsState,
 } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
@@ -599,6 +600,7 @@ export class WebhookService {
       const {
         text: raw,
         coverageLeadId,
+        takeOutDocs,
         quoteVehicleMemory,
       } = await this.generateReply(
         context,
@@ -646,12 +648,14 @@ export class WebhookService {
       ];
 
       // A coverage was chosen: the request is recorded, now collect the
-      // documents to take it out (DNI front/back, tarjeta azul) step by step.
+      // documents the office asks for to take it out, step by step.
       if (coverageLeadId) {
         await this.api
           .saveFlowState(
             conversation.conversationId,
-            JSON.stringify(takeOutDocsState(effectiveState, coverageLeadId)),
+            JSON.stringify(
+              takeOutDocsState(effectiveState, coverageLeadId, takeOutDocs),
+            ),
           )
           .catch((error: Error) =>
             this.logger.error(
@@ -660,7 +664,7 @@ export class WebhookService {
           );
         outgoing = compactMessages([
           ...outgoing,
-          { kind: 'text', body: TAKE_OUT_DOCS_INTRO },
+          { kind: 'text', body: takeOutDocsIntro(takeOutDocs ?? {}) },
         ]);
       }
 
@@ -1341,6 +1345,8 @@ export class WebhookService {
   ): Promise<{
     text: string;
     coverageLeadId?: number;
+    /** What the chosen coverage's vehicle needs to be taken out. */
+    takeOutDocs?: TakeOutDocs;
     quoteVehicleMemory?: QuoteVehicleMemory;
   }> {
     const today = new Date().toLocaleDateString('es-AR', {
@@ -1409,6 +1415,7 @@ export class WebhookService {
     let completionTokens = 0;
     // Set when the model calls request_coverage (the customer chose a coverage).
     let coverageLeadId: number | undefined;
+    let takeOutDocs: TakeOutDocs = {};
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -1450,6 +1457,7 @@ export class WebhookService {
           return {
             text: message.content ?? FALLBACK_REPLY,
             coverageLeadId,
+            takeOutDocs,
             quoteVehicleMemory,
           };
         }
@@ -1477,6 +1485,7 @@ export class WebhookService {
               from,
             );
             coverageLeadId = res.leadId;
+            if (res.docs) takeOutDocs = res.docs;
             return res.result;
           }),
         );
@@ -1519,7 +1528,12 @@ export class WebhookService {
           quoteVehicleMemory,
           content,
         );
-        return { text: content, coverageLeadId, quoteVehicleMemory };
+        return {
+          text: content,
+          coverageLeadId,
+          takeOutDocs,
+          quoteVehicleMemory,
+        };
       }
     } catch (error) {
       this.logger.error(
@@ -1529,7 +1543,12 @@ export class WebhookService {
       this.logCost(handoff, promptTokens, completionTokens);
     }
 
-    return { text: FALLBACK_REPLY, coverageLeadId, quoteVehicleMemory };
+    return {
+      text: FALLBACK_REPLY,
+      coverageLeadId,
+      takeOutDocs,
+      quoteVehicleMemory,
+    };
   }
 
   /**
@@ -1583,7 +1602,7 @@ export class WebhookService {
     rawArgs: string,
     conversation: BotConversation,
     from: string,
-  ): Promise<{ result: string; leadId?: number }> {
+  ): Promise<{ result: string; leadId?: number; docs?: TakeOutDocs }> {
     let args: Record<string, unknown>;
     try {
       args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
@@ -1600,6 +1619,19 @@ export class WebhookService {
 
     const vehicleType = args.vehicleType === 'moto' ? 'moto' : 'auto';
     const client = conversation.client;
+    // 0 km when the customer said so; a model year before this one can't be.
+    // Otherwise unknown: the take-out documents ask before the tarjeta.
+    const zeroKm =
+      typeof args.isZeroKm === 'boolean'
+        ? args.isZeroKm
+        : typeof args.manufactureYear === 'number' &&
+            args.manufactureYear < new Date().getFullYear()
+          ? false
+          : undefined;
+    const docs: TakeOutDocs = {
+      zeroKm,
+      gnc: vehicleType === 'auto' && args.hasGnc === true,
+    };
     const payload: Record<string, unknown> = {
       cobertura: [code, name].filter(Boolean).join(' — '),
       vehiculo: args.vehicle,
@@ -1611,6 +1643,7 @@ export class WebhookService {
       ...(vehicleType === 'auto' && typeof args.hasGnc === 'boolean'
         ? { gnc: args.hasGnc ? 'Sí' : 'No' }
         : {}),
+      ...(zeroKm !== undefined ? { ceroKm: zeroKm ? 'Sí' : 'No' } : {}),
       ...(client ? { dni: client.dni } : {}),
     };
 
@@ -1629,7 +1662,7 @@ export class WebhookService {
       this.logger.log(
         `📝 Pedido de contratación #${id}: ${String(payload.cobertura)} (${vehicleType})`,
       );
-      return { result: JSON.stringify({ ok: true }), leadId: id };
+      return { result: JSON.stringify({ ok: true }), leadId: id, docs };
     } catch (error) {
       return { result: this.toolError(REQUEST_COVERAGE_TOOL, error) };
     }

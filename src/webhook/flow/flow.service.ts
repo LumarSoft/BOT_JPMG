@@ -24,6 +24,7 @@ import type {
 import {
   ALL_POLIZAS_ID,
   claimPhotoAddedText,
+  vehiclePhotoAddedText,
   clientMenu,
   CLIENT_MENU_OPTS,
   cotizarMenu,
@@ -262,30 +263,133 @@ export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
 export const LEAD_DOC_TIPO: Partial<Record<FlowStep, string>> = {
   COT_DOC_DNI_FRENTE: 'dni_frente',
   COT_DOC_DNI_DORSO: 'dni_dorso',
-  COT_DOC_TARJETA_AZUL: 'tarjeta_azul',
+  // A photo sent instead of answering "¿es 0 km?" still belongs to the request.
+  COT_DOC_CERO_KM: 'documento',
+  COT_DOC_TARJETA_AZUL: 'tarjeta',
+  COT_DOC_NO_RODAMIENTO: 'certificado_no_rodamiento',
+  COT_DOC_FOTOS_VEHICULO: 'foto_vehiculo',
+  COT_DOC_TARJETA_GNC: 'tarjeta_gnc',
 };
 
+/**
+ * What the vehicle being taken out needs, as the office asks for it: DNI;
+ * a used one its tarjeta verde o azul and photos of the vehicle, a 0 km (not
+ * registered yet, so no tarjeta) the certificado de no rodamiento; with GNC,
+ * the tarjeta de GNC. `zeroKm` undefined = unknown, asked after the DNI.
+ */
+export interface TakeOutDocs {
+  zeroKm?: boolean;
+  gnc?: boolean;
+}
+
+/** The take-out steps for a vehicle, in order. */
+export function takeOutSteps(docs: TakeOutDocs): FlowStep[] {
+  return [
+    'COT_DOC_DNI_FRENTE',
+    'COT_DOC_DNI_DORSO',
+    ...(docs.zeroKm === undefined ? (['COT_DOC_CERO_KM'] as const) : []),
+    ...(docs.zeroKm === true ? (['COT_DOC_NO_RODAMIENTO'] as const) : []),
+    ...(docs.zeroKm === false
+      ? (['COT_DOC_TARJETA_AZUL', 'COT_DOC_FOTOS_VEHICULO'] as const)
+      : []),
+    ...(docs.gnc ? (['COT_DOC_TARJETA_GNC'] as const) : []),
+  ];
+}
+
 /** First prompt of the take-out documents, sent right after a coverage is chosen. */
-export const TAKE_OUT_DOCS_INTRO =
-  'Para avanzar con la contratación necesito unas fotos 📸:\n' +
-  '• *DNI* (frente y dorso)\n' +
-  '• *Tarjeta azul*\n\n' +
-  'Empecemos: mandame una foto del *frente de tu DNI*. (si no la tenés a mano, escribí *no la tengo*)';
+export function takeOutDocsIntro(docs: TakeOutDocs): string {
+  const items = [
+    '• *DNI* (frente y dorso)',
+    ...(docs.zeroKm === true ? ['• *Certificado de no rodamiento*'] : []),
+    ...(docs.zeroKm === false
+      ? ['• *Tarjeta verde o azul*', '• *Fotos del vehículo* (de los 4 lados)']
+      : []),
+    ...(docs.zeroKm === undefined
+      ? [
+          '• *Tarjeta verde o azul* y *fotos del vehículo* (si es 0 km, el *certificado de no rodamiento*)',
+        ]
+      : []),
+    ...(docs.gnc ? ['• *Tarjeta de GNC*'] : []),
+  ];
+  return (
+    `Para avanzar con la contratación necesito unas fotos 📸:\n${items.join('\n')}\n\n` +
+    'Empecemos: mandame una foto del *frente de tu DNI*. (si no la tenés a mano, escribí *no la tengo*)'
+  );
+}
 
 /**
  * Flow snapshot that opens the take-out documents for the lead the quote model
- * just created (see webhook.service). The lead id travels in the state so each
- * photo lands on that lead; the declared audience is kept.
+ * just created (see webhook.service). The lead id and what the vehicle needs
+ * travel in the state so each photo lands on that lead; the declared audience is kept.
  */
 export function takeOutDocsState(
   prev: FlowState | null,
   leadId: number,
+  docs: TakeOutDocs = {},
 ): FlowState {
   return {
     step: 'COT_DOC_DNI_FRENTE',
-    data: { leadId },
+    data: {
+      leadId,
+      ...(docs.zeroKm !== undefined ? { zeroKm: docs.zeroKm } : {}),
+      ...(docs.gnc ? { gnc: true } : {}),
+    },
     ...(prev?.audience ? { audience: prev.audience } : {}),
   };
+}
+
+/** Buttons of the "¿es 0 km?" take-out step. */
+const CERO_KM_SI = 'cero_km_si';
+const CERO_KM_NO = 'cero_km_no';
+
+function ceroKmQuestion(): OutgoingMessage {
+  return {
+    kind: 'buttons',
+    body: 'Perfecto. ¿El vehículo es *0 km*?',
+    buttons: [
+      { id: CERO_KM_SI, title: 'Sí, es 0 km' },
+      { id: CERO_KM_NO, title: 'No, es usado' },
+    ],
+  };
+}
+
+/** What a take-out step asks for; `last` words it as the final document. */
+function takeOutPrompt(step: FlowStep, last: boolean): OutgoingMessage {
+  const lead = last ? 'Por último, ' : 'Ahora ';
+  switch (step) {
+    case 'COT_DOC_DNI_DORSO':
+      return {
+        kind: 'text',
+        body: 'Perfecto. Ahora el *dorso del DNI*. (si no la tenés, escribí *no la tengo*)',
+      };
+    case 'COT_DOC_CERO_KM':
+      return ceroKmQuestion();
+    case 'COT_DOC_TARJETA_AZUL':
+      return {
+        kind: 'text',
+        body: `${lead}una foto de la *tarjeta verde o azul* del vehículo. (si no la tenés, escribí *no la tengo*)`,
+      };
+    case 'COT_DOC_NO_RODAMIENTO':
+      return {
+        kind: 'text',
+        body: `${lead}una foto del *certificado de no rodamiento*. (si no lo tenés, escribí *no lo tengo*)`,
+      };
+    case 'COT_DOC_FOTOS_VEHICULO':
+      return {
+        kind: 'text',
+        body: `${lead}unas *fotos del vehículo* de los 4 lados (adelante, atrás y los dos costados). Mandalas y cuando termines escribí *listo*.`,
+      };
+    case 'COT_DOC_TARJETA_GNC':
+      return {
+        kind: 'text',
+        body: `${lead}una foto de la *tarjeta de GNC*. (si no la tenés, escribí *no la tengo*)`,
+      };
+    default:
+      return {
+        kind: 'text',
+        body: 'Mandame la foto 📷, o escribí *no la tengo* para saltar este paso.',
+      };
+  }
 }
 
 /** Buttons for the "¿hubo un tercero?" step. */
@@ -786,17 +890,15 @@ export class FlowService {
       case 'LLM_COTIZACION':
         return this.handleLlm(input, key, 'cotizacion');
       case 'COT_DOC_DNI_FRENTE':
-        return this.handleTakeOutDoc(state, input, key, {
-          next: 'COT_DOC_DNI_DORSO',
-          ask: 'Perfecto. Ahora el *dorso del DNI*. (si no la tenés, escribí *no la tengo*)',
-        });
       case 'COT_DOC_DNI_DORSO':
-        return this.handleTakeOutDoc(state, input, key, {
-          next: 'COT_DOC_TARJETA_AZUL',
-          ask: 'Genial. Por último, una foto de la *tarjeta azul*. (si no la tenés, escribí *no la tengo*)',
-        });
       case 'COT_DOC_TARJETA_AZUL':
-        return this.finishTakeOutDocs(state, input, ctx, key);
+      case 'COT_DOC_NO_RODAMIENTO':
+      case 'COT_DOC_TARJETA_GNC':
+        return this.handleTakeOutDoc(state, input, ctx, key);
+      case 'COT_DOC_CERO_KM':
+        return this.handleTakeOutCeroKm(state, input, ctx, key);
+      case 'COT_DOC_FOTOS_VEHICULO':
+        return this.handleTakeOutVehiclePhotos(state, input, ctx, key);
       case 'LLM_FAQ':
         return this.handleLlm(input, key, 'faq');
       default:
@@ -1985,7 +2087,7 @@ export class FlowService {
    * tengo", "saltar", "listo", and the way people actually type it: "listooo",
    * "ya está", "eso es todo"). */
   private isPhotoSkip(text: string): boolean {
-    return /^(no+|nop|no la tengo|no las? tengo|no tengo|salt(ar|o|a)|omitir|siguiente|despues|list[oa]+|ya (esta|fue|termine)|termine|eso es todo|nada mas|fin)\b/.test(
+    return /^(no+|nop|no la tengo|no las? tengo|no los? tengo|no tengo|salt(ar|o|a)|omitir|siguiente|despues|list[oa]+|ya (esta|fue|termine)|termine|eso es todo|nada mas|fin)\b/.test(
       fold(text).trim(),
     );
   }
@@ -2133,20 +2235,8 @@ export class FlowService {
   // ─── Cotización: documentos para contratar ────────────────
 
   /** One take-out document step: a photo (or "no la tengo") moves to the next. */
-  private handleTakeOutDoc(
-    state: FlowState,
-    input: UserInput,
-    key: string,
-    step: { next: FlowStep; ask: string },
-  ): FlowResult {
-    if (!this.photoAdvances(input)) {
-      return this.retry(key, state, this.retryPhoto().messages);
-    }
-    this.setState(key, step.next, { leadId: state.data.leadId });
-    return { messages: [{ kind: 'text', body: step.ask }] };
-  }
-
-  private async finishTakeOutDocs(
+  /** A one-photo take-out step: a photo (or "no la tengo") moves to the next one. */
+  private async handleTakeOutDoc(
     state: FlowState,
     input: UserInput,
     ctx: FlowContext,
@@ -2155,6 +2245,86 @@ export class FlowService {
     if (!this.photoAdvances(input)) {
       return this.retry(key, state, this.retryPhoto().messages);
     }
+    return this.nextTakeOutStep(state.step, state.data, ctx, key);
+  }
+
+  /** "¿Es 0 km?": decides between the certificado de no rodamiento and the tarjeta + photos. */
+  private async handleTakeOutCeroKm(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const t = fold(input.text).trim();
+    const zeroKm =
+      input.selectionId === CERO_KM_SI ||
+      /^(si|sip|es 0 ?km|0 ?km|cero ?km|nuevo)\b/.test(t)
+        ? true
+        : input.selectionId === CERO_KM_NO || /^(no|usad[oa])\b/.test(t)
+          ? false
+          : undefined;
+    if (zeroKm === undefined) return this.retry(key, state, [ceroKmQuestion()]);
+    return this.nextTakeOutStep(
+      state.step,
+      { ...state.data, zeroKm },
+      ctx,
+      key,
+    );
+  }
+
+  /** Photos of the vehicle: several, so it waits for "listo" to move on. */
+  private async handleTakeOutVehiclePhotos(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    if (input.selectionId === PHOTO_RECEIVED) {
+      this.setState(key, state.step, state.data);
+      return { messages: [{ kind: 'text', body: vehiclePhotoAddedText() }] };
+    }
+    if (!input.selectionId && this.isPhotoSkip(input.text))
+      return this.nextTakeOutStep(state.step, state.data, ctx, key);
+    return this.retry(key, state, [
+      {
+        kind: 'text',
+        body: 'Mandame las *fotos del vehículo* 📷 y cuando termines escribí *listo*. Si no podés ahora, escribí *no tengo*.',
+      },
+    ]);
+  }
+
+  /** Asks for what comes after `current` for this vehicle, or closes the take-out. */
+  private async nextTakeOutStep(
+    current: FlowStep,
+    data: Record<string, unknown>,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const docs: TakeOutDocs = {
+      zeroKm: typeof data.zeroKm === 'boolean' ? data.zeroKm : undefined,
+      gnc: data.gnc === true,
+    };
+    const steps = takeOutSteps(docs);
+    // Answering "¿es 0 km?" drops that question from the list: carry on after
+    // the DNI, which is where it always sits.
+    const at = steps.includes(current)
+      ? steps.indexOf(current)
+      : steps.indexOf('COT_DOC_DNI_DORSO');
+    const next = steps[at + 1];
+    if (!next) return this.finishTakeOutDocs(ctx, key);
+    this.setState(key, next, {
+      leadId: data.leadId,
+      ...(docs.zeroKm !== undefined ? { zeroKm: docs.zeroKm } : {}),
+      ...(docs.gnc ? { gnc: true } : {}),
+    });
+    const last = next === steps[steps.length - 1];
+    return { messages: [takeOutPrompt(next, last)] };
+  }
+
+  private async finishTakeOutDocs(
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
     return this.prepend(
       '¡Listo! 🙌 Ya tenemos todo para tu contratación. Un asesor te contacta ' +
         `para terminarla (${attentionHoursOf(ctx.attentionHours)}).` +

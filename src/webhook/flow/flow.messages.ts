@@ -622,17 +622,27 @@ export function claimPhotoAddedText(count = 1): string {
     : `📎 Recibí las ${count} fotos y las sumé a tu denuncia. Si tenés *más fotos del siniestro*, mandámelas. Cuando termines, escribí *listo*.`;
 }
 
+/** Reply to photos of the vehicle in the take-out documents. */
+export function vehiclePhotoAddedText(count = 1): string {
+  return count === 1
+    ? '📎 Recibí la foto del vehículo. Si te falta algún lado, mandala; cuando termines, escribí *listo*.'
+    : `📎 Recibí las ${count} fotos del vehículo. Si te falta algún lado, mandala; cuando termines, escribí *listo*.`;
+}
+
 /** The latest guided-step reply, worded for every photo of the batch it answers. */
 export function pluralizeClaimPhotoReply(
   messages: OutgoingMessage[],
   count: number,
 ): OutgoingMessage[] {
   if (count === 1) return messages;
-  return messages.map((m) =>
-    m.kind === 'text' && m.body === claimPhotoAddedText(1)
-      ? { ...m, body: claimPhotoAddedText(count) }
-      : m,
-  );
+  return messages.map((m) => {
+    if (m.kind !== 'text') return m;
+    if (m.body === claimPhotoAddedText(1))
+      return { ...m, body: claimPhotoAddedText(count) };
+    if (m.body === vehiclePhotoAddedText(1))
+      return { ...m, body: vehiclePhotoAddedText(count) };
+    return m;
+  });
 }
 
 export function docPicker(docs: PolizaDocumento[]): OutgoingMessage {

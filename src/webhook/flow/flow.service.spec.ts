@@ -4,6 +4,7 @@ import { ApiService } from '../../api/api.service';
 import {
   FlowService,
   staffNamed,
+  takeOutDocsIntro,
   takeOutDocsState,
   withStaffNotice,
 } from './flow.service';
@@ -1523,13 +1524,19 @@ describe('FlowService', () => {
     }
     const photo = { text: '', selectionId: '__photo_received__' };
 
-    it('asks DNI back, then tarjeta azul, then closes with the menu', async () => {
-      startDocs();
+    it('a used vehicle: DNI, tarjeta verde o azul and photos of the vehicle', async () => {
+      stored = takeOutDocsState(
+        { step: 'LLM_COTIZACION', data: {}, audience: 'lead' },
+        42,
+        {
+          zeroKm: false,
+        },
+      );
 
       const back = await send(photo);
       expect(stored).toEqual({
         step: 'COT_DOC_DNI_DORSO',
-        data: { leadId: 42 },
+        data: { leadId: 42, zeroKm: false },
         audience: 'lead',
       });
       expect(JSON.stringify(back.messages)).toContain('dorso del DNI');
@@ -1537,11 +1544,90 @@ describe('FlowService', () => {
       const card = await send(photo);
       expect(stored?.step).toBe('COT_DOC_TARJETA_AZUL');
       expect(stored?.data.leadId).toBe(42);
-      expect(JSON.stringify(card.messages)).toContain('tarjeta azul');
+      expect(JSON.stringify(card.messages)).toContain('tarjeta verde o azul');
+
+      const photos = await send(photo);
+      expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+      expect(JSON.stringify(photos.messages)).toContain('Por último');
+      expect(JSON.stringify(photos.messages)).toContain('fotos del vehículo');
+
+      // Several photos stay on the step until "listo".
+      await send(photo);
+      const more = await send(photo);
+      expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+      expect(JSON.stringify(more.messages)).toContain(
+        'Recibí la foto del vehículo',
+      );
+
+      const done = await send({ text: 'listo' });
+      expect(stored?.step).toBe('LEAD_MENU');
+      expect(JSON.stringify(done.messages)).toContain('Ya tenemos todo');
+    });
+
+    it('a 0 km with GNC: certificado de no rodamiento and tarjeta de GNC, no tarjeta verde', async () => {
+      stored = takeOutDocsState(
+        { step: 'LLM_COTIZACION', data: {}, audience: 'lead' },
+        42,
+        {
+          zeroKm: true,
+          gnc: true,
+        },
+      );
+
+      await send(photo); // DNI frente
+      const cert = await send(photo); // DNI dorso
+      expect(stored?.step).toBe('COT_DOC_NO_RODAMIENTO');
+      expect(JSON.stringify(cert.messages)).toContain(
+        'certificado de no rodamiento',
+      );
+
+      const gnc = await send({ text: 'no lo tengo' });
+      expect(stored?.step).toBe('COT_DOC_TARJETA_GNC');
+      expect(JSON.stringify(gnc.messages)).toContain(
+        'Por último, una foto de la *tarjeta de GNC*',
+      );
 
       const done = await send(photo);
       expect(stored?.step).toBe('LEAD_MENU');
       expect(JSON.stringify(done.messages)).toContain('Ya tenemos todo');
+    });
+
+    it('asks whether it is 0 km when the quote did not say', async () => {
+      startDocs();
+
+      await send(photo); // DNI frente
+      const question = await send(photo); // DNI dorso
+      expect(stored?.step).toBe('COT_DOC_CERO_KM');
+      expect(JSON.stringify(question.messages)).toContain('cero_km_si');
+
+      const unclear = await send({ text: 'mmm' });
+      expect(stored?.step).toBe('COT_DOC_CERO_KM');
+      expect(JSON.stringify(unclear.messages)).toContain('0 km');
+
+      const card = await send({
+        text: 'No, es usado',
+        selectionId: 'cero_km_no',
+      });
+      expect(stored?.step).toBe('COT_DOC_TARJETA_AZUL');
+      expect(stored?.data.zeroKm).toBe(false);
+      expect(JSON.stringify(card.messages)).toContain('tarjeta verde o azul');
+    });
+
+    it('lists in the first message what this vehicle needs', () => {
+      expect(takeOutDocsIntro({ zeroKm: false })).toContain(
+        '*Tarjeta verde o azul*',
+      );
+      expect(takeOutDocsIntro({ zeroKm: false })).toContain(
+        '*Fotos del vehículo*',
+      );
+      expect(takeOutDocsIntro({ zeroKm: true, gnc: true })).toContain(
+        '*Certificado de no rodamiento*',
+      );
+      expect(takeOutDocsIntro({ zeroKm: true, gnc: true })).toContain(
+        '*Tarjeta de GNC*',
+      );
+      expect(takeOutDocsIntro({ zeroKm: true })).not.toContain('Tarjeta verde');
+      expect(takeOutDocsIntro({})).toContain('si es 0 km');
     });
 
     it('lets the customer skip a document with "no la tengo"', async () => {

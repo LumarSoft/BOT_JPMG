@@ -105,7 +105,7 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'request_coverage',
       description:
-        'Registra que la persona quiere CONTRATAR una cobertura que ya le cotizaste con quote_vehicle (ej: "me interesa la B1", "quiero la A"). Llamala en cuanto elija una. El sistema anota el pedido para un asesor y le pide a continuación las fotos del DNI y la tarjeta azul.',
+        'Registra que la persona quiere CONTRATAR una cobertura que ya le cotizaste con quote_vehicle (ej: "me interesa la B1", "quiero la A"). Llamala en cuanto elija una. El sistema anota el pedido para un asesor y le pide a continuación las fotos de la documentación.',
       parameters: {
         type: 'object',
         properties: {
@@ -133,6 +133,11 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           hasGnc: {
             type: 'boolean',
             description: 'Solo autos: si tiene GNC',
+          },
+          isZeroKm: {
+            type: 'boolean',
+            description:
+              'Si el vehículo es 0 km (nuevo, sin patentar). Mandalo solo si la persona lo dijo o la versión se vende solo 0 km; si no se sabe, omitilo.',
           },
         },
         required: [

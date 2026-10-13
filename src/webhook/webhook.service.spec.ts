@@ -1584,6 +1584,7 @@ describe('WebhookService', () => {
           cobertura: 'B1 — Todo Total 1',
           vehiculo: 'HONDA NAVI 110',
           anio: 2025,
+          ceroKm: 'No',
           codigoPostal: 2000,
           precio: '$ 62.614',
         },
@@ -1593,7 +1594,7 @@ describe('WebhookService', () => {
         3,
         JSON.stringify({
           step: 'COT_DOC_DNI_FRENTE',
-          data: { leadId: 42 },
+          data: { leadId: 42, zeroKm: false },
           audience: 'lead',
         }),
       );
