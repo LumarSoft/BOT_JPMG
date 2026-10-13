@@ -1848,16 +1848,11 @@ export class WebhookService {
             });
           } catch (error) {
             if (!isQuoteServiceFailure(error)) throw error;
-            const vehicle = [
-              rememberedVehicle?.brandName,
-              rememberedVehicle?.candidates.find((c) => c.codia === codiaNum)
-                ?.description ?? `CODIA ${codiaNum}`,
-            ]
-              .filter(Boolean)
-              .join(' ');
+            const vehicle = this.quotedVehicle(rememberedVehicle, codiaNum);
             const notified = await this.alertFailedQuote(
               conversationId,
               `${vehicle}, año ${Number(args.manufactureYear)}, CP ${Number(args.postalCode)}`,
+              'el cotizador de Triunfo no respondió',
             );
             const failure = JSON.parse(this.toolError(name, error)) as Record<
               string,
@@ -1876,7 +1871,21 @@ export class WebhookService {
           }
           // Hand the model coverage names and ARS-formatted prices, not raw
           // codes and bare numbers — see constants/coverages.ts.
-          return JSON.stringify(renderQuote(quote));
+          const rendered = renderQuote(quote);
+          if (!quote.valuationMissing) return JSON.stringify(rendered);
+          // Only RC came back because Triunfo could not value the vehicle. Read
+          // as final, it told a client his car had no theft cover (13/10).
+          const notified = await this.alertFailedQuote(
+            conversationId,
+            `${this.quotedVehicle(rememberedVehicle, codiaNum)}, año ${Number(args.manufactureYear)}, CP ${Number(args.postalCode)}`,
+            'Triunfo no pudo valuar el vehículo y solo cotizó Responsabilidad Civil',
+          );
+          return JSON.stringify({
+            ...rendered,
+            cotizacionIncompleta: true,
+            ...(notified ? { officeNotified: true } : {}),
+            nextStep: `La compañía no pudo valuar el vehículo en este momento y por eso solo se obtuvo el precio de Responsabilidad Civil (A). Mostrá ese precio aclarando que es solo RC. NO digas que el vehículo no tiene cobertura con robo, incendio o daños: esas coberturas existen, pero necesitan la valuación. ${notified ? 'Decile que ya le avisaste a la oficina y que un asesor le manda por este chat la cotización completa; no le pidas que escriba asesor.' : 'Ofrecé que un asesor le cotice las demás coberturas (que escriba *asesor*).'} No reintentes cotizar.`,
+          });
         }
         default:
           return JSON.stringify({ error: `Tool desconocida: ${name}` });
@@ -1884,6 +1893,20 @@ export class WebhookService {
     } catch (error) {
       return this.toolError(name, error);
     }
+  }
+
+  /** "CHEVROLET ASTRA II GL 2.0 5 PTAS" for the office alert, or the CODIA. */
+  private quotedVehicle(
+    remembered: QuoteVehicleMemory | undefined,
+    codia: number,
+  ): string {
+    return [
+      remembered?.brandName,
+      remembered?.candidates.find((c) => c.codia === codia)?.description ??
+        `CODIA ${codia}`,
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
 
   /**
@@ -1894,6 +1917,7 @@ export class WebhookService {
   private async alertFailedQuote(
     conversationId: number,
     vehicle: string,
+    reason: string,
   ): Promise<boolean> {
     const now = Date.now();
     const last = this.quoteFailureAlerts.get(conversationId);
@@ -1901,7 +1925,7 @@ export class WebhookService {
     try {
       await this.api.requestHandoff(
         conversationId,
-        `No se pudo cotizar online (el cotizador de Triunfo no respondió): ${vehicle}. Cotizarlo y enviárselo al cliente.`,
+        `No se pudo cotizar online (${reason}): ${vehicle}. Cotizarlo y enviárselo al cliente.`,
       );
       this.quoteFailureAlerts.set(conversationId, now);
       return true;

@@ -577,6 +577,101 @@ describe('WebhookService', () => {
       );
     });
 
+    it('treats a quote Triunfo could not value as incomplete and alerts the office', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+          remembered?: typeof memory,
+        ) => Promise<string>;
+      };
+      api.quoteVehicle.mockResolvedValue({
+        quoteNumber: '1',
+        validUntil: '2026-11-11',
+        vehicleValue: '0.00',
+        valuationMissing: true,
+        messages: [],
+        coverages: [
+          {
+            code: 'A',
+            name: 'Responsabilidad Civil',
+            paymentOptions: [
+              {
+                code: '1',
+                name: 'Débito Automático',
+                premium: 67825,
+                installmentValue: 67825,
+                installments: 1,
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = JSON.parse(
+        await privateService.executeTool(
+          'quote_vehicle',
+          JSON.stringify({
+            vehicleType: 'auto',
+            codia: 120632,
+            manufactureYear: 2024,
+            postalCode: 2000,
+          }),
+          9,
+          memory,
+        ),
+      ) as {
+        cotizacionIncompleta?: boolean;
+        officeNotified?: boolean;
+        nextStep?: string;
+        coberturas: Array<{ codigo: string }>;
+      };
+
+      expect(result.cotizacionIncompleta).toBe(true);
+      expect(result.officeNotified).toBe(true);
+      expect(result.nextStep).toContain('NO digas que el vehículo no tiene');
+      expect(result.coberturas.map((c) => c.codigo)).toEqual(['A']);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        9,
+        expect.stringContaining('no pudo valuar el vehículo'),
+      );
+    });
+
+    it('returns a valued quote untouched, without alerting the office', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+        ) => Promise<string>;
+      };
+      api.quoteVehicle.mockResolvedValue({
+        quoteNumber: '1',
+        validUntil: '2026-11-11',
+        vehicleValue: '7800000.00',
+        valuationMissing: false,
+        messages: [],
+        coverages: [],
+      });
+
+      const result = JSON.parse(
+        await privateService.executeTool(
+          'quote_vehicle',
+          JSON.stringify({
+            vehicleType: 'auto',
+            codia: 120632,
+            manufactureYear: 2024,
+            postalCode: 2000,
+          }),
+          9,
+        ),
+      ) as { cotizacionIncompleta?: boolean };
+
+      expect(result.cotizacionIncompleta).toBeUndefined();
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
     it('does not alert the office when the quote is rejected for the data', async () => {
       const privateService = service as unknown as {
         executeTool: (

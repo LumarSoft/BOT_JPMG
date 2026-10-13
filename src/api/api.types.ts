@@ -247,6 +247,11 @@ export interface QuoteResult {
   vehicleValue: string | null;
   coverages: QuoteCoverage[];
   messages: string[];
+  /**
+   * Triunfo could not value the vehicle and priced only Responsabilidad Civil:
+   * the other coverages exist but were not quoted. Optional for an older API.
+   */
+  valuationMissing?: boolean;
 }
 
 export interface AttachAdjuntosResult {
