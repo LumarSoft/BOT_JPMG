@@ -540,6 +540,74 @@ describe('WebhookService', () => {
       });
     });
 
+    it('alerts the office once when Triunfo does not answer and keeps attending', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+          remembered?: typeof memory,
+        ) => Promise<string>;
+      };
+      api.quoteVehicle.mockRejectedValue({
+        isAxiosError: true,
+        code: 'ECONNABORTED',
+        message: 'timeout of 20000ms exceeded',
+      });
+      const args = JSON.stringify({
+        vehicleType: 'auto',
+        codia: 120632,
+        manufactureYear: 2024,
+        postalCode: 2000,
+      });
+
+      const first = JSON.parse(
+        await privateService.executeTool('quote_vehicle', args, 9, memory),
+      ) as { officeNotified?: boolean; nextStep?: string };
+      await privateService.executeTool('quote_vehicle', args, 9, memory);
+
+      expect(first.officeNotified).toBe(true);
+      expect(typeof first.nextStep).toBe('string');
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        9,
+        expect.stringContaining(
+          'CHEVROLET ONIX 1.0T PREMIER II AT L/24, año 2024, CP 2000',
+        ),
+      );
+    });
+
+    it('does not alert the office when the quote is rejected for the data', async () => {
+      const privateService = service as unknown as {
+        executeTool: (
+          name: string,
+          args: string,
+          conversationId: number,
+        ) => Promise<string>;
+      };
+      api.quoteVehicle.mockRejectedValue({
+        isAxiosError: true,
+        message: 'Request failed with status code 400',
+        response: { status: 400, data: { message: 'Modelo y año inválidos' } },
+      });
+
+      const result = JSON.parse(
+        await privateService.executeTool(
+          'quote_vehicle',
+          JSON.stringify({
+            vehicleType: 'auto',
+            codia: 120632,
+            manufactureYear: 1990,
+            postalCode: 2000,
+          }),
+          9,
+        ),
+      ) as { officeNotified?: boolean };
+
+      expect(result.officeNotified).toBeUndefined();
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
     it('does not call the API when the CODIA is invalid and no verified selection exists', async () => {
       const privateService = service as unknown as {
         executeTool: (

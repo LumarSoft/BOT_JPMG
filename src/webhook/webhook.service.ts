@@ -59,6 +59,19 @@ interface QuoteVehicleMemory {
 
 const QUOTE_VEHICLE_MEMORY = 'quoteVehicle';
 
+/** A client retrying a failed quote within this window is the same matter. */
+const QUOTE_ALERT_WINDOW_MS = 30 * 60 * 1000;
+
+/**
+ * The quote service itself failed (Triunfo down or slow, our API unreachable),
+ * as opposed to data the client can fix such as a year the catalog rejects.
+ */
+function isQuoteServiceFailure(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const status = error.response?.status;
+  return status === undefined || status >= 500;
+}
+
 /** Tool rounds per reply. A car quote legitimately chains several lookups;
  * when the cap is hit the model still gets one last call, without tools, to
  * answer with what it has (instead of the generic error reply). */
@@ -198,6 +211,8 @@ export class WebhookService {
    * per-hour rate cap. Pruned on each check so the map stays bounded.
    */
   private readonly llmCalls = new Map<string, number[]>();
+  /** Last office alert for a failed online quote, by conversation id. */
+  private readonly quoteFailureAlerts = new Map<number, number>();
 
   /** Running OpenAI cost estimate for this process (USD), for observability. */
   private llmCostUsd = 0;
@@ -1823,12 +1838,42 @@ export class WebhookService {
             );
           }
           const brandFromCodia = Math.floor(codiaNum / 10000);
-          const quote = await this.api.quoteVehicle(vehicleType, {
-            brand: String(brandFromCodia),
-            model: String(codiaNum),
-            manufactureYear: Number(args.manufactureYear),
-            postalCode: Number(args.postalCode),
-          });
+          let quote: Awaited<ReturnType<ApiService['quoteVehicle']>>;
+          try {
+            quote = await this.api.quoteVehicle(vehicleType, {
+              brand: String(brandFromCodia),
+              model: String(codiaNum),
+              manufactureYear: Number(args.manufactureYear),
+              postalCode: Number(args.postalCode),
+            });
+          } catch (error) {
+            if (!isQuoteServiceFailure(error)) throw error;
+            const vehicle = [
+              rememberedVehicle?.brandName,
+              rememberedVehicle?.candidates.find((c) => c.codia === codiaNum)
+                ?.description ?? `CODIA ${codiaNum}`,
+            ]
+              .filter(Boolean)
+              .join(' ');
+            const notified = await this.alertFailedQuote(
+              conversationId,
+              `${vehicle}, año ${Number(args.manufactureYear)}, CP ${Number(args.postalCode)}`,
+            );
+            const failure = JSON.parse(this.toolError(name, error)) as Record<
+              string,
+              unknown
+            >;
+            return JSON.stringify(
+              notified
+                ? {
+                    ...failure,
+                    officeNotified: true,
+                    nextStep:
+                      'Ya le avisé a la oficina con el vehículo, el año y el código postal. Decile al cliente que un asesor le va a mandar la cotización por este chat; no le pidas que escriba asesor.',
+                  }
+                : failure,
+            );
+          }
           // Hand the model coverage names and ARS-formatted prices, not raw
           // codes and bare numbers — see constants/coverages.ts.
           return JSON.stringify(renderQuote(quote));
@@ -1838,6 +1883,33 @@ export class WebhookService {
       }
     } catch (error) {
       return this.toolError(name, error);
+    }
+  }
+
+  /**
+   * Leaves a pending matter for the office when the online quote failed, so a
+   * person follows up, and lets the bot keep attending. One alert per chat
+   * every QUOTE_ALERT_WINDOW_MS: a client retrying three times is one matter.
+   */
+  private async alertFailedQuote(
+    conversationId: number,
+    vehicle: string,
+  ): Promise<boolean> {
+    const now = Date.now();
+    const last = this.quoteFailureAlerts.get(conversationId);
+    if (last !== undefined && now - last < QUOTE_ALERT_WINDOW_MS) return true;
+    try {
+      await this.api.requestHandoff(
+        conversationId,
+        `No se pudo cotizar online (el cotizador de Triunfo no respondió): ${vehicle}. Cotizarlo y enviárselo al cliente.`,
+      );
+      this.quoteFailureAlerts.set(conversationId, now);
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `No se pudo avisar a la oficina de la cotización fallida: ${(error as Error).message}`,
+      );
+      return false;
     }
   }
 
