@@ -615,6 +615,26 @@ export function polizaPicker(
   return { kind: 'list', body, button: 'Elegir póliza', rows };
 }
 
+/** Reply to photos of the incident added to a claim in the guided photo step. */
+export function claimPhotoAddedText(count = 1): string {
+  return count === 1
+    ? '📎 Recibí la foto y la sumé a tu denuncia. Si tenés *más fotos del siniestro*, mandámelas. Cuando termines, escribí *listo*.'
+    : `📎 Recibí las ${count} fotos y las sumé a tu denuncia. Si tenés *más fotos del siniestro*, mandámelas. Cuando termines, escribí *listo*.`;
+}
+
+/** The latest guided-step reply, worded for every photo of the batch it answers. */
+export function pluralizeClaimPhotoReply(
+  messages: OutgoingMessage[],
+  count: number,
+): OutgoingMessage[] {
+  if (count === 1) return messages;
+  return messages.map((m) =>
+    m.kind === 'text' && m.body === claimPhotoAddedText(1)
+      ? { ...m, body: claimPhotoAddedText(count) }
+      : m,
+  );
+}
+
 export function docPicker(docs: PolizaDocumento[]): OutgoingMessage {
   const rows: ListRow[] = docs.map((d) => ({
     id: `${DOC_PREFIX}${d.code}`,

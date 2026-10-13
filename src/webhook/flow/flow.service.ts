@@ -23,6 +23,7 @@ import type {
 } from './flow.types';
 import {
   ALL_POLIZAS_ID,
+  claimPhotoAddedText,
   clientMenu,
   CLIENT_MENU_OPTS,
   cotizarMenu,
@@ -2012,7 +2013,7 @@ export class FlowService {
         messages: [
           {
             kind: 'text',
-            body: '📎 Recibí la foto y la sumé a tu denuncia. Si tenés *más fotos del siniestro*, mandámelas. Cuando termines, escribí *listo*.',
+            body: claimPhotoAddedText(),
           },
         ],
       };

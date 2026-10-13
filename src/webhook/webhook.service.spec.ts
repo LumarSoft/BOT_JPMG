@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { WebhookService } from './webhook.service';
+import { PHOTO_REPLY_DELAY_MS, WebhookService } from './webhook.service';
+import { claimPhotoAddedText } from './flow/flow.messages';
 import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
 import { FlowService } from './flow/flow.service';
@@ -1095,6 +1096,7 @@ describe('WebhookService', () => {
 
   describe('inbound media (siniestro photos)', () => {
     beforeEach(() => {
+      jest.useFakeTimers();
       api.getConversation.mockResolvedValue({
         conversationId: 7,
         client: null,
@@ -1103,6 +1105,19 @@ describe('WebhookService', () => {
       });
       api.saveMessage.mockResolvedValue({});
     });
+    afterEach(() => jest.useRealTimers());
+
+    /** Lets the batched photo reply go out (it waits for more photos first). */
+    async function settlePhotoReplies() {
+      await jest.advanceTimersByTimeAsync(PHOTO_REPLY_DELAY_MS);
+      const queues = (
+        service as unknown as { queues: Map<string, Promise<void>> }
+      ).queues;
+      await Promise.all([...queues.values()]);
+    }
+    const sentTexts = () =>
+      (meta.sendText.mock.calls as string[][]).map((call) => call[1]);
+    const image = { buffer: Buffer.from('img'), mimeType: 'image/jpeg' };
 
     it('downloads the image and attaches it to the open claim', async () => {
       meta.downloadMedia.mockResolvedValue({
@@ -1112,6 +1127,7 @@ describe('WebhookService', () => {
       api.attachAdjunto.mockResolvedValue({ claimId: 9, attachmentCount: 2 });
 
       await service.handleMedia('5491155556666', 'media-1', 'P1', 'wm1');
+      await settlePhotoReplies();
 
       expect(meta.downloadMedia).toHaveBeenCalledWith('media-1', 'P1');
       expect(api.attachAdjunto).toHaveBeenCalledWith(
@@ -1176,6 +1192,7 @@ describe('WebhookService', () => {
         'P1',
         'wm-loose',
       );
+      await settlePhotoReplies();
 
       expect(api.saveMessage).toHaveBeenCalledWith(
         7,
@@ -1217,6 +1234,7 @@ describe('WebhookService', () => {
       });
 
       await service.handleMedia('5491155556666', 'media-p', 'P1', 'wm-p');
+      await settlePhotoReplies();
 
       expect(meta.sendText).not.toHaveBeenCalled();
     });
@@ -1242,6 +1260,7 @@ describe('WebhookService', () => {
       });
 
       await service.handleMedia('5491155556666', 'media-d', 'P1', 'wm-d');
+      await settlePhotoReplies();
 
       const reply = (meta.sendText.mock.calls as string[][])[0][1];
       expect(reply).toContain('Terminemos primero los datos');
@@ -1269,6 +1288,7 @@ describe('WebhookService', () => {
       });
 
       await service.handleMedia('5491155556666', 'media-x', 'P1', 'wm-x');
+      await settlePhotoReplies();
 
       expect((meta.sendText.mock.calls as string[][])[0][1]).toContain(
         'registremos la denuncia',
@@ -1322,6 +1342,7 @@ describe('WebhookService', () => {
         'P1',
         'wm-disabled',
       );
+      await settlePhotoReplies();
 
       expect(api.attachAdjunto).toHaveBeenCalled();
       expect(api.saveMessage).toHaveBeenCalledWith(
@@ -1332,6 +1353,157 @@ describe('WebhookService', () => {
         undefined,
       );
       expect(flow.handle).not.toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
+    });
+
+    it('answers several photos sent together once', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: 9, attached: true });
+
+      for (const n of [1, 2, 3])
+        await service.handleMedia('5491155556666', `m${n}`, 'P1', `wb${n}`);
+      expect(meta.sendText).not.toHaveBeenCalled();
+      await settlePhotoReplies();
+
+      expect(api.attachAdjunto).toHaveBeenCalledTimes(3);
+      expect(sentTexts()).toEqual([
+        '📎 Recibí tus 3 fotos y las sumé a la denuncia que hiciste. Si tenés más, mandámelas.',
+      ]);
+    });
+
+    it('asks once what several loose photos are for', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ attached: false, attachments: [] });
+
+      await service.handleMedia('5491155556666', 'u1', 'P1', 'wu1');
+      await service.handleMedia('5491155556666', 'u2', 'P1', 'wu2');
+      await settlePhotoReplies();
+
+      expect(sentTexts()).toHaveLength(1);
+      expect(sentTexts()[0]).toContain(
+        '¡Recibí tus 2 fotos! Contame para qué son',
+      );
+    });
+
+    it('drops "para qué son" when the customer explains right away', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ attached: false, attachments: [] });
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: false,
+        flowState: null,
+      });
+
+      await service.handleMedia('5491155556666', 'q1', 'P1', 'wq1');
+      await service.handleMessage(
+        '5491155556666',
+        'son de mi moto para cotizar',
+        'P1',
+        'wq2',
+      );
+      await settlePhotoReplies();
+
+      expect(sentTexts()).toEqual(['reply']);
+    });
+
+    it('answers the photos before a message that came after them', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: 9, attached: true });
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: false,
+        flowState: null,
+      });
+
+      await service.handleMedia('5491155556666', 'o1', 'P1', 'wo1');
+      await service.handleMedia('5491155556666', 'o2', 'P1', 'wo2');
+      await service.handleMessage('5491155556666', 'listo', 'P1', 'wo3');
+
+      expect(sentTexts()[0]).toContain('Recibí tus 2 fotos');
+      expect(sentTexts()).toContain('reply');
+      expect(sentTexts().indexOf('reply')).toBeGreaterThan(0);
+      await settlePhotoReplies();
+      expect(sentTexts().filter((t) => t.includes('Recibí'))).toHaveLength(1);
+    });
+
+    it('words the claim photo step reply for the whole batch', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: false,
+        flowState: JSON.stringify({ step: 'SINIESTRO_FOTO_DANIO', data: {} }),
+      });
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: 9, attached: true });
+      flow.handle.mockResolvedValue({
+        messages: [{ kind: 'text', body: claimPhotoAddedText() }],
+        state: { step: 'SINIESTRO_FOTO_DANIO', data: {} },
+      });
+
+      for (const n of [1, 2, 3])
+        await service.handleMedia('5491155556666', `d${n}`, 'P1', `wd${n}`);
+      await settlePhotoReplies();
+
+      expect(flow.handle).toHaveBeenCalledTimes(3);
+      expect(sentTexts()).toEqual([claimPhotoAddedText(3)]);
+      expect(sentTexts()[0]).toContain('Recibí las 3 fotos');
+    });
+
+    it('sends only the latest prompt when guided documents arrive together', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: false,
+        flowState: JSON.stringify({
+          step: 'COT_DOC_DNI_FRENTE',
+          data: { leadId: 42 },
+        }),
+      });
+      meta.downloadMedia.mockResolvedValue(image);
+      flow.handle
+        .mockResolvedValueOnce({
+          messages: [{ kind: 'text', body: 'Ahora el dorso del DNI' }],
+          state: { step: 'COT_DOC_DNI_DORSO', data: { leadId: 42 } },
+        })
+        .mockResolvedValueOnce({
+          messages: [{ kind: 'text', body: 'Por último, la tarjeta' }],
+          state: { step: 'COT_DOC_TARJETA_AZUL', data: { leadId: 42 } },
+        })
+        .mockResolvedValueOnce({
+          messages: [{ kind: 'text', body: 'Ya tenemos todo' }],
+          state: { step: 'LEAD_MENU', data: {} },
+        });
+
+      for (const n of [1, 2, 3])
+        await service.handleMedia('5491155556666', `l${n}`, 'P1', `wl${n}`);
+      await settlePhotoReplies();
+
+      expect(api.attachLeadAdjunto).toHaveBeenCalledTimes(3);
+      expect(api.saveFlowState).toHaveBeenCalledTimes(3);
+      expect(sentTexts()).toEqual(['Ya tenemos todo']);
+    });
+
+    it('stays silent if the bot is switched off while photos arrive', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: 9, attached: true });
+
+      await service.handleMedia('5491155556666', 's1', 'P1', 'ws1');
+      api.getContext.mockResolvedValue({
+        systemPrompt: 'x',
+        botEnabled: false,
+      });
+      await settlePhotoReplies();
+
       expect(meta.sendText).not.toHaveBeenCalled();
     });
   });

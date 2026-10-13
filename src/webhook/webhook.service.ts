@@ -18,7 +18,11 @@ import {
   takeOutDocsState,
 } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
-import { gncButtons, toWhatsAppMarkdown } from './flow/flow.messages';
+import {
+  gncButtons,
+  pluralizeClaimPhotoReply,
+  toWhatsAppMarkdown,
+} from './flow/flow.messages';
 import { renderQuote } from './constants/coverages';
 import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
 import { COTIZADOR_TOOLS, REQUEST_COVERAGE_TOOL } from './constants/tools';
@@ -85,6 +89,60 @@ const RATE_LIMIT_REPLY =
  * webhooks on any timeout/hiccup, always within a few minutes. */
 const DEDUP_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * WhatsApp delivers an album as one message per photo, so the bot used to
+ * answer every photo ("¡Recibí tu foto!" twelve times in a row). The reply to a
+ * photo waits this long for the next one and goes out once for the whole batch.
+ */
+export const PHOTO_REPLY_DELAY_MS = 8_000;
+
+/** What a batched photo reply says; photos of the same kind share one reply. */
+type PhotoReplyKind = 'guided' | 'loose' | 'unknown' | 'early' | 'needClaim';
+
+interface PendingPhotoReply {
+  kind: PhotoReplyKind;
+  count: number;
+  to: string;
+  phoneNumberId: string;
+  conversationId: number;
+  /** Builds the reply for `count` photos (the latest photo's reply wins). */
+  render: (count: number) => OutgoingMessage[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const text = (body: string): OutgoingMessage[] => [{ kind: 'text', body }];
+
+/** Replies to photos outside a guided step, by how many arrived together. */
+const PHOTO_REPLIES: Record<
+  Exclude<PhotoReplyKind, 'guided'>,
+  (count: number) => OutgoingMessage[]
+> = {
+  // The API only joins a loose photo to a claim filed in the last 48 h, so this
+  // is the claim the customer just made.
+  loose: (n) =>
+    text(
+      n === 1
+        ? '📎 Recibí tu foto y la sumé a la denuncia que hiciste. Si tenés más, mandámelas.'
+        : `📎 Recibí tus ${n} fotos y las sumé a la denuncia que hiciste. Si tenés más, mandámelas.`,
+    ),
+  unknown: (n) =>
+    text(
+      n === 1
+        ? '📎 ¡Recibí tu foto! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.'
+        : `📎 ¡Recibí tus ${n} fotos! Contame para qué son y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.`,
+    ),
+  early: (n) =>
+    text(
+      n === 1
+        ? '📎 Guardé tu foto. Terminemos primero los datos de la denuncia y después te pido las fotos.'
+        : `📎 Guardé tus ${n} fotos. Terminemos primero los datos de la denuncia y después te pido las fotos.`,
+    ),
+  needClaim: () =>
+    text(
+      'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.',
+    ),
+};
+
 /** Secret dev command: wipes the chat history so the next message starts fresh. */
 const RESET_COMMAND = '/reset';
 
@@ -122,6 +180,9 @@ export class WebhookService {
    * previous one for the same sender so they run strictly in order.
    */
   private readonly queues = new Map<string, Promise<void>>();
+
+  /** Photo replies waiting for the rest of the batch, per sender (queue key). */
+  private readonly photoReplies = new Map<string, PendingPhotoReply>();
 
   /**
    * WhatsApp message ids (wamid) seen recently, mapped to their arrival time.
@@ -204,8 +265,12 @@ export class WebhookService {
     messageId: string,
     contactName?: string,
   ): Promise<void> {
-    return this.enqueue(from, phoneNumberId, messageId, () =>
-      this.processMedia(from, mediaId, phoneNumberId, contactName),
+    return this.enqueue(
+      from,
+      phoneNumberId,
+      messageId,
+      () => this.processMedia(from, mediaId, phoneNumberId, contactName),
+      { keepPhotoReply: true },
     );
   }
 
@@ -234,6 +299,7 @@ export class WebhookService {
     phoneNumberId: string,
     messageId: string,
     task: () => Promise<void>,
+    options: { keepPhotoReply?: boolean } = {},
   ): Promise<void> {
     if (!this.markSeen(messageId)) {
       this.logger.warn(`Mensaje duplicado ${messageId} ignorado`);
@@ -241,6 +307,18 @@ export class WebhookService {
     }
 
     const key = `${phoneNumberId}:${from}`;
+    // Anything but another photo answers the photos first, so the chat reads
+    // in order: "recibí tus fotos" before the reply to what came after them.
+    // Asking what loose photos are for is moot once the customer writes.
+    return this.chain(key, async () => {
+      if (!options.keepPhotoReply)
+        await this.flushPhotoReply(key, { dropQuestion: true });
+      await task();
+    });
+  }
+
+  /** Runs `task` after every in-flight one for the same sender. */
+  private chain(key: string, task: () => Promise<void>): Promise<void> {
     const prev = this.queues.get(key) ?? Promise.resolve();
     // A failure in the previous message must not block the rest of the queue.
     const next = prev.catch(() => undefined).then(task);
@@ -790,6 +868,7 @@ export class WebhookService {
   ) {
     this.logger.log(`Procesando imagen de ${from}...`);
     const to = this.meta.normalizePhone(from);
+    const key = `${phoneNumberId}:${from}`;
 
     let context: BotContext;
     let conversation: BotConversation;
@@ -806,6 +885,7 @@ export class WebhookService {
       this.logger.error(
         `API no disponible (media): ${(error as Error).message}`,
       );
+      await this.flushPhotoReply(key);
       await this.meta.sendText(to, FALLBACK_REPLY, phoneNumberId);
       return;
     }
@@ -821,6 +901,7 @@ export class WebhookService {
       ) {
         return;
       }
+      await this.flushPhotoReply(key);
       await this.meta.sendText(
         to,
         'No pude descargar la imagen. ¿Podés reenviarla?',
@@ -876,6 +957,7 @@ export class WebhookService {
       const reply = leadTipo
         ? this.leadDocErrorReply(error)
         : this.mediaErrorReply(error);
+      await this.flushPhotoReply(key);
       await this.meta.sendText(to, reply, phoneNumberId);
       return;
     }
@@ -920,15 +1002,16 @@ export class WebhookService {
       // missing. While the claim's details are still being collected, it is
       // simply early. Anywhere else we don't know what the photo is for (a moto
       // to quote got "registremos la denuncia"), so ask instead of assuming.
-      const reply = tipo
-        ? 'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.'
+      const kind: PhotoReplyKind = tipo
+        ? 'needClaim'
         : flowState?.step.startsWith('SINIESTRO_')
-          ? '📎 Guardé tu foto. Terminemos primero los datos de la denuncia y después te pido las fotos.'
-          : '📎 ¡Recibí tu foto! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.';
-      await this.api
-        .saveMessage(conversation.conversationId, 'assistant', reply)
-        .catch(() => undefined);
-      await this.meta.sendText(to, reply, phoneNumberId);
+          ? 'early'
+          : 'unknown';
+      await this.queuePhotoReply(key, kind, PHOTO_REPLIES[kind], {
+        to,
+        phoneNumberId,
+        conversationId: conversation.conversationId,
+      });
       return;
     }
 
@@ -958,27 +1041,84 @@ export class WebhookService {
             `No se pudo guardar el flowState: ${error.message}`,
           ),
         );
-      for (const message of compactMessages(result.messages)) {
-        await this.dispatch(to, message, phoneNumberId);
+      // The step already advanced; only the latest prompt is sent. Three
+      // photos at once used to get "mandame el dorso", "mandame la tarjeta"...
+      // for documents the customer had just sent.
+      const messages = result.messages;
+      await this.queuePhotoReply(
+        key,
+        'guided',
+        (count) => pluralizeClaimPhotoReply(messages, count),
+        { to, phoneNumberId, conversationId: conversation.conversationId },
+      );
+      return;
+    }
+
+    await this.queuePhotoReply(key, 'loose', PHOTO_REPLIES.loose, {
+      to,
+      phoneNumberId,
+      conversationId: conversation.conversationId,
+    });
+  }
+
+  /**
+   * Holds the reply to a photo until the batch it belongs to is complete:
+   * another photo of the same kind within PHOTO_REPLY_DELAY_MS joins it, a
+   * different kind sends the pending reply first.
+   */
+  private async queuePhotoReply(
+    key: string,
+    kind: PhotoReplyKind,
+    render: (count: number) => OutgoingMessage[],
+    target: { to: string; phoneNumberId: string; conversationId: number },
+  ): Promise<void> {
+    const pending = this.photoReplies.get(key);
+    if (pending && pending.kind !== kind) await this.flushPhotoReply(key);
+    const previous = this.photoReplies.get(key);
+    if (previous) clearTimeout(previous.timer);
+    const timer = setTimeout(() => {
+      void this.chain(key, () => this.flushPhotoReply(key));
+    }, PHOTO_REPLY_DELAY_MS);
+    // Never keeps the process alive on its own (shutdown, tests).
+    timer.unref?.();
+    this.photoReplies.set(key, {
+      kind,
+      count: (previous?.count ?? 0) + 1,
+      render,
+      timer,
+      ...target,
+    });
+  }
+
+  /** Sends the reply a photo batch is waiting for, if any. Never throws. */
+  private async flushPhotoReply(
+    key: string,
+    options: { dropQuestion?: boolean } = {},
+  ): Promise<void> {
+    const pending = this.photoReplies.get(key);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.photoReplies.delete(key);
+    if (options.dropQuestion && pending.kind === 'unknown') return;
+    try {
+      // The bot may have been switched off while the batch was arriving.
+      if (!(await this.automaticRepliesStillEnabled(pending.phoneNumberId)))
+        return;
+      for (const message of compactMessages(pending.render(pending.count))) {
+        await this.dispatch(pending.to, message, pending.phoneNumberId);
         await this.api
           .saveMessage(
-            conversation.conversationId,
+            pending.conversationId,
             'assistant',
             this.toTranscript(message),
           )
           .catch(() => undefined);
       }
-      return;
+    } catch (error) {
+      this.logger.error(
+        `No se pudo responder a las fotos: ${(error as Error).message}`,
+      );
     }
-
-    // Outside the guided flow: the API only joins a loose photo to a claim
-    // filed in the last 48 h, so this is the claim the customer just made.
-    const reply =
-      '📎 Recibí tu foto y la sumé a la denuncia que hiciste. Si tenés más, mandámelas.';
-    await this.api
-      .saveMessage(conversation.conversationId, 'assistant', reply)
-      .catch(() => undefined);
-    await this.meta.sendText(to, reply, phoneNumberId);
   }
 
   /** A take-out document that could not be stored: ask again, don't lose the step. */
