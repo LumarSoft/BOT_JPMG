@@ -139,6 +139,38 @@ const CUPON_RE = /\bcupon(?:es|era|eras)?\b/;
 /** Policy papers asked for together with the coupons. Folded text. */
 const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
 
+/**
+ * Steps where the customer is talking to the bot and may ask it to pass
+ * something on to a person ("¿le podés decir a Milagros…?"). Guided steps
+ * (claim details, photos, documents) are left alone so a name can't cut them.
+ */
+const PERSON_MENTION_STEPS = new Set<FlowStep>([
+  'CLIENT_MENU',
+  'LEAD_MENU',
+  'IDENTIFY',
+  'COTIZAR_TIPO',
+  'LLM_FAQ',
+  'LLM_COTIZACION',
+  'ASESOR_MOTIVO',
+]);
+
+/** The office person a message names ("Hola Mili", "decile a Milagros"), if any. */
+export function staffNamed(
+  text: string,
+  staffNames: string[],
+  botName?: string | null,
+): string | null {
+  const t = fold(text);
+  const bot = botName ? fold(botName).trim() : '';
+  for (const name of staffNames) {
+    const n = fold(name).trim();
+    if (n.length < 3 || n === bot) continue;
+    const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(t)) return name;
+  }
+  return null;
+}
+
 const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
 
@@ -403,6 +435,18 @@ export class FlowService {
       )
     ) {
       return this.handleAsesorMotivo(input, ctx, key);
+    }
+
+    // Written to a person of the office by name ("Hola Mili, ¿cómo estás?"):
+    // the customer expects her, not the bot's introduction.
+    if (!sel && !/^men[uú]$/i.test(input.text.trim())) {
+      const forPerson = await this.messageForPerson(
+        input,
+        ctx,
+        key,
+        existing?.state ?? null,
+      );
+      if (forPerson) return forPerson;
     }
 
     // First contact (no state): answer what the message asks when it asks
@@ -960,6 +1004,61 @@ export class FlowService {
           }
         );
     }
+  }
+
+  /**
+   * A message for an office person (Producer.staffNames) goes to the office.
+   * At the start of a chat the bot stays out of it — and of the rest of that
+   * conversation, until "menú" — speaking only to say when the office reopens.
+   * In the middle of a talk with the bot it confirms it passed the message on:
+   * it used to answer "no puedo comunicarme con Milagros".
+   */
+  private async messageForPerson(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+    state: FlowState | null,
+  ): Promise<FlowResult | null> {
+    const opening = !state || state.step === 'ROOT';
+    if (!opening && !PERSON_MENTION_STEPS.has(state.step)) return null;
+    const earlier =
+      opening && typeof state?.data.forPerson === 'string'
+        ? state.data.forPerson
+        : null;
+    const named = staffNamed(input.text, ctx.staffNames ?? [], ctx.botName);
+    const name = named ?? earlier;
+    if (!name) return null;
+
+    // The reason only on the first message: the API keeps one pending matter
+    // per chat however many messages follow (see personFollowUp).
+    const text = input.text.trim();
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        earlier
+          ? undefined
+          : `Mensaje para ${name}: "${text.length > 300 ? `${text.slice(0, 300)}…` : text}"`,
+      )
+      .catch(() => undefined);
+
+    if (!opening) {
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: `Le paso tu mensaje a ${name} 🙌${await this.closedNote()}`,
+          },
+        ],
+      };
+    }
+    this.setState(key, 'ROOT', { ...(state?.data ?? {}), forPerson: name });
+    if (earlier) return { messages: [] };
+    const closed = await this.closedNote();
+    return {
+      messages: closed
+        ? [{ kind: 'text', body: `Le paso tu mensaje a ${name} 🙌${closed}` }]
+        : [],
+    };
   }
 
   /** Runs a client action for someone who has not said they are a client yet. */

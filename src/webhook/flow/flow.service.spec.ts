@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { ApiService } from '../../api/api.service';
-import { FlowService, takeOutDocsState } from './flow.service';
+import { FlowService, staffNamed, takeOutDocsState } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
 import { IdentificationInterpreter } from './identification-interpreter.service';
@@ -1748,6 +1748,112 @@ describe('FlowService', () => {
       expect(bodies(again)).toContain(
         'Ya le pasé a la oficina tu pedido de la documentación de tu CHEVROLET CORSA',
       );
+    });
+  });
+
+  describe('mensajes para una persona de la oficina', () => {
+    const staffCtx: FlowContext = {
+      ...leadCtx,
+      staffNames: ['Mili', 'Milagros'],
+    };
+    const bodies = (res: { messages: unknown[] }) =>
+      JSON.stringify(res.messages);
+    const closed = () =>
+      api.getHours.mockResolvedValue({
+        formatted: 'Lunes a viernes de 8 a 16 hs',
+        isOpenNow: false,
+        todayClosure: null,
+        message: 'Ahora estamos cerrados.',
+        closedNote: 'Hoy estamos cerrados; te respondemos mañana a las 8 hs.',
+      });
+
+    it('no se presenta y le pasa el mensaje a la oficina', async () => {
+      const res = await send({ text: 'Buenos días Mili' }, staffCtx);
+
+      expect(res.messages).toEqual([]);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Mensaje para Mili: "Buenos días Mili"',
+      );
+      expect(stored).toMatchObject({
+        step: 'ROOT',
+        data: { forPerson: 'Mili' },
+      });
+    });
+
+    it('sigue con la oficina en los mensajes siguientes', async () => {
+      await send({ text: 'Hola Milagros, como estas?' }, staffCtx);
+      const next = await send(
+        { text: 'te consulto por el pago de la patente AB123CD' },
+        staffCtx,
+      );
+
+      expect(next.messages).toEqual([]);
+      expect(api.requestHandoff).toHaveBeenLastCalledWith(1, undefined);
+      expect(api.identifyClient).not.toHaveBeenCalled();
+    });
+
+    it('con la oficina cerrada avisa cuándo le responde', async () => {
+      closed();
+      const res = await send({ text: 'MILI , COMO ESTAS' }, staffCtx);
+
+      expect(bodies(res)).toContain('Le paso tu mensaje a Mili 🙌');
+      expect(bodies(res)).toContain('te respondemos mañana');
+      expect(bodies(res)).not.toContain('Soy');
+
+      const next = await send({ text: 'es por la cuota' }, staffCtx);
+      expect(next.messages).toEqual([]);
+    });
+
+    it('"menú" vuelve al bot', async () => {
+      await send({ text: 'Hola Mili' }, staffCtx);
+      const res = await send({ text: 'menú' }, staffCtx);
+
+      expect(res.messages.length).toBeGreaterThan(0);
+      expect(stored?.data.forPerson).toBeUndefined();
+    });
+
+    it('a mitad de una charla con el bot confirma que le pasa el mensaje', async () => {
+      stored = { step: 'LLM_FAQ', data: {}, audience: 'lead' };
+      const res = await send(
+        { text: 'Bueno, pero le podés decir a Milagros que me cotice la moto' },
+        staffCtx,
+      );
+
+      expect(bodies(res)).toContain('Le paso tu mensaje a Milagros 🙌');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Mensaje para Milagros'),
+      );
+      expect(stored?.step).toBe('LLM_FAQ');
+    });
+
+    it('no corta un paso guiado', async () => {
+      stored = { step: 'SINIESTRO_DESC', data: {}, audience: 'client' };
+      await send({ text: 'Le choqué el auto a Milagros, mi vecina' }, staffCtx);
+
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Mensaje para'),
+      );
+    });
+
+    it('sin nombres configurados saluda como siempre', async () => {
+      const res = await send({ text: 'Buenos días Mili' }, leadCtx);
+
+      expect(res.messages.length).toBeGreaterThan(0);
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it('reconoce el nombre solo como palabra completa', () => {
+      const names = ['Mili', 'Milagros'];
+      expect(staffNamed('Hola Mili!', names)).toBe('Mili');
+      expect(staffNamed('decile a MILAGROS que me llame', names)).toBe(
+        'Milagros',
+      );
+      expect(staffNamed('funciona milagrosamente', names)).toBeNull();
+      expect(staffNamed('Camilita', names)).toBeNull();
+      expect(staffNamed('Hola Nico', ['Nico'], 'NICO')).toBeNull();
     });
   });
 

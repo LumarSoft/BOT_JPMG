@@ -522,6 +522,7 @@ export class WebhookService {
         // Reading the message is optional: past the hourly cap the flow
         // falls back to its menus instead of spending another call.
         llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
+        staffNames: context.staffNames ?? [],
       },
     );
 

@@ -126,4 +126,6 @@ export interface FlowContext {
   answeringPerson?: boolean;
   /** This sender used up the hourly model calls: skip optional model reads. */
   llmRateLimited?: boolean;
+  /** Office people customers write to by name ("Mili"): those messages go to the office. */
+  staffNames?: string[];
 }

@@ -8,6 +8,8 @@ export interface BotContext {
   botName: string | null;
   /** False when a SuperAdmin disabled every automated response for the organization. */
   botEnabled?: boolean;
+  /** Office people customers write to by name (Producer.staffNames). Absent on older APIs. */
+  staffNames?: string[];
   /** General attention window (Producer.attentionHours); null → app default. */
   attentionHours: string | null;
   systemPrompt: string;
