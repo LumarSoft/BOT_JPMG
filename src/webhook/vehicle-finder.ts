@@ -192,11 +192,20 @@ export async function findVehicle(
   );
   if (brands.length === 0) {
     // Likely a typo ("wolswagen", "renol"): offer the brands that start the
-    // same way so the model can ask "¿quisiste decir…?".
+    // same way so the model can ask "¿quisiste decir…?". InfoAuto matches the
+    // letters anywhere in the name, so keep only brands with a word that starts
+    // with them: "son" (from Sontes) returned HARLEY DAVIDSON, and the bot told
+    // the customer it was the only brand there was.
     const prefix = fold(args.brand).trim().slice(0, 3);
     const similar =
       prefix.length === 3
-        ? (await api.searchBrands(vehicleType, prefix)).slice(0, 10)
+        ? (await api.searchBrands(vehicleType, prefix))
+            .filter((b) =>
+              fold(b.name)
+                .split(/[^a-z0-9]+/)
+                .some((word) => word.startsWith(prefix)),
+            )
+            .slice(0, 10)
         : [];
     return {
       error: `No encontré la marca "${args.brand}" en el catálogo de ${vehicleType === 'moto' ? 'motos' : 'autos'}.`,

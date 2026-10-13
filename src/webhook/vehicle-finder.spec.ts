@@ -201,6 +201,26 @@ describe('findVehicle', () => {
     expect(res.similarBrands).toEqual(['RENAULT']);
   });
 
+  it('does not suggest brands that only contain the letters', async () => {
+    // InfoAuto matches "son" inside HARLEY DAVIDSON; Zontes is not in its catalog.
+    const a = {
+      searchBrands: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 896, name: 'HARLEY DAVIDSON' }]),
+      getGroups: jest.fn(),
+      getModels: jest.fn(),
+    };
+    const res = await findVehicle(a, {
+      vehicleType: 'moto',
+      brand: 'Sontes',
+      model: '150X',
+    });
+
+    expect(res.error).toContain('No encontré la marca "Sontes"');
+    expect(res.similarBrands).toBeUndefined();
+  });
+
   it('reads "5 puertas" as the catalog\'s "5 P" and keeps the best matches', async () => {
     const a = {
       searchBrands: jest
