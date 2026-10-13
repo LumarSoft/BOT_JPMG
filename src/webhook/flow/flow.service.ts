@@ -138,6 +138,17 @@ const OPENING_COMMAND_RE =
 const CUPON_RE = /\bcupon(?:es|era|eras)?\b/;
 
 /** Policy papers asked for together with the coupons. Folded text. */
+/** A payment receipt being sent, or a payment that did not register. Folded. */
+const PAYMENT_PROOF_RE =
+  /\b(ya pague|(?:envio|adjunto|mando|paso|te (?:mando|paso|envio)|aca (?:esta|va|tenes)|este es|es) (?:el |un |mi )?comprobante|comprobante (?:de (?:la )?(?:pago|transferencia))|no (?:se )?(?:acredito|acredita) (?:mi |el )?pago)\b/;
+
+/** Activity this recent means the same conversation is still going on. */
+const MID_CONVERSATION_MS = 10 * 60_000;
+
+/** A new incident being reported, as people say it. Folded text. */
+const NEW_INCIDENT_RE =
+  /\bnuev[ao]|\bdenunci|\breportar|\bregistr|\bquiero hacer|\bocurri|\btuve|\bchoc|\baccidente|\bme robaron|\brob(?:o|aron)\b|\bhurt|\bgranizo|\bincendi|\bse (?:quemo|prendio fuego)|\bme (?:rompieron|golpearon|pegaron)/;
+
 const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
 
 /** Something in a request shaped like a DNI/CUIT (7+ digits, dots or dashes
@@ -579,12 +590,9 @@ export class FlowService {
     const sel = input.selectionId;
     // Payment proofs and missing credits need human review. Policy cancellations
     // keep the dedicated identification, policy selection and confirmation flow.
-    if (
-      !sel &&
-      /\b(ya pague|envio (?:el |un )?comprobante|adjunto (?:el |un )?comprobante|no (?:se )?(?:acredito|acredita) (?:mi |el )?pago)\b/.test(
-        fold(input.text),
-      )
-    ) {
+    // "Es el comprobante de pago" (after a photo) used to open the account
+    // status instead: the office has to register the payment.
+    if (!sel && PAYMENT_PROOF_RE.test(fold(input.text))) {
       return this.handleAsesorMotivo(input, ctx, key);
     }
 
@@ -793,7 +801,12 @@ export class FlowService {
     const intro: WelcomeIntro = personRecently
       ? 'returning'
       : this.introFor(ctx);
-    const opener = personRecently ? null : openingLine(intro, ctx.botName);
+    // Right after our own reply (a loose photo is answered without a flow
+    // state) this is the same conversation: no "¡Hola de nuevo!".
+    const opener =
+      personRecently || this.repliedMomentsAgo(ctx)
+        ? null
+        : openingLine(intro, ctx.botName);
     // The very first message already asks for a quote ("hola, quiero cotizar
     // mi auto"): a quote doesn't need "¿ya sos cliente?", and every extra
     // round-trip is one more billed message and one more wait. Introduce
@@ -851,7 +864,7 @@ export class FlowService {
       case 'BAJA_CONFIRM':
         return this.handleBajaConfirm(state, input, ctx, key);
       case 'SINIESTRO_TYPE':
-        return this.handleSiniestroType(input, ctx, key);
+        return this.handleSiniestroType(state, input, ctx, key);
       case 'SINIESTRO_POLIZA':
         return this.handleSiniestroPoliza(state, input, ctx, key);
       case 'SINIESTRO_DATOS':
@@ -1020,6 +1033,13 @@ export class FlowService {
    * How the welcome introduces the bot on a first message: in full the first
    * time, "¡Hola de nuevo!" for someone who talked to us in the last hours.
    */
+  private repliedMomentsAgo(ctx: FlowContext): boolean {
+    const last = ctx.previousActivityAt
+      ? Date.parse(ctx.previousActivityAt)
+      : NaN;
+    return Number.isFinite(last) && Date.now() - last <= MID_CONVERSATION_MS;
+  }
+
   private introFor(ctx: FlowContext): WelcomeIntro {
     const last = ctx.previousActivityAt
       ? Date.parse(ctx.previousActivityAt)
@@ -1104,9 +1124,24 @@ export class FlowService {
         const result = await this.enterCotizar(input, ctx, key);
         return result.handoff ? result : this.withOpener(opener, result);
       }
-      case 'siniestro':
+      case 'siniestro': {
+        // "Me chocaron" already says it is a new claim: asking "¿denuncia
+        // nueva o consultar?" only adds a step.
+        const opt = this.matchSiniestroIntent(input.text);
+        if (opt)
+          return this.withOpener(
+            opener,
+            await this.guardAsClient(
+              ctx,
+              key,
+              opt === OPT.sinNueva ? 'siniestro_nueva' : 'siniestro_consultar',
+              {},
+              input.text,
+            ),
+          );
         this.setState(key, 'SINIESTRO_TYPE', {}, 'client');
         return this.withOpener(opener, { messages: [siniestroTypeMenu()] });
+      }
       case 'documentos':
       case 'pagos': {
         // The model files coupons under documentos or pagos; neither path can
@@ -1815,16 +1850,41 @@ export class FlowService {
   // ─── Siniestros ───────────────────────────────────────────
 
   private async handleSiniestroType(
+    state: FlowState,
     input: UserInput,
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
     const opt = input.selectionId ?? this.matchSiniestroIntent(input.text);
+    // A DNI typed on this menu is kept for when they pick an option.
+    const said =
+      typeof state.data.pendingSaid === 'string'
+        ? `${state.data.pendingSaid} ${input.text}`
+        : input.text;
     if (opt === OPT.sinNueva)
-      return this.guard(ctx, key, 'siniestro_nueva', {}, input.text);
+      return this.guard(ctx, key, 'siniestro_nueva', {}, said);
     if (opt === OPT.sinConsultar)
-      return this.guard(ctx, key, 'siniestro_consultar', {}, input.text);
-    return { messages: [], handoff: 'faq' };
+      return this.guard(ctx, key, 'siniestro_consultar', {}, said);
+    // Anything else used to go to the FAQ model, which answered "escribí
+    // *menú* y elegí Siniestros" to someone already on this menu.
+    this.setState(key, 'SINIESTRO_TYPE', {
+      ...state.data,
+      ...(MAYBE_IDENTIFICATION_RE.test(input.text)
+        ? { pendingSaid: input.text }
+        : {}),
+    });
+    return {
+      messages: [
+        {
+          kind: 'buttons',
+          body: 'Para seguir, decime si es una *denuncia nueva* o si querés *consultar* una que ya hiciste.',
+          buttons: [
+            { id: OPT.sinNueva, title: 'Denuncia nueva' },
+            { id: OPT.sinConsultar, title: 'Consultar una' },
+          ],
+        },
+      ],
+    };
   }
 
   private async handleSiniestroPoliza(
@@ -2268,7 +2328,7 @@ export class FlowService {
     return this.askPhoto(
       key,
       'SINIESTRO_TERCERO_CARNET',
-      'Y por último, la *foto del carnet de conducir del tercero*. (o *no la tengo*)',
+      'Ahora la *foto del carnet de conducir del tercero*. (o *no la tengo*)',
     );
   }
 
@@ -2417,7 +2477,7 @@ export class FlowService {
       '¡Listo! 🙌 Ya tenemos todo para tu contratación. Un asesor te contacta ' +
         `para terminarla (${attentionHoursOf(ctx.attentionHours)}).` +
         (await this.closedNote()),
-      this.toMainMenu(key, ctx),
+      this.menuAfterRequest(key, ctx),
     );
   }
 
@@ -3002,7 +3062,7 @@ export class FlowService {
       `✅ ¡Listo! Registré tu pedido de cotización${planLine}. ` +
         `Un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
         (await this.closedNote()),
-      this.toMainMenu(key, ctx),
+      this.menuAfterRequest(key, ctx),
     );
   }
 
@@ -3321,6 +3381,17 @@ export class FlowService {
     return result;
   }
 
+  /**
+   * After a request is registered: the menu of a declared client or lead, or
+   * nothing for someone who never said — "¿ya sos cliente nuestro?" right
+   * after "¡Listo! Un asesor te contacta" read as starting over.
+   */
+  private menuAfterRequest(key: string, ctx: FlowContext): FlowResult {
+    if (this.audienceOf(key, ctx)) return this.toMainMenu(key, ctx);
+    this.setState(key, 'ROOT');
+    return { messages: [] };
+  }
+
   private toMainMenu(key: string, ctx: FlowContext): FlowResult {
     // Respect the branch the user already declared so "menú" doesn't bounce a
     // known client/lead back to the "¿sos cliente?" question.
@@ -3591,15 +3662,17 @@ export class FlowService {
   }
 
   private matchSiniestroIntent(text: string): string | null {
-    const t = text.toLowerCase();
+    const t = fold(text);
+    // Following one up wins over the words of the incident itself: "el estado
+    // de mi denuncia" used to start a new claim.
     if (
-      /\bnuev[ao]|\bdenunci|\breportar|\bregistr|\bquiero hacer|\bocurri|\btuve|\bchoque|\baccidente/.test(
+      /\bconsultar|\bestado\b|\bseguimiento|\bcomo (?:va|sigue)\b|\bya ten[i]a/.test(
         t,
       )
     )
-      return OPT.sinNueva;
-    if (/\bconsultar|\bver\b|\bestado|\bmis\b|\btengo\b|\bya ten[ií]a/.test(t))
       return OPT.sinConsultar;
+    if (NEW_INCIDENT_RE.test(t)) return OPT.sinNueva;
+    if (/\bver\b|\bmis\b|\btengo\b/.test(t)) return OPT.sinConsultar;
     return null;
   }
 

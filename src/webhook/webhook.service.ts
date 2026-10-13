@@ -74,6 +74,20 @@ interface QuoteVehicleMemory {
 
 const QUOTE_VEHICLE_MEMORY = 'quoteVehicle';
 
+/** Claim steps before it is filed (on confirmation): its details, not photos. */
+const CLAIM_DRAFT_STEPS = new Set<string>([
+  'SINIESTRO_TYPE',
+  'SINIESTRO_POLIZA',
+  'SINIESTRO_DATOS',
+  'SINIESTRO_FECHA',
+  'SINIESTRO_DESC',
+  'SINIESTRO_HORA',
+  'SINIESTRO_LOCALIDAD',
+  'SINIESTRO_CALLE',
+  'SINIESTRO_ALTURA',
+  'SINIESTRO_CONFIRM',
+]);
+
 /** A client retrying a failed quote within this window is the same matter. */
 const QUOTE_ALERT_WINDOW_MS = 30 * 60 * 1000;
 
@@ -958,6 +972,16 @@ export class WebhookService {
       ? LEAD_DOC_TIPO[flowState.step]
       : undefined;
     const leadId = Number(flowState?.data.leadId);
+    // Still filling in a new claim (it is filed on confirmation): the photo is
+    // for that claim, not for an earlier one of the client's last 48 h, where
+    // it used to land with "la sumé a la denuncia que hiciste".
+    const fillingNewClaim =
+      !tipo &&
+      !leadTipo &&
+      !!flowState &&
+      (CLAIM_DRAFT_STEPS.has(flowState.step) ||
+        (flowState.step === 'IDENTIFY' &&
+          flowState.data.pendingAction === 'siniestro_nueva'));
     const file = {
       buffer: media.buffer,
       filename: buildMediaFilename(media.mimeType),
@@ -981,6 +1005,7 @@ export class WebhookService {
           conversation.conversationId,
           file,
           tipo,
+          fillingNewClaim,
         );
       }
     } catch (error) {
@@ -1040,7 +1065,7 @@ export class WebhookService {
       // to quote got "registremos la denuncia"), so ask instead of assuming.
       const kind: PhotoReplyKind = tipo
         ? 'needClaim'
-        : flowState?.step.startsWith('SINIESTRO_')
+        : fillingNewClaim || flowState?.step.startsWith('SINIESTRO_')
           ? 'early'
           : 'unknown';
       await this.queuePhotoReply(key, kind, PHOTO_REPLIES[kind], {

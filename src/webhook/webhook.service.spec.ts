@@ -517,6 +517,7 @@ describe('WebhookService', () => {
           remembered?: typeof memory & {
             selected?: { codia: number; description: string };
           },
+          knownGnc?: boolean,
         ) => Promise<string>;
       };
 
@@ -1483,9 +1484,38 @@ describe('WebhookService', () => {
         7,
         expect.objectContaining({ mimeType: 'image/jpeg' }),
         undefined,
+        false,
       );
       const reply = (meta.sendText.mock.calls as string[][])[0][1];
       expect(reply).toContain('sumé');
+    });
+
+    it('keeps a photo sent while filling in a new claim out of an earlier claim', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        flowState: JSON.stringify({
+          step: 'SINIESTRO_DATOS',
+          data: {},
+          audience: 'client',
+        }),
+      });
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+
+      await service.handleMedia('5491155556666', 'media-1', 'P1', 'wm1');
+      await settlePhotoReplies();
+
+      expect(api.attachAdjunto).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ mimeType: 'image/jpeg' }),
+        undefined,
+        true,
+      );
+      expect(sentTexts().join(' ')).toContain('Terminemos primero los datos');
+      expect(sentTexts().join(' ')).not.toContain('sumé');
     });
 
     it('stores the actual image metadata in the inbox transcript', async () => {

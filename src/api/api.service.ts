@@ -344,6 +344,7 @@ export class ApiService {
     conversationId: number,
     file: { buffer: Buffer; filename: string; mimeType: string },
     tipo?: string,
+    holdForNewClaim = false,
   ): Promise<AttachAdjuntosResult> {
     const form = new FormData();
     form.append(
@@ -354,7 +355,11 @@ export class ApiService {
       file.filename,
     );
 
-    const query = tipo ? `?tipo=${encodeURIComponent(tipo)}` : '';
+    const params = new URLSearchParams({
+      ...(tipo ? { tipo } : {}),
+      ...(holdForNewClaim ? { hold: 'true' } : {}),
+    }).toString();
+    const query = params ? `?${params}` : '';
     const { data } = await this.http.post<AttachAdjuntosResult>(
       `/bot/conversation/${conversationId}/adjuntos${query}`,
       form,

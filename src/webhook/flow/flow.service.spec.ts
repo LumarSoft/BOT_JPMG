@@ -28,6 +28,7 @@ describe('FlowService', () => {
     resetSession: jest.Mock;
     getEstadoCuenta: jest.Mock;
     requestHandoff: jest.Mock;
+    createLead: jest.Mock;
     getDocumentos: jest.Mock;
     requestPolicyCancellation: jest.Mock;
     getPolizas: jest.Mock;
@@ -67,6 +68,7 @@ describe('FlowService', () => {
       resetSession: jest.fn().mockResolvedValue(undefined),
       getEstadoCuenta: jest.fn().mockResolvedValue([]),
       requestHandoff: jest.fn().mockResolvedValue(undefined),
+      createLead: jest.fn().mockResolvedValue({ id: 1 }),
       getDocumentos: jest.fn().mockResolvedValue([]),
       requestPolicyCancellation: jest.fn().mockResolvedValue({ id: 11 }),
       getPolizas: jest.fn().mockResolvedValue([
@@ -143,6 +145,29 @@ describe('FlowService', () => {
       expect(JSON.stringify(result.messages)).toContain('asesor');
     },
   );
+
+  it.each([
+    'es el comprobante de pago',
+    'Te mando el comprobante',
+    'acá está el comprobante de la transferencia',
+  ])('passes a payment receipt to the office: %s', async (text) => {
+    await send({ text });
+    expect(api.requestHandoff).toHaveBeenCalledWith(1, text);
+  });
+
+  it('does not greet again right after its own reply (a loose photo)', async () => {
+    intents.interpret.mockResolvedValue('baja');
+    const res = await send(
+      { text: 'quiero dar de baja el seguro' },
+      {
+        ...leadCtx,
+        phoneNumberId: 'P1',
+        previousActivityAt: new Date(Date.now() - 30_000).toISOString(),
+      },
+    );
+    expect(JSON.stringify(res.messages)).not.toContain('Hola de nuevo');
+    expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+  });
 
   it('preserves the reason collected in the advisor flow', async () => {
     stored = { step: 'ASESOR_MOTIVO', data: {} };
@@ -1153,6 +1178,19 @@ describe('FlowService', () => {
       );
     });
 
+    it('closes a registered request without asking "¿ya sos cliente?" to someone who never said', async () => {
+      await send({ text: 'hola' });
+      await send({ text: 'Me gustaria cotizar un hogar' });
+      await send({ text: 'Juan Prueba' });
+      const res = await send({ text: '3415550000' });
+
+      const text = JSON.stringify(res.messages);
+      expect(text).toContain('Registré tu pedido');
+      expect(text).not.toContain('ya sos cliente');
+      expect(stored?.step).toBe('ROOT');
+      expect(api.createLead).toHaveBeenCalled();
+    });
+
     it('details every plan with its coverages before the picker (matches the web)', async () => {
       api.getPricing.mockResolvedValueOnce([
         {
@@ -2093,7 +2131,7 @@ describe('FlowService', () => {
       expect(res.messages).toEqual([]);
     });
 
-    it('opens the claim menu for a crash, without asking if they are a client', async () => {
+    it('goes straight to a new claim for a crash, without asking if they are a client', async () => {
       intents.interpret.mockResolvedValue('siniestro');
 
       const res = await send(
@@ -2101,8 +2139,45 @@ describe('FlowService', () => {
         withModel,
       );
 
-      expect(stored?.step).toBe('SINIESTRO_TYPE');
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.data.pendingAction).toBe('siniestro_nueva');
+      expect(stored?.audience).toBe('client');
+      expect(body(res)).toContain('Soy *Nico*');
       expect(body(res)).not.toContain('ya sos cliente');
+      expect(body(res)).not.toContain('Denuncia nueva');
+    });
+
+    it('follows up an existing claim when they ask how it is going', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+
+      await send({ text: '¿Cómo va mi denuncia del choque?' }, withModel);
+
+      expect(stored?.data.pendingAction).toBe('siniestro_consultar');
+    });
+
+    it('shows the claim menu when the message does not say which', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+
+      const res = await send({ text: 'Es por un siniestro' }, withModel);
+
+      expect(stored?.step).toBe('SINIESTRO_TYPE');
+      expect(body(res)).toContain('Denuncia nueva');
+    });
+
+    it('keeps a DNI typed on the claim menu and asks only for the option', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+      await send({ text: 'Es por un siniestro' }, withModel);
+
+      const res = await send({ text: '27345678' }, withModel);
+      expect(res.handoff).toBeUndefined();
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(body(res)).toContain('denuncia nueva');
+
+      await send(
+        { selectionId: OPT.sinNueva, text: 'Denuncia nueva' },
+        withModel,
+      );
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
     });
 
     it('does not spend a model call on a bare greeting', async () => {
@@ -2161,7 +2236,7 @@ describe('FlowService', () => {
       );
 
       expect(api.requestHandoff).not.toHaveBeenCalled();
-      expect(stored?.step).toBe('SINIESTRO_TYPE');
+      expect(stored?.data.pendingAction).toBe('siniestro_nueva');
     });
 
     it('asks for the reason when the first message is only a greeting and "asesor"', async () => {
