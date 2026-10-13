@@ -803,8 +803,12 @@ export class FlowService {
       const result = await this.enterCotizar(input, ctx, key);
       return result.handoff ? result : this.withOpener(opener, result);
     }
+    // A cancellation is a client's request, like the ones routeOpening reads.
     if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
-      return this.guard(ctx, key, 'baja_poliza', {}, input.text);
+      return this.withOpener(
+        opener,
+        await this.guardAsClient(ctx, key, 'baja_poliza', {}, input.text),
+      );
     if (!sel && ADVISOR_RE.test(fold(input.text).trim()))
       return this.withOpener(
         opener,

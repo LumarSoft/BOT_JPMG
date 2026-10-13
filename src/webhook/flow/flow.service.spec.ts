@@ -310,6 +310,10 @@ describe('FlowService', () => {
       });
       expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
       expect(stored?.step).toBe('BAJA_POLIZA');
+      expect(stored?.audience).toBe('client');
+      expect((result.messages[0] as { body: string }).body).toContain(
+        'Soy *Nico*',
+      );
       expect(JSON.stringify(result.messages)).toContain('te identifiqué');
       expect(JSON.stringify(result.messages)).not.toContain('Pasame el *DNI');
     });
