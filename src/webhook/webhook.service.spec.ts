@@ -967,11 +967,11 @@ describe('WebhookService', () => {
       it('reads a pick when the bot wrote "puertas" for InfoAuto\'s "P"', () => {
         // The 14/10 suite: "1" against "1. 3 puertas L/13" picked nothing and
         // the quote stopped with "hay varias versiones posibles".
+        const pick = (
+          service as unknown as { selectRememberedVehicle: Select }
+        ).selectRememberedVehicle.bind(service) as Select;
         const gol = (text: string, previous: string) =>
-          (
-            service as unknown as { selectRememberedVehicle: Select }
-          ).selectRememberedVehicle.call(
-            service,
+          pick(
             {
               vehicleType: 'auto',
               candidates: [
