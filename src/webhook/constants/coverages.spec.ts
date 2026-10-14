@@ -140,8 +140,13 @@ describe('renderQuote', () => {
     const rendered = renderQuote(quote);
 
     expect(rendered.sumaAsegurada).toMatch(/^\$\s?23\.900\.000$/);
-    expect(rendered.coberturas[0].conTarjeta).toMatch(/^\$\s?109\.654$/);
-    expect(rendered.coberturas[0].enEfectivo).toMatch(/^\$\s?116\.072$/);
+    // Monthly installments, said in the price itself.
+    expect(rendered.coberturas[0].conTarjeta).toMatch(
+      /^\$\s?109\.654 por mes$/,
+    );
+    expect(rendered.coberturas[0].enEfectivo).toMatch(
+      /^\$\s?116\.072 por mes$/,
+    );
   });
 
   it('does not present a $0 sum insured or a missing price as real', () => {
@@ -174,5 +179,38 @@ describe('renderQuote', () => {
 
     expect(rendered.sumaAsegurada).toBeNull();
     expect(rendered.coberturas[0].enEfectivo).toBeNull();
+  });
+});
+
+describe('renderQuote franquicia', () => {
+  it('passes the franquicia apart from what the coverage does not include', () => {
+    const rendered = renderQuote({
+      quoteNumber: '1',
+      validUntil: null,
+      vehicleValue: '25000000.00',
+      messages: [],
+      coverages: [
+        {
+          code: 'D3',
+          name: 'Todo Riesgo con Franquicia del 10%',
+          tagline: null,
+          benefits: ['Daños por accidente'],
+          exclusions: [],
+          deductible: '10% de cada daño por accidente, mínimo $550.000',
+          highlighted: false,
+          paymentOptions: [
+            {
+              code: '1',
+              name: 'Con tarjeta',
+              premium: 159943,
+              installmentValue: 159943,
+              installments: 1,
+            },
+          ],
+        },
+      ],
+    });
+    expect(rendered.coberturas[0].franquicia).toContain('10%');
+    expect(rendered.coberturas[0].noIncluye).toEqual([]);
   });
 });

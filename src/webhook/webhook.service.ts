@@ -70,9 +70,50 @@ interface QuoteVehicleMemory {
   // code and GNC answer scroll out and it asked for them again (#87, 12/10).
   hasGnc?: boolean;
   quoted?: QuotedFacts;
+  /** quote_vehicle already stopped once to have the client pick among the
+   * candidates; the next pick from the list is taken as theirs. */
+  versionAsked?: boolean;
 }
 
 const QUOTE_VEHICLE_MEMORY = 'quoteVehicle';
+
+/** Versions kept from find_vehicle: as many as it returns (MAX_CANDIDATES). */
+const MAX_REMEMBERED_CANDIDATES = 20;
+
+const ORDINALS: Record<string, number> = {
+  primera: 1,
+  primero: 1,
+  segunda: 2,
+  segundo: 2,
+  tercera: 3,
+  tercero: 3,
+  cuarta: 4,
+  cuarto: 4,
+  quinta: 5,
+  quinto: 5,
+  sexta: 6,
+  sexto: 6,
+  septima: 7,
+  septimo: 7,
+  octava: 8,
+  octavo: 8,
+};
+
+/** Words that say nothing about which version: "la de 5 puertas" keeps "5" and "puertas". */
+const VERSION_FILLER = new Set(
+  (
+    'la el los las de del con sin es era mi tu una un uno version modelo ' +
+    'auto moto opcion esa ese esta este que y o si no por favor quiero ' +
+    'quisiera me interesa elijo comun normal'
+  ).split(' '),
+);
+
+const versionWords = (text: string): string[] =>
+  fold(text)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
 
 /** Claim steps before it is filed (on confirmation): its details, not photos. */
 const CLAIM_DRAFT_STEPS = new Set<string>([
@@ -1225,7 +1266,7 @@ export class WebhookService {
           typeof candidate.description === 'string' &&
           candidate.description.trim().length > 0,
       )
-      .slice(0, 8);
+      .slice(0, MAX_REMEMBERED_CANDIDATES);
     if (candidates.length === 0) return undefined;
 
     const selected = candidates.find(
@@ -1248,6 +1289,9 @@ export class WebhookService {
         : {}),
       candidates,
       ...(selected ? { selected } : {}),
+      ...(!selected && value.versionAsked === true
+        ? { versionAsked: true }
+        : {}),
       ...(selected && typeof value.hasGnc === 'boolean'
         ? { hasGnc: value.hasGnc }
         : {}),
@@ -1281,6 +1325,41 @@ export class WebhookService {
     return gncAnswer(text, previousBot) ?? answer;
   }
 
+  private parseJsonArray(raw: string): unknown[] {
+    try {
+      const value: unknown = JSON.parse(raw);
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * A quote of one of the listed versions makes it the chosen one; a quote
+   * held back to have the client pick is remembered, so the next pick goes.
+   */
+  private rememberQuotedVersion(
+    memory: QuoteVehicleMemory | undefined,
+    rawArgs: string,
+    rawResult: string,
+  ): QuoteVehicleMemory | undefined {
+    if (!memory) return memory;
+    try {
+      const result = JSON.parse(rawResult) as {
+        needsVersionChoice?: unknown;
+        error?: unknown;
+      };
+      if (result.needsVersionChoice === true)
+        return { ...memory, versionAsked: true };
+      if (result.error !== undefined) return memory;
+      const codia = Number((JSON.parse(rawArgs) as { codia?: unknown }).codia);
+      const quoted = memory.candidates.find((c) => c.codia === codia);
+      return quoted ? this.withSelected(memory, quoted) : memory;
+    } catch {
+      return memory;
+    }
+  }
+
   /** Keeps what a quote_vehicle call asked and how it went, for later turns. */
   private rememberQuote(
     memory: QuoteVehicleMemory | undefined,
@@ -1294,6 +1373,7 @@ export class WebhookService {
         error?: unknown;
         officeNotified?: unknown;
         cotizacionIncompleta?: unknown;
+        sinCotizacion?: unknown;
         coberturas?: Array<{ codigo?: unknown }>;
       };
       const manufactureYear = Number(args.manufactureYear);
@@ -1304,7 +1384,7 @@ export class WebhookService {
       if (result.error !== undefined && result.officeNotified !== true)
         return memory;
       const outcome: QuotedFacts['outcome'] =
-        result.error !== undefined
+        result.error !== undefined || result.sinCotizacion === true
           ? 'sin_respuesta'
           : result.cotizacionIncompleta === true
             ? 'incompleta'
@@ -1337,41 +1417,47 @@ export class WebhookService {
     }
   }
 
-  /** Resolves a numeric/version answer against the last verified InfoAuto list. */
+  /**
+   * Resolves the client's pick against the last verified InfoAuto list. People
+   * answer a numbered list as "la 1, la común", "la primera" or with the part
+   * of the name the bot showed ("la GL GNC"): only a bare number or the full
+   * InfoAuto description used to count, so the pick was lost and the model
+   * quoted CODIA 0 or one it made up (4 of 4 cars in the 14/10 test).
+   * `fromClient` is false for the bot's own reply, where a numbered list must
+   * not read as a pick.
+   */
   private selectRememberedVehicle(
     memory: QuoteVehicleMemory | undefined,
     text: string,
     previousAssistantText?: string,
+    fromClient = true,
   ): QuoteVehicleMemory | undefined {
     if (!memory || memory.candidates.length === 0) return memory;
     const normalized = fold(text)
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
-    const numbered = normalized.match(/^(?:opcion )?([1-8])$/);
-    if (numbered) {
-      const position = Number(numbered[1]);
+
+    const position = fromClient
+      ? this.pickedPosition(text, previousAssistantText)
+      : null;
+    if (position !== null) {
       const numberedLine = previousAssistantText
         ?.split('\n')
-        .map((line) => line.match(/^\s*(\d+)[.)-]\s*(.+)$/))
+        .map((line) => line.match(/^\s*\*?(\d+)[.)-]\*?\s*(.+)$/))
         .find((match) => Number(match?.[1]) === position)?.[2];
-      const normalizedLine = numberedLine
-        ? fold(numberedLine)
-            .replace(/[^a-z0-9]+/g, ' ')
-            .trim()
-        : '';
-      const lineMatches = normalizedLine
-        ? memory.candidates.filter((candidate) => {
-            const description = fold(candidate.description)
-              .replace(/[^a-z0-9]+/g, ' ')
-              .trim();
-            return normalizedLine.includes(description);
-          })
+      // The bot lists short labels ("GL", "GL GNC") that also fit longer
+      // versions ("GL GNC FULL"): the one with the fewest extra words is it.
+      // The list it showed may not follow the order kept here, so a line that
+      // fits none, or two equally, picks nothing.
+      const lineMatches = numberedLine
+        ? this.candidatesNamedBy(memory.candidates, numberedLine, false)
         : [];
-      const selected =
-        lineMatches.length === 1
-          ? lineMatches[0]
-          : memory.candidates[position - 1];
-      if (selected) return this.withSelected(memory, selected);
+      const lineWords = new Set(versionWords(numberedLine ?? ''));
+      const extra = (c: QuoteVehicleCandidate) =>
+        versionWords(c.description).filter((w) => !lineWords.has(w)).length;
+      const fewest = Math.min(...lineMatches.map(extra));
+      const closest = lineMatches.filter((c) => extra(c) === fewest);
+      if (closest.length === 1) return this.withSelected(memory, closest[0]);
     }
 
     const matches = memory.candidates.filter((candidate) => {
@@ -1381,10 +1467,60 @@ export class WebhookService {
       return description.length > 0 && normalized.includes(description);
     });
     if (matches.length === 1) return this.withSelected(memory, matches[0]);
+    if (fromClient) {
+      const byWords = this.candidatesNamedBy(memory.candidates, text, true);
+      if (byWords.length === 1) return this.withSelected(memory, byWords[0]);
+    }
     if (memory.candidates.length === 1) {
       return this.withSelected(memory, memory.candidates[0]);
     }
     return memory;
+  }
+
+  /**
+   * The list position a reply picks: "2", "la 1, la común", "opción 3", "la
+   * primera", "la última". A number followed by a decimal ("1.6") is an
+   * engine size, not a position.
+   */
+  private pickedPosition(
+    text: string,
+    previousAssistantText?: string,
+  ): number | null {
+    // A position only means something against the list the bot just showed:
+    // asked "¿motor o puertas?", "la primera" picked the first of 20 versions.
+    const listed = (previousAssistantText ?? '')
+      .split('\n')
+      .map((line) => line.match(/^\s*\*?(\d+)[.)-]/)?.[1])
+      .filter(Boolean);
+    if (listed.length === 0) return null;
+    const t = fold(text).trim();
+    const numbered = t.match(
+      /^(?:la |el |opcion |numero |nro\.? |n )?#?(\d{1,2})(?![.,]\d)(?=$|[\s,.;!)-])/,
+    );
+    if (numbered) return Number(numbered[1]);
+    const ordinal = t.match(/^(?:la |el )?([a-z]+)\b/)?.[1];
+    if (ordinal && ORDINALS[ordinal]) return ORDINALS[ordinal];
+    if (ordinal === 'ultima' || ordinal === 'ultimo')
+      return Number(listed[listed.length - 1]);
+    return null;
+  }
+
+  /**
+   * Candidates whose description has every meaningful word of `text` ("GL
+   * GNC", "1.4 LT", "5 puertas"). With `strict`, a text with no such word
+   * names nobody.
+   */
+  private candidatesNamedBy(
+    candidates: QuoteVehicleCandidate[],
+    text: string,
+    strict: boolean,
+  ): QuoteVehicleCandidate[] {
+    const wanted = versionWords(text).filter((w) => !VERSION_FILLER.has(w));
+    if (wanted.length === 0) return strict ? [] : candidates;
+    return candidates.filter((candidate) => {
+      const words = new Set(versionWords(candidate.description));
+      return wanted.every((w) => words.has(w));
+    });
   }
 
   /** Another version drops what was settled for the previous one. */
@@ -1401,15 +1537,44 @@ export class WebhookService {
 
   private renderRememberedVehicle(
     memory: QuoteVehicleMemory | undefined,
+    knownGnc?: boolean,
   ): string {
     const selected = memory?.selected;
-    if (!selected) return '';
+    if (!selected) return this.renderCandidates(memory, knownGnc);
     const brand = memory.brandName ? `${memory.brandName} ` : '';
     return (
       '\n\n## VEHÍCULO VERIFICADO POR EL SISTEMA\n' +
       `La persona ya eligió *${brand}${selected.description}*. Su CODIA verificado es \`${selected.codia}\`. ` +
       'Usá exactamente ese CODIA en quote_vehicle; nunca envíes 0 ni inventes otro código. No vuelvas a pedir la versión.' +
       this.renderSettledFacts(memory)
+    );
+  }
+
+  /**
+   * The versions find_vehicle returned, with their CODIA, while the client has
+   * not picked one: without them the model had nothing to quote with and sent
+   * 0 or made a code up. Plus the GNC answer, so it is not asked again.
+   */
+  private renderCandidates(
+    memory: QuoteVehicleMemory | undefined,
+    knownGnc?: boolean,
+  ): string {
+    const gnc =
+      knownGnc === undefined
+        ? ''
+        : `\nGNC ya respondido por la persona: ${knownGnc ? 'sí tiene' : 'no tiene'}. No lo vuelvas a preguntar.`;
+    if (!memory || memory.candidates.length < 2) return gnc ? `\n${gnc}` : '';
+    const brand = memory.brandName ? `${memory.brandName} ` : '';
+    // Unnumbered: numbered, "la primera" was read against this list, which
+    // the client never saw, and the model quoted its first version.
+    const list = memory.candidates
+      .map((c) => `- ${brand}${c.description} — CODIA \`${c.codia}\``)
+      .join('\n');
+    return (
+      '\n\n## VERSIONES ENCONTRADAS POR EL SISTEMA (todavía sin elegir; la persona no ve esta lista)\n' +
+      `${list}\n` +
+      'Para cotizar usá exactamente el CODIA de la versión que eligió la persona, por su nombre o por una parte del nombre. Si dice "la primera" o un número, contá sobre la lista que VOS le mostraste en la charla; si no le mostraste una lista numerada, preguntale cuál es. Si su respuesta no deja una sola versión, preguntale; no elijas vos entre versiones parecidas, no la vuelvas a buscar con find_vehicle para elegirla vos, ni inventes un CODIA.' +
+      gnc
     );
   }
 
@@ -1477,7 +1642,7 @@ export class WebhookService {
             candidate.codia > 10_000 &&
             candidate.description.length > 0,
         )
-        .slice(0, 8);
+        .slice(0, MAX_REMEMBERED_CANDIDATES);
       if (candidates.length === 0) return previous;
 
       const priorSelected = candidates.find(
@@ -1587,7 +1752,8 @@ export class WebhookService {
           });
     const system =
       handoff === 'cotizacion'
-        ? baseSystem + this.renderRememberedVehicle(quoteVehicleMemory)
+        ? baseSystem +
+          this.renderRememberedVehicle(quoteVehicleMemory, knownGnc)
         : baseSystem;
     const tools = handoff === 'cotizacion' ? COTIZADOR_TOOLS : undefined;
 
@@ -1644,6 +1810,8 @@ export class WebhookService {
           quoteVehicleMemory = this.selectRememberedVehicle(
             quoteVehicleMemory,
             message.content ?? '',
+            undefined,
+            false,
           );
           this.logger.log(
             `[4/5] Modelo respondió con texto final en ronda ${round + 1}`,
@@ -1703,7 +1871,24 @@ export class WebhookService {
               ),
             );
           }
+          if (toolCall.function.name === 'get_vehicle_models') {
+            quoteVehicleMemory = withGnc(
+              this.rememberVehicleSearch(
+                quoteVehicleMemory,
+                JSON.stringify({ versions: this.parseJsonArray(results[i]) }),
+                toolCall.function.arguments,
+                vehicleType,
+              ),
+            );
+          }
           if (toolCall.function.name === 'quote_vehicle') {
+            quoteVehicleMemory = withGnc(
+              this.rememberQuotedVersion(
+                quoteVehicleMemory,
+                toolCall.function.arguments,
+                results[i],
+              ),
+            );
             quoteVehicleMemory = this.rememberQuote(
               quoteVehicleMemory,
               toolCall.function.arguments,
@@ -1731,6 +1916,8 @@ export class WebhookService {
         quoteVehicleMemory = this.selectRememberedVehicle(
           quoteVehicleMemory,
           content,
+          undefined,
+          false,
         );
         return {
           text: content,
@@ -2027,6 +2214,12 @@ export class WebhookService {
               `quote_vehicle recibió CODIA inválido (${String(args.codia)}); uso el CODIA verificado ${codiaNum}`,
             );
           }
+          const versionProblem = this.checkQuotedVersion(
+            rememberedVehicle,
+            vehicleType,
+            codiaNum,
+          );
+          if (versionProblem) return JSON.stringify(versionProblem);
           // GNC is the one question a car quote can't skip (the advisor needs
           // it). Left to the prompt alone the model sometimes quoted without it.
           if (vehicleType === 'auto' && knownGnc === undefined) {
@@ -2043,9 +2236,29 @@ export class WebhookService {
               model: String(codiaNum),
               manufactureYear: Number(args.manufactureYear),
               postalCode: Number(args.postalCode),
+              ...(args.isZeroKm === true ? { zeroKm: true } : {}),
+              ...(vehicleType === 'auto' && knownGnc !== undefined
+                ? { hasGnc: knownGnc }
+                : {}),
             });
           } catch (error) {
-            if (!isQuoteServiceFailure(error)) throw error;
+            if (!isQuoteServiceFailure(error)) {
+              // The version is ours to find, not the client's to fix: on 14/10
+              // the bot told a client to check his papers over a code it made up.
+              const failure = JSON.parse(this.toolError(name, error)) as {
+                error?: unknown;
+              };
+              if (
+                typeof failure.error === 'string' &&
+                failure.error.includes('No se encontró la versión')
+              )
+                return JSON.stringify({
+                  ...failure,
+                  nextStep:
+                    'Ese CODIA no existe en el catálogo. Volvé a llamar find_vehicle con la marca, el modelo, la versión y el año de la charla y cotizá con el CODIA que devuelva. No le pidas a la persona que revise la documentación por esto.',
+                });
+              return JSON.stringify(failure);
+            }
             const vehicle = this.quotedVehicle(rememberedVehicle, codiaNum);
             const notified = await this.alertFailedQuote(
               conversationId,
@@ -2070,6 +2283,24 @@ export class WebhookService {
           // Hand the model coverage names and ARS-formatted prices, not raw
           // codes and bare numbers — see constants/coverages.ts.
           const rendered = renderQuote(quote);
+          if (quote.coverages.length === 0) {
+            // Triunfo turned the whole vehicle down (new versions it has not
+            // set up, CABA/GBA postal codes): the bot said "ya le avisé a la
+            // oficina" and nobody was told (14/10).
+            const notified = await this.alertFailedQuote(
+              conversationId,
+              `${this.quotedVehicle(rememberedVehicle, codiaNum)}, año ${Number(args.manufactureYear)}, CP ${Number(args.postalCode)}`,
+              `la compañía no lo cotizó online${quote.messages.length ? `: ${quote.messages.join('; ')}` : ''}`,
+            );
+            return JSON.stringify({
+              ...rendered,
+              // Triunfo sends a default value with a rejection, not a valuation.
+              sumaAsegurada: null,
+              sinCotizacion: true,
+              ...(notified ? { officeNotified: true } : {}),
+              nextStep: `La compañía no devolvió precios para este vehículo por la web (${quote.messages.join('; ') || 'sin detalle'}). No muestres suma asegurada ni precios. ${notified ? 'Decile que ya le avisaste a la oficina y que un asesor se lo cotiza y se lo manda por este chat; no le pidas que escriba asesor.' : 'Ofrecé que un asesor se lo cotice (que escriba *asesor*).'} No reintentes cotizar.`,
+            });
+          }
           if (!quote.valuationMissing) return JSON.stringify(rendered);
           // Only RC came back because Triunfo could not value the vehicle. Read
           // as final, it told a client his car had no theft cover (13/10).
@@ -2091,6 +2322,43 @@ export class WebhookService {
     } catch (error) {
       return this.toolError(name, error);
     }
+  }
+
+  /**
+   * Whether quote_vehicle may run with this CODIA: it has to be one of the
+   * versions find_vehicle returned (the model made codes up: 208001 for a
+   * Peugeot 208), and with several close ones the client picks, not the model
+   * (it quoted the Gol Trend 2019 line for a 2017 one). Asked once: the next
+   * pick from the list is taken as the client's.
+   */
+  private checkQuotedVersion(
+    memory: QuoteVehicleMemory | undefined,
+    vehicleType: 'auto' | 'moto',
+    codia: number,
+  ): Record<string, unknown> | null {
+    if (!memory || memory.vehicleType !== vehicleType) return null;
+    if (memory.selected) {
+      if (memory.selected.codia === codia) return null;
+    } else if (!memory.candidates.some((c) => c.codia === codia)) {
+      // Not from the list: falls through to the error below.
+    } else if (memory.candidates.length === 1 || memory.versionAsked) {
+      return null;
+    } else {
+      return {
+        error:
+          'No se cotizó: hay varias versiones posibles y la persona todavía no eligió una.',
+        needsVersionChoice: true,
+        nextStep:
+          'Mostrale las versiones (numeradas, cortas) y preguntale cuál es la suya. Cotizá cuando conteste.',
+      };
+    }
+    if (memory.candidates.some((c) => c.codia === codia)) return null;
+    return {
+      error: `El CODIA ${codia} no está entre las versiones que devolvió find_vehicle. No se cotizó.`,
+      nextStep: memory.selected
+        ? `La persona eligió el CODIA ${memory.selected.codia}: usá ese.`
+        : 'Usá el CODIA exacto de una de las versiones encontradas, o volvé a llamar find_vehicle si cambió el vehículo.',
+    };
   }
 
   /** "CHEVROLET ASTRA II GL 2.0 5 PTAS" for the office alert, or the CODIA. */

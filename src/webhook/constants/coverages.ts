@@ -45,10 +45,12 @@ export interface RenderedCoverage {
   incluye: string[];
   /** What it does not cover — how the client tells B from B1. */
   noIncluye: string[];
+  /** The franquicia paid on each claim; null when the coverage has none. */
+  franquicia: string | null;
   recomendada: boolean;
-  /** Card price (Triunfo payment code 1), null when not quoted. */
+  /** Monthly card price (Triunfo payment code 1), null when not quoted. */
   conTarjeta: string | null;
-  /** Cash price (Triunfo payment code 9), null when not quoted. */
+  /** Monthly cash price (Triunfo payment code 9), null when not quoted. */
   enEfectivo: string | null;
   opciones: RenderedOption[];
 }
@@ -72,14 +74,18 @@ export function renderQuote(quote: QuoteResult): {
   coberturas: RenderedCoverage[];
   avisos: string[];
 } {
+  // Every price is a monthly installment: with one installment the premium is
+  // that installment, with several it is the period's total. Said in the text
+  // itself, because the bot never told anyone the price was per month.
   const priceFor = (
     c: (typeof quote.coverages)[number],
     code: string,
   ): string | null => {
-    const premium = c.paymentOptions.find(
-      (o) => o.code.trim() === code,
-    )?.premium;
-    return premium && premium > 0 ? fmtArs(premium) : null;
+    const option = c.paymentOptions.find((o) => o.code.trim() === code);
+    if (!option) return null;
+    const monthly =
+      option.installments > 1 ? option.installmentValue : option.premium;
+    return monthly > 0 ? `${fmtArs(monthly)} por mes` : null;
   };
   // The value Triunfo insures the vehicle for; it returns 0 when it could not
   // value it, and a $0 sum insured must not be shown as if it were real.
@@ -95,6 +101,7 @@ export function renderQuote(quote: QuoteResult): {
     descripcion: c.tagline?.trim() || null,
     incluye: Array.isArray(c.benefits) ? c.benefits : [],
     noIncluye: Array.isArray(c.exclusions) ? c.exclusions : [],
+    franquicia: c.deductible?.trim() || null,
     recomendada: c.highlighted === true,
     conTarjeta: priceFor(c, CARD_PAYMENT_CODE),
     enEfectivo: priceFor(c, CASH_PAYMENT_CODE),

@@ -593,6 +593,8 @@ export class ApiService {
       model: string;
       manufactureYear: number;
       postalCode: number;
+      zeroKm?: boolean;
+      hasGnc?: boolean;
     },
   ): Promise<QuoteResult> {
     const { data } = await this.http.post<QuoteResult>(

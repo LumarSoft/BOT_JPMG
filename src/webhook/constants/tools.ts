@@ -274,6 +274,11 @@ export const BOT_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             type: 'integer',
             description: 'Código postal de la localidad',
           },
+          isZeroKm: {
+            type: 'boolean',
+            description:
+              'true si el vehículo es 0 km (nuevo, sin patentar): la persona lo dijo o la versión se vende solo 0 km. La compañía cotiza distinto el 0 km. Si no se sabe, omitilo.',
+          },
         },
         required: ['vehicleType', 'codia', 'manufactureYear', 'postalCode'],
       },

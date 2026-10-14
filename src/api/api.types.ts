@@ -247,6 +247,8 @@ export interface QuoteCoverage {
   benefits: string[];
   /** What it does not include. Optional: an older API does not send it. */
   exclusions?: string[];
+  /** The franquicia paid on each claim, or null. Absent from an older API. */
+  deductible?: string | null;
   highlighted: boolean;
   paymentOptions: QuotePaymentOption[];
 }

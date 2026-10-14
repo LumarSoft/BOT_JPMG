@@ -539,6 +539,7 @@ describe('WebhookService', () => {
         model: '120632',
         manufactureYear: 2024,
         postalCode: 2000,
+        hasGnc: false,
       });
     });
 
@@ -564,16 +565,17 @@ describe('WebhookService', () => {
         postalCode: 2000,
       });
 
+      const chosen = { ...memory, selected: memory.candidates[1] };
       const first = JSON.parse(
         await privateService.executeTool(
           'quote_vehicle',
           args,
           9,
-          memory,
+          chosen,
           false,
         ),
       ) as { officeNotified?: boolean; nextStep?: string };
-      await privateService.executeTool('quote_vehicle', args, 9, memory, false);
+      await privateService.executeTool('quote_vehicle', args, 9, chosen, false);
 
       expect(first.officeNotified).toBe(true);
       expect(typeof first.nextStep).toBe('string');
@@ -629,7 +631,7 @@ describe('WebhookService', () => {
             postalCode: 2000,
           }),
           9,
-          memory,
+          { ...memory, selected: memory.candidates[1] } as typeof memory,
           false,
         ),
       ) as {
@@ -665,7 +667,21 @@ describe('WebhookService', () => {
         vehicleValue: '7800000.00',
         valuationMissing: false,
         messages: [],
-        coverages: [],
+        coverages: [
+          {
+            code: 'A',
+            name: 'Responsabilidad Civil',
+            paymentOptions: [
+              {
+                code: '1',
+                name: 'Con tarjeta',
+                premium: 67825,
+                installmentValue: 67825,
+                installments: 1,
+              },
+            ],
+          },
+        ],
       });
 
       const result = JSON.parse(
@@ -685,6 +701,220 @@ describe('WebhookService', () => {
 
       expect(result.cotizacionIncompleta).toBeUndefined();
       expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    describe('version the client chose (14/10)', () => {
+      type Tool = (
+        name: string,
+        args: string,
+        conversationId: number,
+        remembered?: Record<string, unknown>,
+        knownGnc?: boolean,
+      ) => Promise<string>;
+      const tool = () =>
+        (service as unknown as { executeTool: Tool }).executeTool.bind(service);
+      const quoteArgs = (codia: number) =>
+        JSON.stringify({
+          vehicleType: 'auto',
+          codia,
+          manufactureYear: 2024,
+          postalCode: 2000,
+        });
+      const valued = {
+        quoteNumber: '1',
+        validUntil: null,
+        vehicleValue: '25000000.00',
+        valuationMissing: false,
+        messages: [],
+        coverages: [
+          {
+            code: 'A',
+            name: 'Responsabilidad Civil',
+            paymentOptions: [
+              {
+                code: '1',
+                name: 'Con tarjeta',
+                premium: 67825,
+                installmentValue: 67825,
+                installments: 1,
+              },
+            ],
+          },
+        ],
+      };
+
+      it('does not quote a CODIA that is not among the versions found', async () => {
+        const result = JSON.parse(
+          await tool()('quote_vehicle', quoteArgs(208001), 9, memory, false),
+        ) as { error?: string };
+        expect(result.error).toContain('no está entre las versiones');
+        expect(api.quoteVehicle).not.toHaveBeenCalled();
+      });
+
+      it('asks the client once to pick between close versions, then quotes the pick', async () => {
+        const held = JSON.parse(
+          await tool()('quote_vehicle', quoteArgs(120632), 9, memory, false),
+        ) as { needsVersionChoice?: boolean };
+        expect(held.needsVersionChoice).toBe(true);
+        expect(api.quoteVehicle).not.toHaveBeenCalled();
+
+        api.quoteVehicle.mockResolvedValue(valued);
+        await tool()(
+          'quote_vehicle',
+          quoteArgs(120632),
+          9,
+          { ...memory, versionAsked: true },
+          false,
+        );
+        expect(api.quoteVehicle).toHaveBeenCalledTimes(1);
+      });
+
+      it('tells the model to search again instead of blaming the client for an unknown version', async () => {
+        api.quoteVehicle.mockRejectedValue({
+          isAxiosError: true,
+          response: {
+            status: 400,
+            data: {
+              message: 'No se encontró la versión del vehículo en el catálogo',
+            },
+          },
+          message: 'Request failed with status code 400',
+        });
+        const result = JSON.parse(
+          await tool()(
+            'quote_vehicle',
+            quoteArgs(120632),
+            9,
+            { ...memory, selected: memory.candidates[1] },
+            false,
+          ),
+        ) as { nextStep?: string };
+        expect(result.nextStep).toContain('find_vehicle');
+        expect(result.nextStep).toContain('No le pidas');
+      });
+
+      it('alerts the office when the company turns the whole vehicle down', async () => {
+        api.quoteVehicle.mockResolvedValue({
+          ...valued,
+          vehicleValue: '64000000.00',
+          coverages: [],
+          messages: ['Datos de vehículo no válidos'],
+        });
+        const result = JSON.parse(
+          await tool()(
+            'quote_vehicle',
+            quoteArgs(120632),
+            9,
+            { ...memory, selected: memory.candidates[1] },
+            false,
+          ),
+        ) as {
+          sinCotizacion?: boolean;
+          officeNotified?: boolean;
+          sumaAsegurada?: string | null;
+        };
+        expect(result.sinCotizacion).toBe(true);
+        expect(result.officeNotified).toBe(true);
+        // A default value that comes with a rejection is not a valuation.
+        expect(result.sumaAsegurada).toBeNull();
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          9,
+          expect.stringContaining('Datos de vehículo no válidos'),
+        );
+      });
+
+      it('sends a 0 km and the GNC answer to the quote', async () => {
+        api.quoteVehicle.mockResolvedValue(valued);
+        await tool()(
+          'quote_vehicle',
+          JSON.stringify({
+            vehicleType: 'auto',
+            codia: 120632,
+            manufactureYear: 2026,
+            postalCode: 2000,
+            isZeroKm: true,
+          }),
+          9,
+          { ...memory, selected: memory.candidates[1] },
+          true,
+        );
+        expect(api.quoteVehicle).toHaveBeenCalledWith(
+          'auto',
+          expect.objectContaining({ zeroKm: true, hasGnc: true }),
+        );
+      });
+
+      type Select = (
+        memory: Record<string, unknown>,
+        text: string,
+        previous?: string,
+        fromClient?: boolean,
+      ) => { selected?: { codia: number } } | undefined;
+      const select = (text: string, previous?: string, fromClient?: boolean) =>
+        (
+          service as unknown as { selectRememberedVehicle: Select }
+        ).selectRememberedVehicle.call(
+          service,
+          {
+            vehicleType: 'auto',
+            candidates: [
+              { codia: 120248, description: 'CORSA 1.6 4P GL' },
+              { codia: 120249, description: 'CORSA 1.6 4P GL GNC' },
+              { codia: 120250, description: 'CORSA 1.6 5P GLS' },
+            ],
+          },
+          text,
+          previous,
+          fromClient,
+        )?.selected?.codia;
+      const listed =
+        '1. CORSA 1.6 4P GL\n2. CORSA 1.6 4P GL GNC\n3. CORSA 1.6 5P GLS';
+
+      it.each([
+        ['la 1, la común', 120248],
+        ['La primera', 120248],
+        ['la segunda', 120249],
+        ['opción 3', 120250],
+        ['la última', 120250],
+        ['la GL GNC', 120249],
+        ['la de 5 puertas GLS', undefined],
+        ['GLS', 120250],
+      ])('reads "%s" as the client picking a version', (text, codia) => {
+        expect(select(text, listed)).toBe(codia);
+      });
+
+      it('reads a pick against the short labels the bot listed', () => {
+        const short = '1. GL\n2. GL GNC\n3. GLS';
+        expect(select('la 1', short)).toBe(120248);
+        expect(select('2', short)).toBe(120249);
+        expect(select('la tercera', short)).toBe(120250);
+        expect(select('la 7', short)).toBeUndefined();
+      });
+
+      it('does not read an engine size, a position without a list or the bot list as a pick', () => {
+        expect(select('1.6 nafta', listed)).toBeUndefined();
+        // The bot asked "¿motor o puertas?" instead of listing them.
+        expect(
+          select('la primera', '¿Me indicás el motor o las puertas?'),
+        ).toBeUndefined();
+        expect(select(listed, undefined, false)).toBeUndefined();
+      });
+
+      it('shows the model the versions with their CODIA and the GNC answer before a pick', () => {
+        const rendered = (
+          service as unknown as {
+            renderRememberedVehicle: (
+              m: Record<string, unknown>,
+              gnc?: boolean,
+            ) => string;
+          }
+        ).renderRememberedVehicle.call(service, memory, false);
+        expect(rendered).toContain('CODIA `120581`');
+        expect(rendered).toContain('CODIA `120632`');
+        expect(rendered).toContain(
+          'GNC ya respondido por la persona: no tiene',
+        );
+      });
     });
 
     it('does not quote a car before knowing whether it has GNC', async () => {
@@ -871,7 +1101,11 @@ describe('WebhookService', () => {
           result: string,
           args: string,
         ) => Memory;
-        selectRememberedVehicle: (m: Memory, text: string) => Memory;
+        selectRememberedVehicle: (
+          m: Memory,
+          text: string,
+          previous?: string,
+        ) => Memory;
         renderRememberedVehicle: (m: Memory) => string;
         readQuoteVehicleMemory: (state: unknown) => Memory | undefined;
       };
@@ -945,7 +1179,11 @@ describe('WebhookService', () => {
       expect(same.quoted?.postalCode).toBe(2000);
       expect(same.hasGnc).toBe(true);
 
-      const other = priv().selectRememberedVehicle(settled, '1');
+      const other = priv().selectRememberedVehicle(
+        settled,
+        '1',
+        '1. ASTRA II GL 2.0 4 PTAS\n2. ASTRA II GL 2.0 5 PTAS',
+      );
       expect(other.selected?.codia).toBe(120239);
       expect(other.quoted).toBeUndefined();
       expect(other.hasGnc).toBeUndefined();
