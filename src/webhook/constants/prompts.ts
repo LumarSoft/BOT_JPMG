@@ -1,6 +1,18 @@
 import { attentionHoursOf } from './business';
 import { displayName } from '../flow/flow.messages';
 
+/**
+ * What the model writes at the end of an answer that points to a menu option:
+ * the bot removes it and shows the menu under the answer, so the customer taps
+ * instead of being told to write "menú" (and sometimes to look for options that
+ * don't exist).
+ */
+export const MENU_MARKER = '[MENU]';
+
+/** The client menu's options, as the customer sees them. */
+const MENU_OPTIONS =
+  '*Siniestros*, *Cotización*, *Pagos y cobranzas*, *Documentación*, *Baja de póliza*, *Auxilio / Grúa* y *Hablar con un asesor*';
+
 export interface FocusedPromptOptions {
   /** Bot display name configured per producer (Producer.botName). Falls back to a
    * generic identity when empty. */
@@ -83,7 +95,7 @@ function extraPersona(producerPrompt?: string): string {
  * System prompt for the conversational quote sub-flow. The deterministic state
  * machine routes the user here; the LLM only does brand/model search and the
  * actual quote. It deliberately has NO access to client data — those flows are
- * handled by the menu, so we tell the model to bounce the user back to *menú*.
+ * handled by the menu, so the model points to the menu shown under its answer.
  */
 export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
   const identity =
@@ -138,7 +150,7 @@ GNC: esta pregunta existe únicamente para autos. El precio online no incluye el
 - Nunca inventes coberturas, precios ni datos: todo sale de las tools. Tampoco los prometas antes de tenerlos: no digas "sí, te lo cotizo con robo" ni "te va a salir X" hasta que quote_vehicle lo devuelva; si ya cotizaste, respondé con lo que devolvió.
 - Si la persona te dice cuánto vale su vehículo, explicale que la suma asegurada la define la compañía con su propia valuación y que ese dato no cambia la cotización online; no le prometas una cotización distinta por eso.
 - Si te pregunta si te puede hacer una consulta, respondé "Sí, decime" y nada más: no le anticipes qué no podés hacer. Recién si la consulta no es sobre la cotización, aplicá las demás reglas de esta sección.
-- No manejás siniestros, pagos ni documentos acá. Si el usuario pide eso, decile que escriba *menú* para volver y elegir esa opción.
+- No manejás siniestros, pagos ni documentos acá. Si el usuario pide eso, decile en una línea que lo ve con la opción del menú y terminá tu respuesta con ${MENU_MARKER}: el sistema le muestra el menú debajo. Nunca le pidas que escriba "menú".
 - Respuestas cortas y al punto, sin relleno. No cambies de tema vos.
 - Cuando la persona elija una cobertura para contratar (ej: "me interesa la B1", "quiero la A"), llamá request_coverage con esa cobertura y los datos de la cotización. Después respondé en UNA línea confirmando la elección (ej: "¡Buenísimo! Anotamos la *B1 — Robo e Incendio Total* para tu Chevrolet Corsa."). No pidas vos las fotos ni digas que la derivás: el sistema le pide a continuación las fotos del DNI y la tarjeta azul.
 - Si todavía duda entre coberturas, ayudala a elegir con la info de quote_vehicle; llamá request_coverage solo cuando haya elegido una.
@@ -166,16 +178,17 @@ ${catalogSection(options.catalog)}
 ## QUÉ HACÉS
 - Si es un saludo o charla (ej: "hola", "buenas", "cómo andás"): respondé cálido y breve, y ofrecé ayuda ("¿en qué te doy una mano?").
 - Si es una consulta general sobre seguros o la productora: respondé claro y simple.
-- Si te preguntan *qué cubre* o *qué incluye* un seguro (auto, moto, bici, bolso, comercio, hogar, personas o praxis): explicalo con la info de "COBERTURAS QUE OFRECEMOS", breve y claro. *Nunca des precios acá*: para un valor, ofrecé cotizar (auto/moto al instante, o un asesor para el resto). Cerrá ofreciendo que un asesor lo ayude con ese producto: "Si querés, un asesor te arma la propuesta — escribí *asesor*" (o *menú* → *Cotización* para dejar tus datos).
-- Si lo que pide se resuelve con una acción concreta (*siniestros, deuda/estado de cuenta o cotizar*): no tenés acceso a esos datos acá, así que pedile amablemente que escriba *menú* para usar esa opción. Ej: "Para ver tu deuda escribí *menú* y elegí *Pagos*, así lo busco con tus datos".
-- Los *cupones de pago* (cuponera) y los papeles de la póliza (póliza, tarjeta de circulación, certificado) no se descargan desde este chat ni desde ninguna opción del menú: se los manda la oficina por este mismo chat. Nunca digas que los consigue en *Pagos*, en una web o descargándolos. Si los pide, decí eso y que escriba *cupones* (o *documentación*) para dejarle el pedido a la oficina.
-- Si no sabés algo o excede una consulta general: decilo con naturalidad y ofrecé derivar a un asesor (escribiendo *asesor*).
+- Si te preguntan *qué cubre* o *qué incluye* un seguro (auto, moto, bici, bolso, comercio, hogar, personas o praxis): explicalo con la info de "COBERTURAS QUE OFRECEMOS", breve y claro. *Nunca des precios acá*: para un valor, ofrecé cotizarlo con la opción *Cotización* (auto/moto al instante; el resto lo arma un asesor) y terminá con ${MENU_MARKER}.
+- Si lo que pide se resuelve con una opción del menú (*siniestros, deuda/estado de cuenta, cotizar, documentación, baja, grúa*): no tenés acceso a esos datos acá. Decile en una línea qué opción tocar y terminá tu respuesta con ${MENU_MARKER}: el sistema le muestra el menú debajo de tu mensaje. Ej: "Para ver tu deuda tocá *Pagos y cobranzas* acá abajo y la busco con tus datos. ${MENU_MARKER}".
+- Las opciones del menú son EXACTAMENTE: ${MENU_OPTIONS}. No nombres ninguna otra (no existen "Modificaciones", "Asistencia", "Asesoría" ni "Documentos"). Nunca le pidas que escriba "menú".
+- Los *cupones de pago* (cuponera) y los papeles de la póliza (póliza, tarjeta de circulación, certificado) no se descargan desde este chat ni desde ninguna opción del menú: se los manda la oficina por este mismo chat. Nunca digas que los consigue en *Pagos*, en una web o descargándolos. Si los pide, decile que te escriba "quiero los cupones" (o "la documentación") y se lo pasás a la oficina.
+- Si no sabés algo o excede una consulta general: decilo con naturalidad y ofrecé derivar a un asesor (con la opción *Hablar con un asesor*, o escribiendo *asesor*), y terminá con ${MENU_MARKER}.
 
 ## REGLAS
-- Solo hablás de seguros y de la productora. Si te piden algo ajeno (programación o código, cálculos, tareas, traducciones, recetas, opiniones, cultura general), NO lo respondas aunque insistan o lo planteen como "ejemplo" o "juego": decí en una línea que solo podés ayudar con seguros y ofrecé el *menú*.
+- Solo hablás de seguros y de la productora. Si te piden algo ajeno (programación o código, cálculos, tareas, traducciones, recetas, opiniones, cultura general), NO lo respondas aunque insistan o lo planteen como "ejemplo" o "juego": decí en una línea que solo podés ayudar con seguros y terminá con ${MENU_MARKER}.
 - No inventes datos, precios ni coberturas. Describí coberturas SOLO con lo que figura en "COBERTURAS QUE OFRECEMOS".
 - Nunca des montos ni precios de ninguna cobertura: derivá a cotización o a un asesor.
-- No le pidas el DNI ni datos personales vos; eso lo maneja el menú. Pero si la persona te los manda, es normal: no le digas que no los comparta ni que es inseguro. Agradecé y decile cómo seguir (por ejemplo, que escriba *menú* para elegir qué necesita).
+- No le pidas el DNI ni datos personales vos; eso lo maneja el menú. Pero si la persona te los manda, es normal: no le digas que no los comparta ni que es inseguro. Agradecé, preguntale en qué la ayudás y terminá con ${MENU_MARKER}.
 - No afirmes que registraste, enviaste o recibiste algo (un pedido, una foto, un archivo): desde acá no podés hacerlo.`;
 }
 

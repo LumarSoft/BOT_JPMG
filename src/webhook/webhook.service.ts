@@ -20,13 +20,18 @@ import {
 } from './flow/flow.service';
 import type { FlowState, OutgoingMessage } from './flow/flow.types';
 import {
+  clientMenu,
   gncAnswer,
   gncButtons,
   pluralizeClaimPhotoReply,
   toWhatsAppMarkdown,
 } from './flow/flow.messages';
 import { renderQuote } from './constants/coverages';
-import { buildCotizacionPrompt, buildFaqPrompt } from './constants/prompts';
+import {
+  buildCotizacionPrompt,
+  buildFaqPrompt,
+  MENU_MARKER,
+} from './constants/prompts';
 import { COTIZADOR_TOOLS, REQUEST_COVERAGE_TOOL } from './constants/tools';
 import { compactMessages } from './compact-messages';
 import { findVehicle } from './vehicle-finder';
@@ -228,6 +233,22 @@ const PHOTO_REPLIES: Record<
       'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.',
     ),
 };
+
+/**
+ * Takes the model's menu marker out of its answer. The menu goes under the
+ * answer when the model asked for it or, out of habit, still told the customer
+ * to write "menú".
+ */
+export function takeMenuMarker(text: string): { text: string; menu: boolean } {
+  const marked = text.includes(MENU_MARKER);
+  const cleaned = text
+    .split(MENU_MARKER)
+    .join('')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+  const told = /escrib[ií]\s*\*?["“]?men[uú]\b/i.test(fold(cleaned));
+  return { text: cleaned, menu: marked || told };
+}
 
 /** Secret dev command: wipes the chat history so the next message starts fresh. */
 const RESET_COMMAND = '/reset';
@@ -811,12 +832,15 @@ export class WebhookService {
           );
       }
       // The model writes standard markdown; WhatsApp speaks its own dialect.
-      const reply = toWhatsAppMarkdown(raw);
+      const marked = takeMenuMarker(raw);
+      const reply = toWhatsAppMarkdown(marked.text);
       // The quote sub-flow's GNC question goes out as buttons instead of text.
+      const gnc = result.handoff === 'cotizacion' ? gncButtons(reply) : null;
       let outgoing: OutgoingMessage[] = [
-        (result.handoff === 'cotizacion' ? gncButtons(reply) : null) ??
-          ({ kind: 'text', body: reply } as const),
+        gnc ?? ({ kind: 'text', body: reply } as const),
       ];
+      // The option the answer points to, ready to tap (any step takes it).
+      if (marked.menu && !gnc && !coverageLeadId) outgoing.push(clientMenu());
 
       // A coverage was chosen: the request is recorded, now collect the
       // documents the office asks for to take it out, step by step.

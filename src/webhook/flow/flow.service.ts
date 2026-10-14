@@ -24,6 +24,8 @@ import type {
 import {
   advisorSameQuestion,
   ALL_POLIZAS_ID,
+  bajaCheck,
+  LEAD_MENU_OPTS,
   claimPhotoAddedText,
   vehiclePhotoAddedText,
   clientMenu,
@@ -260,6 +262,10 @@ const PERSON_MENTION_STEPS = new Set<FlowStep>([
   'LLM_COTIZACION',
   'ASESOR_MOTIVO',
 ]);
+
+/** "Ya soy cliente", "soy cliente", "tengo póliza con ustedes". Folded text. */
+const SAYS_CLIENT_RE =
+  /^(?:(?:si|ya|pero)[, ]+)?(?:ya )?soy cliente\b|\b(?:tengo|tenemos) (?:la |mi |una )?(?:poliza|seguro) con ustedes\b/;
 
 /** What "Otra póliza" was picked for, worded so the office files it right. */
 const OTHER_POLIZA_REQUEST: Partial<Record<FlowStep, string>> = {
@@ -791,6 +797,31 @@ export class FlowService {
     }
     if (sel === OPT.stuckAsesor) return this.startAdvisor(ctx, key);
 
+    // A menu option tapped from a menu still on screen (or shown under a
+    // model's answer) is what the customer wants now, whatever step this is.
+    const step = existing.state.step;
+    const advisorAlerted =
+      step === 'ASESOR_MOTIVO' && existing.state.data.alerted === true;
+    if (
+      sel &&
+      (CLIENT_MENU_OPTS.has(sel) || sel === OPT.bajaNo) &&
+      step !== 'CLIENT_MENU' &&
+      !advisorAlerted
+    ) {
+      this.setState(key, 'CLIENT_MENU');
+      return this.handleClientMenu(input, ctx, key);
+    }
+    if (
+      sel &&
+      LEAD_MENU_OPTS.has(sel) &&
+      step !== 'LEAD_MENU' &&
+      step !== 'ROOT' &&
+      !advisorAlerted
+    ) {
+      this.setState(key, 'LEAD_MENU');
+      return this.handleLeadMenu(input, ctx, key);
+    }
+
     // Second escape hatch: "cancelar" / "volver". Pickers and capture steps
     // deliberately never leak to the LLM, so without this the only way out is
     // the literal word "menú" — a user who writes "cancelar" stays trapped.
@@ -1130,6 +1161,30 @@ export class FlowService {
 
   // ─── Root / menus ─────────────────────────────────────────
 
+  /**
+   * "Sí, soy cliente": identify up front instead of on the first action that
+   * needs it, so every request (an advisor handoff included) reaches the
+   * admin tied to the client and its producer code.
+   */
+  private startClientIdentification(ctx: FlowContext, key: string): FlowResult {
+    if (ctx.client) {
+      this.setState(key, 'CLIENT_MENU', {}, 'client');
+      return { messages: [clientMenu()] };
+    }
+    this.setState(key, 'ROOT', {}, 'client');
+    const asked = this.askPhoneMatch(ctx, key, 'menu');
+    if (asked) return asked;
+    this.setState(key, 'IDENTIFY', { pendingAction: 'menu' }, 'client');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: '¡Genial! Para ayudarte necesito identificarte. Pasame el *DNI del titular* (o el *CUIT* si es una empresa) o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
+        },
+      ],
+    };
+  }
+
   private async handleRoot(
     input: UserInput,
     ctx: FlowContext,
@@ -1146,32 +1201,26 @@ export class FlowService {
         !/\bno\b/.test(t)) ||
       (/\bcliente\b/.test(t) && !/\bno\b/.test(t));
 
+    // "No, gracias" to "¿algo más?" is a goodbye, not "no soy cliente": it
+    // used to leave a client in the non-client menu.
+    const closing =
+      !sel && isCloser(input.text) && /\b(gracias|nada|todo)\b/.test(fold(t));
+    if (closing)
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: '¡Gracias a vos! 🙌 Cuando necesites algo, escribime por acá.',
+          },
+        ],
+      };
+
     const isLead =
       sel === OPT.noCliente ||
       /^(no|todav[ií]a no|a[uú]n no|recién|recien)\b/.test(t) ||
       /\bno\b.*\bcliente\b/.test(t);
 
-    if (isClient) {
-      if (ctx.client) {
-        this.setState(key, 'CLIENT_MENU', {}, 'client');
-        return { messages: [clientMenu()] };
-      }
-      // Identify up front instead of on the first action that needs it, so every
-      // request (an advisor handoff included) reaches the admin tied to the
-      // client and its producer code.
-      this.setState(key, 'ROOT', {}, 'client');
-      const asked = this.askPhoneMatch(ctx, key, 'menu');
-      if (asked) return asked;
-      this.setState(key, 'IDENTIFY', { pendingAction: 'menu' }, 'client');
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body: '¡Genial! Para ayudarte necesito identificarte. Pasame el *DNI del titular* (o el *CUIT* si es una empresa) o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._',
-          },
-        ],
-      };
-    }
+    if (isClient) return this.startClientIdentification(ctx, key);
     if (isLead) {
       this.setState(key, 'LEAD_MENU', {}, 'lead');
       return { messages: [leadMenu()] };
@@ -1314,9 +1363,12 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
     opener: string | null,
+    /** Already read by the caller, to avoid a second call to the model. */
+    known?: OpeningIntent | null,
   ): Promise<FlowResult | null> {
     if (isGreetingOnly(input.text)) return null;
-    const intent = await this.readIntent(input, ctx);
+    const intent =
+      known !== undefined ? known : await this.readIntent(input, ctx);
     if (
       intent &&
       !['saludo', 'cotizar', 'siniestro', 'grua'].includes(intent) &&
@@ -1377,6 +1429,13 @@ export class FlowService {
         );
       }
       case 'baja':
+        // Only when they say it: "necesito el descuento de la cuota" was read
+        // as a cancellation and the customer got lost ("¿quién sos?").
+        if (this.matchClientIntent(input.text) !== OPT.bajaPoliza) {
+          const current = this.load(key)?.state;
+          this.setState(key, 'CLIENT_MENU', {}, current?.audience ?? 'client');
+          return this.withOpener(opener, { messages: [bajaCheck()] });
+        }
         return this.withOpener(
           opener,
           await this.guardAsClient(ctx, key, 'baja_poliza', {}, input.text),
@@ -1428,6 +1487,46 @@ export class FlowService {
       )
       .catch(() => undefined);
     return name;
+  }
+
+  /**
+   * The client action a request reads as, when it needs the client
+   * identified (their payments, papers, coupons, a claim, a cancellation).
+   * Null for anything else, which needs no identification.
+   */
+  private clientActionFor(
+    intent: OpeningIntent,
+    text: string,
+  ): { action: ClientAction; withDocs: boolean } | null {
+    const t = fold(text);
+    switch (intent) {
+      case 'siniestro': {
+        const opt = this.matchSiniestroIntent(text);
+        if (!opt) return null;
+        return {
+          action:
+            opt === OPT.sinNueva ? 'siniestro_nueva' : 'siniestro_consultar',
+          withDocs: false,
+        };
+      }
+      case 'documentos':
+      case 'pagos':
+        return {
+          action:
+            DEBIT_FAILED_RE.test(t) || INSTALLMENT_MISSING_RE.test(t)
+              ? 'pagos'
+              : CUPON_RE.test(t)
+                ? 'cupones'
+                : intent,
+          withDocs: DOCS_TOO_RE.test(t),
+        };
+      case 'baja':
+        return this.matchClientIntent(text) === OPT.bajaPoliza
+          ? { action: 'baja_poliza', withDocs: false }
+          : null;
+      default:
+        return null;
+    }
   }
 
   /** Runs a client action for someone who has not said they are a client yet. */
@@ -1654,8 +1753,25 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    const opt = input.selectionId ?? this.matchClientIntent(input.text);
     const typed = !input.selectionId;
+    if (input.selectionId === OPT.bajaNo)
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Perdón, te entendí mal 🙏 Contame de nuevo qué necesitás, o elegí una opción:',
+          },
+          clientMenu(),
+        ],
+      };
+    // A request in the customer's own words is read like a first message:
+    // keywords sent "¿mi póliza cubre granizo?" to the papers and "¿por qué
+    // aumentó el precio?" to a new quote.
+    if (typed && questionOf(input.text)) {
+      const routed = await this.routeOpening(input, ctx, key, null);
+      if (routed) return routed;
+    }
+    const opt = input.selectionId ?? this.matchClientIntent(input.text);
 
     if (
       typed &&
@@ -1718,13 +1834,28 @@ export class FlowService {
     }
   }
 
-  private handleLeadMenu(
+  private async handleLeadMenu(
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult | Promise<FlowResult> {
+  ): Promise<FlowResult> {
+    const typed = !input.selectionId;
+    // Someone who tapped "Todavía no" by mistake, or who is a client after
+    // all: they used to be stuck with quotes and questions, with no way to
+    // their claims, payments or papers.
+    if (
+      input.selectionId === OPT.cliente ||
+      (typed && SAYS_CLIENT_RE.test(fold(input.text)))
+    )
+      return this.startClientIdentification(ctx, key);
     if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
       return this.guard(ctx, key, 'baja_poliza', {}, input.text);
+    // A request in their own words: their claim, payments or papers make
+    // them a client (identification follows); a question goes to the model.
+    if (typed && questionOf(input.text)) {
+      const routed = await this.routeOpening(input, ctx, key, null);
+      if (routed) return routed;
+    }
     const opt = input.selectionId ?? this.matchLeadIntent(input.text);
 
     switch (opt) {
@@ -1833,6 +1964,12 @@ export class FlowService {
         return this.confirmPhoneMatch(state, ctx, key);
       if (input.selectionId === OPT.phoneNo || /^no\b/.test(t))
         return this.declinePhoneMatch(state, ctx, key);
+      // A request typed instead of the answer ("¿me podrías enviar la
+      // cuponera?"): it is what they want once identified, so the question
+      // comes back with it remembered. The bot used to drop the question and
+      // ask for the DNI twice.
+      const asked = await this.phoneMatchRequest(state, input, ctx, key);
+      if (asked) return asked;
       // Anything else (a DNI, a plate, "asesor") is read as usual.
       const rest = withoutPhoneQuestion(state.data);
       state = { ...state, data: rest };
@@ -2007,12 +2144,24 @@ export class FlowService {
           question ? { lastQuestion: question } : {},
         );
         const answer = question ? paymentAnswer(estado, question) : null;
+        // "Un asesor te va a contactar" about a rejected debit: now the office
+        // actually hears about it (the API keeps one alert per chat and matter).
+        const rejected = estado.filter((p) => p.hasRejectedInstallments);
+        if (rejected.length)
+          await this.api
+            .requestHandoff(
+              ctx.conversationId,
+              `Rechazo de débito en ${rejected.map(polizaMention).join('; ')}: regularizar el pago con el cliente.`,
+            )
+            .catch(() => undefined);
         return {
           messages: [
             {
               kind: 'text',
               body:
-                formatEstadoCuenta(estado) + (answer ? `\n\n${answer}` : ''),
+                formatEstadoCuenta(estado) +
+                (rejected.length ? await this.closedNote() : '') +
+                (answer ? `\n\n${answer}` : ''),
             },
             estado.length ? pagosMenu() : clientMenu(),
           ],
@@ -2315,8 +2464,11 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: `Registré tu solicitud de baja de la póliza *${poliza.certificateNumber}*. La oficina recibió la notificación y te confirmará la gestión. La póliza todavía no fue dada de baja.`,
+          body:
+            `Registré tu solicitud de baja de la póliza *${poliza.certificateNumber}*. La oficina recibió la notificación y te confirmará la gestión por este chat. La póliza todavía no fue dada de baja.` +
+            (await this.closedNote()),
         },
+        clientMenu(),
       ],
     };
   }
@@ -2842,7 +2994,10 @@ export class FlowService {
     };
   }
 
-  private handleSinFotoDanio(input: UserInput, key: string): FlowResult {
+  private async handleSinFotoDanio(
+    input: UserInput,
+    key: string,
+  ): Promise<FlowResult> {
     // A photo arrived → attach it (done by the media handler) and stay here so the
     // user can keep sending more of the incident.
     if (input.selectionId === PHOTO_RECEIVED) {
@@ -2971,13 +3126,18 @@ export class FlowService {
     );
   }
 
-  private finishSiniestroPhotos(key: string): FlowResult {
+  private async finishSiniestroPhotos(key: string): Promise<FlowResult> {
     this.setState(key, 'CLIENT_MENU');
+    // Outside office hours "a la brevedad" promised what nobody could do
+    // until the next morning: the closed note says when.
     return {
       messages: [
         {
           kind: 'text',
-          body: '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te contacta a la brevedad. ¿Necesitás algo más?',
+          body:
+            '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te escribe por este chat.' +
+            (await this.closedNote()) +
+            '\n\n¿Necesitás algo más?',
         },
         clientMenu(),
       ],
@@ -4053,6 +4213,39 @@ export class FlowService {
       phoneConfirm: true,
     });
     return { messages: [phoneQuestion(name, opener)] };
+  }
+
+  private async phoneMatchRequest(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    const raw = input.text.trim();
+    const name = displayName(ctx.phoneMatch?.firstName);
+    if (input.selectionId || !name || MAYBE_IDENTIFICATION_RE.test(raw))
+      return null;
+    const intent = await this.readIntent(input, ctx);
+    if (!intent || intent === 'saludo' || intent === 'seguimiento') return null;
+    const wanted = this.clientActionFor(intent, raw);
+    if (wanted) {
+      const question = questionOf(raw);
+      this.setState(key, 'IDENTIFY', {
+        ...withoutPhoneQuestion(state.data),
+        pendingAction: wanted.action,
+        ...(wanted.withDocs ? { pendingWithDocs: true } : {}),
+        ...(question ? { pendingQuestion: question } : {}),
+        phoneConfirm: true,
+      });
+      return {
+        messages: [
+          phoneQuestion(name, 'Dale, te ayudo con eso. Antes confirmame:'),
+        ],
+      };
+    }
+    // Something that needs no identification: a quote, a question, the tow truck.
+    this.setState(key, 'ROOT', withoutPhoneQuestion(state.data));
+    return this.routeOpening(input, ctx, key, null, intent);
   }
 
   private async confirmPhoneMatch(

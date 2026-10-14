@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { PHOTO_REPLY_DELAY_MS, WebhookService } from './webhook.service';
+import {
+  PHOTO_REPLY_DELAY_MS,
+  takeMenuMarker,
+  WebhookService,
+} from './webhook.service';
 import { claimPhotoAddedText } from './flow/flow.messages';
 import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
@@ -152,6 +156,74 @@ describe('WebhookService', () => {
     expect(request).not.toHaveProperty('temperature');
     expect(request).not.toHaveProperty('top_p');
     expect(request).not.toHaveProperty('max_tokens');
+  });
+
+  it('shows the menu under an answer that points to one of its options', async () => {
+    const create = stubOpenAi();
+    create.mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content:
+              'Para ver tu deuda tocá *Pagos y cobranzas* acá abajo. [MENU]',
+            tool_calls: [],
+          },
+          finish_reason: 'stop',
+        },
+      ],
+    });
+    api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+    api.getConversation.mockResolvedValue({
+      conversationId: 1,
+      client: null,
+      newSession: false,
+      messages: [],
+      botPaused: false,
+      flowState: null,
+    });
+    api.saveMessage.mockResolvedValue({});
+    flow.handle.mockResolvedValueOnce({
+      messages: [],
+      state: { step: 'LLM_FAQ', data: {} },
+      handoff: 'faq',
+    });
+
+    await service.handleMessage('5491155556666', 'cuánto debo', 'P1', 'mn-1');
+
+    expect(meta.sendText).toHaveBeenCalledWith(
+      '5491155556666',
+      'Para ver tu deuda tocá *Pagos y cobranzas* acá abajo.',
+      'P1',
+    );
+    expect(meta.sendList).toHaveBeenCalledWith(
+      '5491155556666',
+      expect.anything(),
+      expect.anything(),
+      expect.arrayContaining([expect.objectContaining({ id: 'm_pagos' })]),
+      'P1',
+    );
+  });
+
+  describe('takeMenuMarker', () => {
+    it('removes the marker and asks for the menu', () => {
+      expect(takeMenuMarker('Tocá *Siniestros* acá abajo. [MENU]')).toEqual({
+        text: 'Tocá *Siniestros* acá abajo.',
+        menu: true,
+      });
+    });
+
+    it('still shows the menu when the model tells them to write "menú"', () => {
+      expect(
+        takeMenuMarker('Para eso escribí *menú* y elegí Pagos.').menu,
+      ).toBe(true);
+    });
+
+    it('leaves an ordinary answer alone', () => {
+      expect(takeMenuMarker('El seguro de bici cubre robo.')).toEqual({
+        text: 'El seguro de bici cubre robo.',
+        menu: false,
+      });
+    });
   });
 
   it('passes the stored message time to the flow and limits the quote model to the current quote', async () => {

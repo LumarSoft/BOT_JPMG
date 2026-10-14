@@ -2856,4 +2856,205 @@ describe('FlowService', () => {
       },
     );
   });
+
+  describe('requests read mid-chat, the non-client menu and promises (14/10)', () => {
+    const withModel: FlowContext = { ...leadCtx, phoneNumberId: 'P1' };
+    const client = {
+      id: 1,
+      firstName: 'ANA',
+      lastName: 'GOMEZ',
+      dni: '30123456',
+      email: '',
+      phone: null,
+      city: null,
+    } as unknown as FlowContext['client'];
+    const asClient: FlowContext = { ...withModel, client };
+    const body = (res: { messages: unknown[] }) => JSON.stringify(res.messages);
+
+    it('reads a question in the client menu instead of matching "póliza"', async () => {
+      await send({ text: 'hola' }, asClient);
+      intents.interpret.mockResolvedValue('consulta');
+
+      const res = await send({ text: '¿Mi póliza cubre granizo?' }, asClient);
+
+      expect(res.handoff).toBe('faq');
+      expect(api.getPolizas).not.toHaveBeenCalled();
+    });
+
+    it('asks before opening a cancellation the customer did not name', async () => {
+      await send({ text: 'hola' }, asClient);
+      intents.interpret.mockResolvedValue('baja');
+
+      const res = await send(
+        { text: 'Necesito urgente hacer el descuento de la cuota' },
+        asClient,
+      );
+      expect(body(res)).toContain('¿querés dar de baja una póliza?');
+      expect(api.getPolizas).not.toHaveBeenCalled();
+
+      const no = await send(
+        { text: 'No, es otra cosa', selectionId: OPT.bajaNo },
+        asClient,
+      );
+      expect(body(no)).toContain('te entendí mal');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+    });
+
+    it('opens the cancellation once confirmed', async () => {
+      await send({ text: 'hola' }, asClient);
+      intents.interpret.mockResolvedValue('baja');
+      await send({ text: 'Quiero sacar el seguro de la moto' }, asClient);
+
+      await send(
+        { text: 'Sí, dar de baja', selectionId: OPT.bajaPoliza },
+        asClient,
+      );
+
+      expect(stored?.step).toBe('BAJA_CONFIRM');
+    });
+
+    it('lets someone in the non-client menu say they are a client', async () => {
+      await send({ text: 'hola' });
+      const menu = await send({
+        text: 'Todavía no',
+        selectionId: OPT.noCliente,
+      });
+      expect(body(menu)).toContain('Ya soy cliente');
+
+      await send({ text: '👤 Ya soy cliente', selectionId: OPT.cliente });
+
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.audience).toBe('client');
+    });
+
+    it('takes a client request typed in the non-client menu to identification', async () => {
+      await send({ text: 'hola' }, withModel);
+      await send({ text: 'Todavía no', selectionId: OPT.noCliente }, withModel);
+      intents.interpret.mockResolvedValue('pagos');
+
+      await send({ text: 'Quiero saber cuánto debo de mi seguro' }, withModel);
+
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.audience).toBe('client');
+      expect(stored?.data.pendingAction).toBe('pagos');
+    });
+
+    it('does not take "no, gracias" for "no soy cliente"', async () => {
+      await send({ text: 'hola' });
+      const res = await send({ text: 'No, gracias' });
+
+      expect(body(res)).toContain('Gracias a vos');
+      expect(stored?.step).toBe('ROOT');
+      expect(stored?.audience).toBeUndefined();
+    });
+
+    it('takes a menu option tapped from any step', async () => {
+      await send({ text: 'hola' }, asClient);
+      await send(
+        { selectionId: OPT.leadConsultas, text: 'Otras consultas' },
+        asClient,
+      );
+      expect(stored?.step).toBe('LLM_FAQ');
+
+      await send(
+        { selectionId: OPT.pagos, text: '💳 Pagos y cobranzas' },
+        asClient,
+      );
+
+      expect(api.getEstadoCuenta).toHaveBeenCalled();
+    });
+
+    it('keeps a request typed instead of answering "¿hablo con…?"', async () => {
+      const ctx = { ...withModel, phoneMatch: { firstName: 'GUSTAVO' } };
+      await send({ text: 'Hola buenas tardes' }, ctx);
+      intents.interpret.mockResolvedValue('documentos');
+
+      const ask = await send(
+        { text: 'Me podrías enviar la cuponera de pagos' },
+        ctx,
+      );
+      expect(body(ask)).toContain('te ayudo con eso');
+      expect(body(ask)).toContain('¿Hablo con *Gustavo*?');
+      expect(body(ask)).not.toContain('DNI');
+
+      await send({ text: 'Sí, soy Gustavo', selectionId: OPT.phoneSi }, ctx);
+
+      expect(api.identifyByPhone).toHaveBeenCalledWith(1);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Pide los cupones de pago'),
+      );
+    });
+
+    it('alerts the office about a rejected debit it says it will handle', async () => {
+      api.getEstadoCuenta.mockResolvedValue([
+        {
+          id: 7,
+          certificateNumber: '1000001',
+          riskType: 'auto',
+          lastMovement: 'REFACTURACION',
+          paymentMethod: 'Débito Tarjeta',
+          vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'PALIO' },
+          paidInstallments: 2,
+          unpaidInstallments: [
+            {
+              number: 3,
+              amount: '100',
+              dueDate: '2026-10-06T00:00:00.000Z',
+              status: 'rejected',
+            },
+          ],
+          hasRejectedInstallments: true,
+        },
+      ]);
+      api.getHours.mockResolvedValue({
+        formatted: 'Lunes a viernes de 8 a 16 hs',
+        isOpenNow: false,
+        todayClosure: null,
+        message: '',
+        closedNote:
+          '_Ahora estamos fuera de horario; te respondemos al reabrir._',
+      });
+      await send({ text: 'hola' }, asClient);
+
+      const res = await send(
+        { selectionId: OPT.pagos, text: '💳 Pagos y cobranzas' },
+        asClient,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Rechazo de débito en FIAT PALIO (Póliza 1000001 · AB123CD): regularizar el pago con el cliente.',
+      );
+      expect(body(res)).toContain(
+        'Ya le avisé a la oficina para regularizarlo',
+      );
+      expect(body(res)).toContain('fuera de horario');
+    });
+
+    it('says when the office answers a claim or a cancellation outside hours', async () => {
+      api.getHours.mockResolvedValue({
+        formatted: 'Lunes a viernes de 8 a 16 hs',
+        isOpenNow: false,
+        todayClosure: null,
+        message: '',
+        closedNote:
+          '_Ahora estamos fuera de horario; te respondemos al reabrir._',
+      });
+      stored = { step: 'SINIESTRO_FOTO_DANIO', data: {}, audience: 'client' };
+      const claim = await send({ text: 'listo' }, asClient);
+      expect(body(claim)).toContain('fuera de horario');
+      expect(body(claim)).not.toContain('a la brevedad');
+
+      stored = null;
+      await send({ text: 'quiero dar de baja mi póliza' }, asClient);
+      const baja = await send(
+        { selectionId: OPT.confirmar, text: '' },
+        asClient,
+      );
+      expect(api.requestPolicyCancellation).toHaveBeenCalled();
+      expect(body(baja)).toContain('fuera de horario');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+  });
 });

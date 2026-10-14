@@ -64,6 +64,8 @@ export const OPT = {
   // "¿es por esto o por otra cosa?" after asking for an advisor
   asesorMisma: 'asesor_misma',
   asesorOtra: 'asesor_otra',
+  // "No, es otra cosa" when a request was read as a cancellation
+  bajaNo: 'baja_no',
 } as const;
 
 /** The client menu's option ids — the taps that still mean something after a
@@ -83,6 +85,29 @@ export const CLIENT_MENU_OPTS = new Set<string>([
 
 /** Same idea for the welcome buttons. */
 export const ROOT_OPTS = new Set<string>([OPT.cliente, OPT.noCliente]);
+
+/** The non-client menu's options ("Ya soy cliente" included). */
+export const LEAD_MENU_OPTS = new Set<string>([
+  OPT.leadCotizar,
+  OPT.leadVendedor,
+  OPT.leadConsultas,
+  OPT.cliente,
+]);
+
+/**
+ * A request read as a cancellation without the customer saying "baja": asked
+ * before opening it ("necesito el descuento de la cuota" was opened as one).
+ */
+export function bajaCheck(): OutgoingMessage {
+  return {
+    kind: 'buttons',
+    body: 'Para no equivocarme: ¿querés dar de baja una póliza?',
+    buttons: [
+      { id: OPT.bajaPoliza, title: 'Sí, dar de baja' },
+      { id: OPT.bajaNo, title: 'No, es otra cosa' },
+    ],
+  };
+}
 
 export const POLIZA_PREFIX = 'pol_';
 /** "Todas mis pólizas" row of the coupon picker. */
@@ -339,12 +364,19 @@ export function clientMenu(): OutgoingMessage {
 
 export function leadMenu(): OutgoingMessage {
   return {
-    kind: 'buttons',
+    kind: 'list',
     body: 'Perfecto, ¿con qué te puedo ayudar?',
-    buttons: [
-      { id: OPT.leadCotizar, title: 'Cotizar un seguro' },
-      { id: OPT.leadVendedor, title: 'Que me llamen' },
-      { id: OPT.leadConsultas, title: 'Otras consultas' },
+    button: 'Ver opciones',
+    rows: [
+      { id: OPT.leadCotizar, title: '💰 Cotizar un seguro' },
+      { id: OPT.leadVendedor, title: '📞 Que me llamen' },
+      { id: OPT.leadConsultas, title: '💬 Otras consultas' },
+      // Who tapped "Todavía no" by mistake had no way to their policies.
+      {
+        id: OPT.cliente,
+        title: '👤 Ya soy cliente',
+        description: 'Siniestros, pagos y documentación',
+      },
     ],
   };
 }
@@ -859,7 +891,7 @@ const DEBIT_IN_PROCESS_NOTE =
 
 export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
   if (polizas.length === 0) {
-    return 'No encontré pólizas asociadas a tu cuenta. Si creés que es un error, te derivo con un asesor.';
+    return 'No encontré pólizas asociadas a tu cuenta. Si creés que es un error, escribí *asesor* y lo revisa la oficina.';
   }
 
   const blocks = polizas.map((p) => {
@@ -894,7 +926,7 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
         ? `\n  *Total vencido: ${fmtMoney(vencidas.reduce((sum, c) => sum + Number(c.amount), 0))}*`
         : '';
     const aviso = p.hasRejectedInstallments
-      ? '\n⚠️ Hay un rechazo de débito. Un asesor te va a contactar para regularizarlo.'
+      ? '\n⚠️ Hay un rechazo de débito. Ya le avisé a la oficina para regularizarlo: te escriben por este chat.'
       : '';
     const enProceso = p.unpaidInstallments.some((c) => inDebitProcess(p, c))
       ? DEBIT_IN_PROCESS_NOTE
