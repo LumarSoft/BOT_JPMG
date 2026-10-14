@@ -62,6 +62,7 @@ function systemPrompt(today: string): string {
     '- hora: HH:MM en 24 h si la dio; si fue aproximada, tal como la dijo ("a la tarde", "cerca de las 8").',
     '- calle: solo el nombre de la calle donde ocurrió, sin el número. altura: solo el número.',
     '- Si dio una esquina o un cruce sin número ("en Pellegrini y Oroño"): calle = la primera calle, entreCalles = la otra (o "X y Y" si dio dos), altura = null.',
+    '- Si dio una referencia en lugar del número ("cerca de la intersección con San Martín", "a la altura de San Martín", "frente al shopping"): entreCalles = esa referencia tal como la dijo, altura = null.',
     '- alturaDesconocida: true solo si dijo explícitamente que no sabe el número/altura.',
     '- sentido: hacia dónde circulaba el vehículo asegurado (norte, sur, este, oeste). "no_sabe" solo si dijo que no lo sabe.',
     '- relato: cómo ocurrió, con sus palabras, corregido mínimamente para que se entienda.',

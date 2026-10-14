@@ -7,7 +7,11 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { WebhookService } from './webhook.service';
+import {
+  isStorableDocument,
+  WebhookService,
+  type SharedItem,
+} from './webhook.service';
 import { SentMessageRegistry } from './sent-message-registry.service';
 import { ApiService } from '../api/api.service';
 import type {
@@ -173,9 +177,79 @@ export class WebhookController {
           phoneNumberId,
           message.id,
           contactName,
+          { caption: message.image.caption },
         )
         .catch(console.error);
+    } else if (message.type === 'document') {
+      const { document } = message;
+      console.log(
+        `📄 De: ${message.from} → [documento ${document.mime_type} ${document.id}]`,
+      );
+      // A PDF or a photo sent as a document is stored like a photo; anything
+      // else (a .docx) is only noted, since the API keeps images and PDFs.
+      if (isStorableDocument(document.mime_type))
+        this.webhookService
+          .handleMedia(
+            message.from,
+            document.id,
+            phoneNumberId,
+            message.id,
+            contactName,
+            {
+              document: { filename: document.filename },
+              caption: document.caption,
+            },
+          )
+          .catch(console.error);
+      else
+        this.shareItem(message.from, phoneNumberId, message.id, contactName, {
+          kind: 'file',
+          content: `[El cliente envió un archivo que el bot no puede abrir${document.filename ? `: ${document.filename}` : ''}]`,
+        });
+    } else if (message.type === 'video') {
+      console.log(`🎥 De: ${message.from} → [video ${message.video.id}]`);
+      this.shareItem(message.from, phoneNumberId, message.id, contactName, {
+        kind: 'video',
+        content:
+          '[El cliente envió un video]' +
+          (message.video.caption ? ` ${message.video.caption}` : ''),
+      });
+    } else if (message.type === 'location') {
+      const { latitude, longitude, name, address } = message.location;
+      console.log(`📍 De: ${message.from} → [ubicación]`);
+      const place = [name, address].filter(Boolean).join(', ');
+      const map = `https://maps.google.com/?q=${latitude},${longitude}`;
+      this.shareItem(message.from, phoneNumberId, message.id, contactName, {
+        kind: 'location',
+        content: `📍 Ubicación: ${place ? `${place} ` : ''}(${map})`,
+        flowText: `Lugar: ${place || `ubicación compartida ${map}`}`,
+      });
+    } else if (message.type === 'contacts') {
+      console.log(`📇 De: ${message.from} → [contacto]`);
+      const cards = message.contacts
+        .map((c) =>
+          [c.name?.formatted_name, ...(c.phones ?? []).map((p) => p.phone)]
+            .filter(Boolean)
+            .join(' '),
+        )
+        .filter(Boolean);
+      this.shareItem(message.from, phoneNumberId, message.id, contactName, {
+        kind: 'contacts',
+        content: `[El cliente compartió un contacto: ${cards.join('; ') || 'sin datos'}]`,
+      });
     }
+  }
+
+  private shareItem(
+    from: string,
+    phoneNumberId: string,
+    messageId: string,
+    contactName: string | undefined,
+    item: SharedItem,
+  ): void {
+    this.webhookService
+      .handleSharedItem(from, phoneNumberId, messageId, item, contactName)
+      .catch(console.error);
   }
 
   /**

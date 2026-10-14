@@ -64,11 +64,30 @@ export class InactivityWarningService {
       const pending = await this.api.claimPendingWarnings();
       if (!this.enabled) return;
       for (const c of pending) {
+        const body = warningText(c.attentionHours, c.isOpenNow);
         await this.meta.sendText(
           this.meta.normalizePhone(c.waId),
-          warningText(c.attentionHours, c.isOpenNow),
+          body,
           c.phoneNumberId,
         );
+        // In the inbox too, so the office sees the chat was closed. Not
+        // activity: it must not reopen the session or be warned again.
+        await this.api
+          .saveMessage(
+            c.conversationId,
+            'assistant',
+            body,
+            undefined,
+            undefined,
+            {
+              keepActivity: true,
+            },
+          )
+          .catch((error: Error) =>
+            this.logger.warn(
+              `No se pudo guardar el aviso de inactividad: ${error.message}`,
+            ),
+          );
       }
       if (pending.length > 0) {
         this.logger.log(`Avisos de inactividad enviados: ${pending.length}`);

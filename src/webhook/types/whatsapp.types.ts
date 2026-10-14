@@ -57,12 +57,64 @@ export interface WhatsAppInteractiveMessage {
     | { type: 'list_reply'; list_reply: WhatsAppInteractiveReply };
 }
 
-/** Messages the bot acts on. Other types (video, documents, …) are ignored. */
+/** A file sent as a document (a PDF, a photo sent "as document", a .docx…). */
+export interface WhatsAppDocumentMessage {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: 'document';
+  document: {
+    id: string;
+    mime_type: string;
+    filename?: string;
+    caption?: string;
+  };
+}
+
+export interface WhatsAppVideoMessage {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: 'video';
+  video: { id: string; mime_type: string; caption?: string };
+}
+
+/** A shared location (a pin, or a place with its name and address). */
+export interface WhatsAppLocationMessage {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: 'location';
+  location: {
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  };
+}
+
+/** One or more contact cards. */
+export interface WhatsAppContactsMessage {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: 'contacts';
+  contacts: Array<{
+    name?: { formatted_name?: string };
+    phones?: Array<{ phone?: string }>;
+  }>;
+}
+
+/** Messages the bot acts on. Other types (stickers, reactions, …) are ignored. */
 export type WhatsAppMessage =
   | WhatsAppTextMessage
   | WhatsAppImageMessage
   | WhatsAppAudioMessage
-  | WhatsAppInteractiveMessage;
+  | WhatsAppInteractiveMessage
+  | WhatsAppDocumentMessage
+  | WhatsAppVideoMessage
+  | WhatsAppLocationMessage
+  | WhatsAppContactsMessage;
 
 export interface WhatsAppMetadata {
   display_phone_number: string;

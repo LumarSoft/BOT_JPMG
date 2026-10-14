@@ -191,6 +191,8 @@ export class ApiService {
     content: string,
     media?: MessageMedia,
     contactName?: string,
+    /** Kept for the transcript only: not activity (the inactivity goodbye). */
+    options: { keepActivity?: boolean } = {},
   ): Promise<ConversationMessage> {
     const { data } = await this.http.post<ConversationMessage>(
       `/bot/conversation/${conversationId}/message`,
@@ -211,6 +213,7 @@ export class ApiService {
             }
           : {}),
         ...(contactName?.trim() ? { contactName: contactName.trim() } : {}),
+        ...(options.keepActivity ? { keepActivity: true } : {}),
       },
     );
     return data;

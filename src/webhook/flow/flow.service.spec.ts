@@ -317,9 +317,9 @@ describe('FlowService', () => {
       expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
       await send({ text: '37334584' });
       expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '37334584' });
-      expect(stored?.step).toBe('BAJA_POLIZA');
-      await send({ selectionId: 'pol_833', text: '' });
+      // One policy: straight to the confirmation, with a way out for another one.
       expect(stored?.step).toBe('BAJA_CONFIRM');
+      expect(JSON.stringify(stored)).toContain('833');
       expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
       const result = await send({ selectionId: OPT.confirmar, text: '' });
       expect(api.requestPolicyCancellation).toHaveBeenCalledWith(1, 833);
@@ -327,10 +327,24 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('CLIENT_MENU');
     });
 
+    it('offers "Es otra póliza" when the client has a single policy', async () => {
+      await send({ text: 'quiero darme de baja' });
+      const confirm = await send({ text: '37334584' });
+      expect(JSON.stringify(confirm.messages)).toContain('Es otra póliza');
+
+      await send({ selectionId: 'pol_otra', text: 'Es otra póliza' });
+      await send({ text: 'la del seguro de vida' });
+
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Quiere dar de baja otra póliza (no figura en el bot): la del seguro de vida',
+      );
+    });
+
     it('does not create a request when the client cancels confirmation', async () => {
       await send({ text: 'quiero darme de baja' });
       await send({ text: '37334584' });
-      await send({ selectionId: 'pol_833', text: '' });
       await send({ selectionId: OPT.cancelar, text: '' });
       expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
       expect(stored?.step).toBe('CLIENT_MENU');
@@ -341,7 +355,7 @@ describe('FlowService', () => {
         text: 'Hola quisiera dar de baja el seguro de la bicicleta rodado 29 que está a mi nombre Ana Gómez dni 27345678',
       });
       expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '27345678' });
-      expect(stored?.step).toBe('BAJA_POLIZA');
+      expect(stored?.step).toBe('BAJA_CONFIRM');
       expect(stored?.audience).toBe('client');
       expect((result.messages[0] as { body: string }).body).toContain(
         'Soy *Nico*',
@@ -439,20 +453,23 @@ describe('FlowService', () => {
     async function openChecklist() {
       await send({ text: 'hola' }, ctx);
       await send({ selectionId: OPT.siniestros, text: '' }, ctx);
-      await send({ selectionId: OPT.sinNueva, text: '' }, ctx);
-      return send({ selectionId: 'pol_833', text: '' }, ctx);
+      // The client's only policy: no list to pick from.
+      return send({ selectionId: OPT.sinNueva, text: '' }, ctx);
     }
 
     it('asks for every claim detail in a single message', async () => {
       const result = await openChecklist();
 
       expect(stored?.step).toBe('SINIESTRO_DATOS');
-      expect(result.messages).toHaveLength(1);
-      expect(result.messages[0].body).toContain(
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages[0].body).toBe(
+        'La denuncia es sobre tu CHEVROLET CORSA (Póliza 1741715 · ABC123).',
+      );
+      expect(result.messages[1].body).toContain(
         'Respondé todo en un solo mensaje',
       );
-      expect(result.messages[0].body).toContain('Calle y altura exacta');
-      expect(result.messages[0].body).toContain('norte, sur, este u oeste');
+      expect(result.messages[1].body).toContain('Calle y altura exacta');
+      expect(result.messages[1].body).toContain('norte, sur, este u oeste');
     });
 
     it('confirms and files the claim when the answer is complete', async () => {
@@ -512,8 +529,75 @@ describe('FlowService', () => {
       );
       expect(stored?.step).toBe('SINIESTRO_CONFIRM');
       expect(summary.messages[0].body).toContain(
-        'Lugar: Pellegrini s/n (esquina / entre Oroño)',
+        'Lugar: Pellegrini s/n (esquina / referencia: Oroño)',
       );
+    });
+
+    it('asks for the street number once and then takes the reference given', async () => {
+      // A customer gave "cerca de la intersección con av San Martín" when asked
+      // and was asked for the number again; they ended up cancelling the claim.
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce({
+        ...completo,
+        calle: 'Circunvalación',
+        altura: null,
+        otroVehiculo: null,
+      });
+      const followUp = await send({ text: 'por circunvalación…' }, ctx);
+      expect(followUp.messages[0].body).toContain(
+        'Altura (número) sobre *Circunvalación*',
+      );
+
+      extractor.extract.mockResolvedValueOnce({
+        ...vacio,
+        entreCalles: 'cerca de la intersección con av San Martín',
+        otroVehiculo: false,
+      });
+      const summary = await send(
+        { text: 'cerca de intersección con av San Martín. No' },
+        ctx,
+      );
+
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(summary.messages[0].body).toContain(
+        'Lugar: Circunvalación s/n (esquina / referencia: cerca de la intersección con av San Martín)',
+      );
+    });
+
+    it('does not ask again whether another vehicle was involved', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValue({ ...completo, otroVehiculo: false });
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+      await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+      expect(stored?.step).toBe('SINIESTRO_FOTO_TARJETA');
+
+      await send({ text: 'no la tengo' }, ctx); // tarjeta verde
+      const next = await send({ text: 'no la tengo' }, ctx); // carnet
+
+      expect(stored?.step).toBe('SINIESTRO_FOTO_DANIO');
+      expect(JSON.stringify(next.messages)).not.toContain('tercero');
+    });
+
+    it('goes to the other vehicle photos when the checklist said there was one', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValue(completo); // otroVehiculo: true
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+      await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+      await send({ text: 'no la tengo' }, ctx);
+      await send({ text: 'no la tengo' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_TERCERO_TARJETA');
+    });
+
+    it('keeps the claim when the customer only says hello halfway through', async () => {
+      await openChecklist();
+      const res = await send({ text: 'Buenas' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_DATOS');
+      expect(res.messages[0].body).toContain(
+        'Seguimos con la denuncia del siniestro',
+      );
+      expect(extractor.extract).not.toHaveBeenCalled();
     });
 
     it('asks again for a date in the future', async () => {
@@ -546,10 +630,6 @@ describe('FlowService', () => {
         { selectionId: OPT.sinNueva, text: '' },
         { ...ctx, llmEnabled: false },
       );
-      await send(
-        { selectionId: 'pol_833', text: '' },
-        { ...ctx, llmEnabled: false },
-      );
 
       expect(stored?.step).toBe('SINIESTRO_FECHA');
     });
@@ -570,8 +650,7 @@ describe('FlowService', () => {
     it('asks one question at a time without the model and calls createSiniestro', async () => {
       await send({ text: 'hola' }, clientCtx); // CLIENT_MENU
       await send({ selectionId: OPT.siniestros, text: '' }, clientCtx); // SINIESTRO_TYPE
-      await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx); // SINIESTRO_POLIZA
-      await send({ selectionId: 'pol_833', text: '' }, clientCtx); // SINIESTRO_FECHA
+      await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx); // SINIESTRO_FECHA (only policy)
       expect(extractor.extract).not.toHaveBeenCalled();
 
       // Date embedded in a sentence used to dead-end into the FAQ model.
@@ -623,8 +702,7 @@ describe('FlowService', () => {
     async function pickPolicyForClaim() {
       await send({ text: 'hola' }, clientCtx);
       await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
-      await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx);
-      return send({ selectionId: 'pol_833', text: '' }, clientCtx);
+      return send({ selectionId: OPT.sinNueva, text: '' }, clientCtx);
     }
 
     it('does not take a claim on a policy with a rejected payment and alerts an advisor', async () => {
@@ -638,7 +716,7 @@ describe('FlowService', () => {
 
       const result = await pickPolicyForClaim();
 
-      expect(result.messages[0].body).toContain('pago rechazado');
+      expect(JSON.stringify(result.messages)).toContain('pago rechazado');
       expect(stored?.step).toBe('CLIENT_MENU');
       expect(api.requestHandoff).toHaveBeenCalledWith(
         1,
@@ -658,7 +736,7 @@ describe('FlowService', () => {
 
       const result = await pickPolicyForClaim();
 
-      expect(result.messages[0].body).toContain('cuotas vencidas');
+      expect(JSON.stringify(result.messages)).toContain('cuotas vencidas');
       expect(api.requestHandoff).toHaveBeenCalled();
       expect(stored?.step).toBe('CLIENT_MENU');
     });
@@ -718,7 +796,6 @@ describe('FlowService', () => {
       await send({ text: 'hola' }, clientCtx);
       await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
       await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx);
-      await send({ selectionId: 'pol_833', text: '' }, clientCtx);
     }
 
     function isoDaysAgo(days: number) {
@@ -773,15 +850,85 @@ describe('FlowService', () => {
 
       await send({ text: 'Hi' }, clientCtx);
 
-      expect(api.requestHandoff).not.toHaveBeenCalled();
+      // Only the alert sent when the advisor was asked for.
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Hi'),
+      );
       expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('takes "asesor" written with the claim buttons on screen', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
+      expect(stored?.step).toBe('SINIESTRO_TYPE');
+
+      const res = await send({ text: 'Asesor' }, clientCtx);
+
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Pidió hablar con un asesor. Todavía no contó el motivo. Venía con siniestros.',
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'ya le avisé a la oficina',
+      );
+    });
+
+    it('adds the reason to the alert already sent', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { selectionId: OPT.asesor, text: 'Hablar con un asesor' },
+        clientCtx,
+      );
+      await send(
+        { text: 'Necesito los certificados de pago de mayo' },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenLastCalledWith(
+        1,
+        'Motivo: Necesito los certificados de pago de mayo',
+      );
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('does not take "gracias" for the reason', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { selectionId: OPT.asesor, text: 'Hablar con un asesor' },
+        clientCtx,
+      );
+      const res = await send({ text: 'Gracias!' }, clientCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(res.messages[0].body).toContain('El aviso ya está en la oficina');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('opens the menu option tapped after asking for an advisor', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { selectionId: OPT.asesor, text: 'Hablar con un asesor' },
+        clientCtx,
+      );
+      await send(
+        { selectionId: OPT.documentos, text: '📄 Documentación' },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Documentación'),
+      );
+      expect(api.getDocumentos).toHaveBeenCalled();
     });
 
     it('re-asks the date instead of leaking to the FAQ model when it is unreadable', async () => {
       await send({ text: 'hola' }, clientCtx);
       await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
       await send({ selectionId: OPT.sinNueva, text: '' }, clientCtx);
-      await send({ selectionId: 'pol_833', text: '' }, clientCtx);
 
       const res = await send({ text: 'no me acuerdo bien' }, clientCtx);
       expect(res.handoff).toBeUndefined();
@@ -1383,9 +1530,12 @@ describe('FlowService', () => {
           text: 'Hablar con un asesor',
         });
 
-        expect(api.requestHandoff).toHaveBeenCalled();
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          'Pidió hablar con un asesor. Todavía no contó el motivo. Venía con la cotización.',
+        );
         expect((res.messages[0] as { body: string }).body).toContain(
-          'tomé nota',
+          'ya le avisé a la oficina',
         );
       });
 
@@ -1613,8 +1763,9 @@ describe('FlowService', () => {
         await send({ text: 'hola' }, clientCtx);
         await send({ text: 'me robaron el auto' }, clientCtx);
 
-        // A new claim: straight to its policy, no "¿nueva o consultar?".
-        expect(stored?.step).toBe('SINIESTRO_POLIZA');
+        // A new claim: straight to it (the client's only policy), no
+        // "¿nueva o consultar?".
+        expect(stored?.step).toBe('SINIESTRO_DATOS');
       });
     });
   });
@@ -1766,8 +1917,11 @@ describe('FlowService', () => {
 
     it('deja el pedido en la bandeja como handoff en vez de una promesa vacía', async () => {
       await send({ text: 'hola' }, clientCtx); // CLIENT_MENU
-      await send({ selectionId: OPT.documentos, text: '' }, clientCtx); // DOC_POLIZA
-      const res = await send({ selectionId: 'pol_833', text: '' }, clientCtx);
+      // The only policy: no list, straight to the request.
+      const res = await send(
+        { selectionId: OPT.documentos, text: '' },
+        clientCtx,
+      );
 
       expect(api.getDocumentos).toHaveBeenCalledWith(1, 833);
       expect(api.requestHandoff).toHaveBeenCalledWith(
@@ -1776,7 +1930,7 @@ describe('FlowService', () => {
           'Pidió la documentación de su póliza CHEVROLET CORSA (Póliza 1741715 · ABC123)',
         ),
       );
-      expect(res.messages[0]).toMatchObject({
+      expect(res.messages[1]).toMatchObject({
         kind: 'text',
         body: expect.stringContaining('Ya le pasé el pedido a un asesor'),
       });
@@ -1933,7 +2087,6 @@ describe('FlowService', () => {
     it('tampoco repite el pedido de documentación', async () => {
       await send({ text: 'hola' }, clientCtx);
       await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
-      await send({ selectionId: 'pol_833', text: '' }, clientCtx);
       const again = await send(
         { selectionId: OPT.documentos, text: '' },
         clientCtx,
@@ -2247,11 +2400,14 @@ describe('FlowService', () => {
       expect(stored?.data.pendingAction).toBe('siniestro_nueva');
     });
 
-    it('asks for the reason when the first message is only a greeting and "asesor"', async () => {
+    it('alerts the office and asks for the reason when the first message is only a greeting and "asesor"', async () => {
       await send({ text: 'Hola, quiero hablar con un asesor' }, withModel);
 
       expect(stored?.step).toBe('ASESOR_MOTIVO');
-      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Pidió hablar con un asesor. Todavía no contó el motivo.',
+      );
     });
 
     it.each(['cancelar', 'Volver', 'salir'])(
@@ -2513,11 +2669,17 @@ describe('FlowService', () => {
       );
       expect(JSON.stringify(offer.messages)).toContain(question);
 
+      // The alert already carries it: confirming adds nothing.
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        `Pidió hablar con un asesor. Su consulta: "${question}".`,
+      );
       await send(
-        { text: 'Sí, pasala', selectionId: OPT.asesorMisma },
+        { text: 'Sí, es eso', selectionId: OPT.asesorMisma },
         { ...withModel, client },
       );
-      expect(api.requestHandoff).toHaveBeenCalledWith(1, question);
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(stored?.step).toBe('CLIENT_MENU');
     });
 
     it('explains a debit that did not go through by how each policy is paid', async () => {
@@ -2615,6 +2777,24 @@ describe('FlowService', () => {
     });
 
     it('offers "Otra póliza" when picking a policy for its papers', async () => {
+      api.getPolizas.mockResolvedValue([
+        {
+          id: 833,
+          certificateNumber: '1741715',
+          riskType: 'auto',
+          vehicle: {
+            licensePlate: 'ABC123',
+            brand: 'CHEVROLET',
+            model: 'CORSA',
+          },
+        },
+        {
+          id: 834,
+          certificateNumber: '1741716',
+          riskType: 'moto',
+          vehicle: { licensePlate: 'A123BCD', brand: 'HONDA', model: 'WAVE' },
+        },
+      ]);
       await send({ text: 'hola' }, { ...leadCtx, client });
       const picker = await send(
         { text: '📄 Documentación', selectionId: OPT.documentos },
@@ -2632,7 +2812,7 @@ describe('FlowService', () => {
       );
       expect(api.requestHandoff).toHaveBeenCalledWith(
         1,
-        'la de accidentes personales de mis empleados',
+        'Pide la documentación de otra póliza (no figura en el bot): la de accidentes personales de mis empleados',
       );
     });
 

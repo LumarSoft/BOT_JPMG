@@ -79,11 +79,12 @@ export function mergeDatos(
 /**
  * Pending items, each with the follow-up line to ask for it. The location is
  * the one people get wrong: a corner ("Pellegrini y Oroño") is not enough, so
- * it asks for the number on that street and only accepts the corner when the
- * customer says they don't know it.
+ * it asks once for the number on that street; after that (`alturaYaPedida`)
+ * whatever reference the customer gave is the place.
  */
 export function pendientes(
   d: SiniestroDatos,
+  opts: { alturaYaPedida?: boolean } = {},
 ): Array<{ campo: SiniestroCampo; pregunta: string }> {
   const out: Array<{ campo: SiniestroCampo; pregunta: string }> = [];
   const add = (campo: SiniestroCampo, pregunta: string) =>
@@ -94,7 +95,7 @@ export function pendientes(
   if (!d.localidad) add('localidad', '📍 Localidad');
   if (!d.calle) {
     add('calle', '🛣️ Calle donde ocurrió y su altura (ej.: San Martín 1250)');
-  } else if (!d.altura) {
+  } else if (!d.altura && !opts.alturaYaPedida) {
     if (d.entreCalles && !d.alturaDesconocida) {
       add(
         'altura',
@@ -161,7 +162,7 @@ const SENTIDO_TEXTO: Record<Sentido, string> = {
 export function siniestroDescripcion(d: SiniestroDatos): string {
   const lugar =
     `${d.calle ?? ''} ${d.altura ?? 's/n'}`.trim() +
-    (d.entreCalles ? ` (esquina / entre ${d.entreCalles})` : '');
+    (d.entreCalles ? ` (esquina / referencia: ${d.entreCalles})` : '');
   const tercero = d.otroVehiculo
     ? `Sí — patente: ${d.terceroPatente ?? 'no informada'}; conductor: ${d.terceroConductor ?? 'no informado'}; compañía: ${d.terceroCompania ?? 'no informada'}`
     : 'No';

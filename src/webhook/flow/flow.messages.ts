@@ -61,7 +61,7 @@ export const OPT = {
   // "¿hablo con Juan?" — the number writing is that client's phone
   phoneSi: 'id_phone_si',
   phoneNo: 'id_phone_no',
-  // "¿le paso a la oficina tu consulta?" after asking for an advisor
+  // "¿es por esto o por otra cosa?" after asking for an advisor
   asesorMisma: 'asesor_misma',
   asesorOtra: 'asesor_otra',
 } as const;
@@ -702,9 +702,9 @@ export function advisorSameQuestion(question: string): OutgoingMessage {
     question.length > 200 ? `${question.slice(0, 200)}…` : question;
   return {
     kind: 'buttons',
-    body: `¿Le paso a la oficina tu consulta?\n\n_“${quoted}”_`,
+    body: `Listo, ya le pasé a la oficina tu consulta 🙌 Un asesor te contacta por este chat.\n\n_“${quoted}”_\n\n¿Es por esto o por otra cosa?`,
     buttons: [
-      { id: OPT.asesorMisma, title: 'Sí, pasala' },
+      { id: OPT.asesorMisma, title: 'Sí, es eso' },
       { id: OPT.asesorOtra, title: 'Es otra cosa' },
     ],
   };
@@ -839,6 +839,24 @@ function paymentLine(p: EstadoCuentaPoliza): string {
 const isOverdue = (c: CuotaImpaga) =>
   c.status === 'overdue' || c.status === 'rejected';
 
+/**
+ * How long after its due date a debit installment with no rejection is still
+ * being collected: the cartera shows it overdue until the bank's answer comes
+ * in, and "⚠️ vencida" alarmed a customer whose debit was in process.
+ */
+const DEBIT_IN_PROCESS_DAYS = 40;
+
+/** A debit installment past due, no rejection yet: the bank is collecting it. */
+function inDebitProcess(p: EstadoCuentaPoliza, c: CuotaImpaga): boolean {
+  if (paysByDebit(p) !== true || c.status !== 'overdue' || !c.dueDate)
+    return false;
+  const days = (Date.now() - new Date(c.dueDate).getTime()) / 86_400_000;
+  return days <= DEBIT_IN_PROCESS_DAYS;
+}
+
+const DEBIT_IN_PROCESS_NOTE =
+  '\n_Se debita en estos días: dejá el dinero disponible. Si el banco la rechaza, te avisamos para pagarla con cupón._';
+
 export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
   if (polizas.length === 0) {
     return 'No encontré pólizas asociadas a tu cuenta. Si creés que es un error, te derivo con un asesor.';
@@ -860,9 +878,11 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
         const tag =
           c.status === 'rejected'
             ? '⛔ rechazo de débito'
-            : c.status === 'overdue'
-              ? '⚠️ vencida'
-              : 'pendiente';
+            : inDebitProcess(p, c)
+              ? '⏳ en proceso de débito'
+              : c.status === 'overdue'
+                ? '⚠️ vencida'
+                : 'pendiente';
         return `  • Cuota ${c.number}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag})`;
       })
       .join('\n');
@@ -876,7 +896,10 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
     const aviso = p.hasRejectedInstallments
       ? '\n⚠️ Hay un rechazo de débito. Un asesor te va a contactar para regularizarlo.'
       : '';
-    return `${head}\n${cuotas}${total}${paymentLine(p)}${aviso}`;
+    const enProceso = p.unpaidInstallments.some((c) => inDebitProcess(p, c))
+      ? DEBIT_IN_PROCESS_NOTE
+      : '';
+    return `${head}\n${cuotas}${total}${paymentLine(p)}${enProceso}${aviso}`;
   });
 
   return ['💳 *Estado de cuenta*', ...blocks].join('\n\n');
@@ -939,7 +962,12 @@ function missingAnswer(polizas: EstadoCuentaPoliza[]): string {
         paysByDebit(p) === true
           ? ' Se cobra por débito automático.'
           : ' Si no te aparece para pagar, pedí el *cupón* abajo y te lo manda la oficina.';
-      return `• ${label}: tenés la cuota ${first.number} ${isOverdue(first) ? 'vencida' : 'pendiente'} (vence ${fmtDate(first.dueDate)}).${how}`;
+      const estado = inDebitProcess(p, first)
+        ? 'en proceso de débito'
+        : isOverdue(first)
+          ? 'vencida'
+          : 'pendiente';
+      return `• ${label}: tenés la cuota ${first.number} ${estado} (vence ${fmtDate(first.dueDate)}).${how}`;
     }
     return p.nextDueDate
       ? `• ${label}: ya pagaste todas las cuotas emitidas. La próxima *todavía no se emitió*, por eso no te aparece: va a estar para pagar cerca del vencimiento (${fmtDate(p.nextDueDate)}).`

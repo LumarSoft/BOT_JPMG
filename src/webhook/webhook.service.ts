@@ -186,40 +186,42 @@ type PhotoReplyKind = 'guided' | 'loose' | 'unknown' | 'early' | 'needClaim';
 interface PendingPhotoReply {
   kind: PhotoReplyKind;
   count: number;
+  /** A document (PDF) came in the batch: the reply talks about files. */
+  files: boolean;
   to: string;
   phoneNumberId: string;
   conversationId: number;
   /** Builds the reply for `count` photos (the latest photo's reply wins). */
-  render: (count: number) => OutgoingMessage[];
+  render: (count: number, files: boolean) => OutgoingMessage[];
   timer: ReturnType<typeof setTimeout>;
 }
 
 const text = (body: string): OutgoingMessage[] => [{ kind: 'text', body }];
 
+/** "tu foto", "tus 3 fotos", "tus 2 archivos" — a PDF in the batch makes them files. */
+function received(n: number, files: boolean): string {
+  const noun = files ? 'archivo' : 'foto';
+  return n === 1 ? `tu ${noun}` : `tus ${n} ${noun}s`;
+}
+
 /** Replies to photos outside a guided step, by how many arrived together. */
 const PHOTO_REPLIES: Record<
   Exclude<PhotoReplyKind, 'guided'>,
-  (count: number) => OutgoingMessage[]
+  (count: number, files?: boolean) => OutgoingMessage[]
 > = {
   // The API only joins a loose photo to a claim filed in the last 48 h, so this
   // is the claim the customer just made.
-  loose: (n) =>
+  loose: (n, files = false) =>
     text(
-      n === 1
-        ? '📎 Recibí tu foto y la sumé a la denuncia que hiciste. Si tenés más, mandámelas.'
-        : `📎 Recibí tus ${n} fotos y las sumé a la denuncia que hiciste. Si tenés más, mandámelas.`,
+      `📎 Recibí ${received(n, files)} y ${n === 1 ? (files ? 'lo' : 'la') : files ? 'los' : 'las'} sumé a la denuncia que hiciste. Si tenés más, mandámel${files ? 'os' : 'as'}.`,
     ),
-  unknown: (n) =>
+  unknown: (n, files = false) =>
     text(
-      n === 1
-        ? '📎 ¡Recibí tu foto! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.'
-        : `📎 ¡Recibí tus ${n} fotos! Contame para qué son y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.`,
+      `📎 ¡Recibí ${received(n, files)}! Contame para qué ${n === 1 ? 'es' : 'son'} y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.`,
     ),
-  early: (n) =>
+  early: (n, files = false) =>
     text(
-      n === 1
-        ? '📎 Guardé tu foto. Terminemos primero los datos de la denuncia y después te pido las fotos.'
-        : `📎 Guardé tus ${n} fotos. Terminemos primero los datos de la denuncia y después te pido las fotos.`,
+      `📎 Guardé ${received(n, files)}. Terminemos primero los datos de la denuncia y después te pido las fotos.`,
     ),
   needClaim: () =>
     text(
@@ -240,6 +242,43 @@ const MIME_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/webp': 'webp',
   'image/heic': 'heic',
+  'application/pdf': 'pdf',
+};
+
+/** Documents the API stores (images and PDFs); anything else is only noted. */
+export function isStorableDocument(mimeType: string): boolean {
+  return mimeType in MIME_EXT;
+}
+
+/**
+ * Steps where a shared location answers the question (where the claim
+ * happened): there it reaches the flow as text. Anywhere else it is kept for
+ * the office and the bot asks what it is for.
+ */
+const PLACE_STEPS = new Set([
+  'SINIESTRO_DATOS',
+  'SINIESTRO_LOCALIDAD',
+  'SINIESTRO_CALLE',
+  'SINIESTRO_ALTURA',
+]);
+
+/** Something the customer shared that the bot can't read: a location, a contact, a video. */
+export interface SharedItem {
+  kind: 'location' | 'contacts' | 'video' | 'file';
+  /** What the inbox shows. */
+  content: string;
+  /** For a location: what the claim flow reads as the place. */
+  flowText?: string;
+}
+
+const SHARED_ITEM_REPLIES: Record<SharedItem['kind'], string> = {
+  location:
+    '📍 Recibí tu ubicación. Contame para qué es y te ayudo: por ejemplo *siniestro*, *grúa* o *asesor*.',
+  contacts:
+    '📇 Recibí el contacto. Contame para qué es y te ayudo, o escribí *asesor* y se lo paso a la oficina.',
+  video:
+    '🎥 Recibí tu video, pero no puedo verlo. Si es por un siniestro, mandame *fotos*; si no, contame para qué es.',
+  file: '📎 Recibí tu archivo, pero no lo puedo abrir. Mandámelo como *foto* o *PDF*, o contame qué necesitás.',
 };
 
 function buildMediaFilename(mimeType: string): string {
@@ -350,13 +389,56 @@ export class WebhookService {
     phoneNumberId: string,
     messageId: string,
     contactName?: string,
+    /** A PDF or image sent as a document, and the text sent with it. */
+    extra: { document?: { filename?: string }; caption?: string } = {},
   ): Promise<void> {
     return this.enqueue(
       from,
       phoneNumberId,
       messageId,
-      () => this.processMedia(from, mediaId, phoneNumberId, contactName),
+      async () => {
+        const guided = await this.processMedia(
+          from,
+          mediaId,
+          phoneNumberId,
+          contactName,
+          extra.document,
+        );
+        // "Este es el comprobante" written with the photo was lost: it is
+        // read like a message of its own, after the photo. Not inside a
+        // guided step, where the photo itself was the answer.
+        const caption = extra.caption?.trim();
+        if (caption && !guided) {
+          const key = `${phoneNumberId}:${from}`;
+          await this.flushPhotoReply(key, { dropQuestion: true });
+          await this.processMessage(
+            from,
+            caption,
+            phoneNumberId,
+            undefined,
+            undefined,
+            contactName,
+          );
+        }
+      },
       { keepPhotoReply: true },
+    );
+  }
+
+  /**
+   * Entry point for a location, a contact card, a video or a file the API
+   * can't store. Kept in the inbox (it used to be dropped without a trace)
+   * and answered, so the customer knows it arrived.
+   */
+  handleSharedItem(
+    from: string,
+    phoneNumberId: string,
+    messageId: string,
+    item: SharedItem,
+    contactName?: string,
+  ): Promise<void> {
+    return this.enqueue(from, phoneNumberId, messageId, () =>
+      this.processSharedItem(from, phoneNumberId, item, contactName),
     );
   }
 
@@ -955,13 +1037,18 @@ export class WebhookService {
    * client's open claim via the API. Runs outside the LLM loop — there is no
    * value in sending the image to the model, we only need to store it.
    */
+  /** Returns whether the photo answered a guided step (claim or take-out documents). */
   private async processMedia(
     from: string,
     mediaId: string,
     phoneNumberId: string,
     contactName?: string,
-  ) {
-    this.logger.log(`Procesando imagen de ${from}...`);
+    document?: { filename?: string },
+  ): Promise<boolean> {
+    this.logger.log(
+      `Procesando ${document ? 'documento' : 'imagen'} de ${from}...`,
+    );
+    const files = !!document;
     const to = this.meta.normalizePhone(from);
     const key = `${phoneNumberId}:${from}`;
 
@@ -975,14 +1062,14 @@ export class WebhookService {
         this.logger.warn(
           `Número ${phoneNumberId} no registrado — imagen ignorada`,
         );
-        return;
+        return false;
       }
       this.logger.error(
         `API no disponible (media): ${(error as Error).message}`,
       );
       await this.flushPhotoReply(key);
       await this.meta.sendText(to, FALLBACK_REPLY, phoneNumberId);
-      return;
+      return false;
     }
 
     const automationDisabled =
@@ -994,15 +1081,17 @@ export class WebhookService {
         automationDisabled ||
         !(await this.automaticRepliesStillEnabled(phoneNumberId))
       ) {
-        return;
+        return false;
       }
       await this.flushPhotoReply(key);
       await this.meta.sendText(
         to,
-        'No pude descargar la imagen. ¿Podés reenviarla?',
+        files
+          ? 'No pude descargar el archivo. ¿Podés reenviarlo?'
+          : 'No pude descargar la imagen. ¿Podés reenviarla?',
         phoneNumberId,
       );
-      return;
+      return false;
     }
 
     // If we're in a guided claim-photo step, label the attachment by type so the
@@ -1029,7 +1118,8 @@ export class WebhookService {
           flowState.data.pendingAction === 'siniestro_nueva'));
     const file = {
       buffer: media.buffer,
-      filename: buildMediaFilename(media.mimeType),
+      filename:
+        document?.filename?.trim() || buildMediaFilename(media.mimeType),
       mimeType: media.mimeType,
     };
 
@@ -1058,14 +1148,14 @@ export class WebhookService {
         automationDisabled ||
         !(await this.automaticRepliesStillEnabled(phoneNumberId))
       ) {
-        return;
+        return false;
       }
       const reply = leadTipo
         ? this.leadDocErrorReply(error)
         : this.mediaErrorReply(error);
       await this.flushPhotoReply(key);
       await this.meta.sendText(to, reply, phoneNumberId);
-      return;
+      return false;
     }
 
     // Persist the real attachment metadata in the transcript. The inbox signs
@@ -1074,7 +1164,9 @@ export class WebhookService {
     const saveImageMessage = this.api.saveMessage(
       conversation.conversationId,
       'user',
-      '[El cliente envió una foto]',
+      files
+        ? `[El cliente envió un archivo${document?.filename ? `: ${document.filename}` : ''}]`
+        : '[El cliente envió una foto]',
       messageMedia,
       contactName,
     );
@@ -1090,7 +1182,7 @@ export class WebhookService {
       automationDisabled ||
       !(await this.automaticRepliesStillEnabled(phoneNumberId))
     ) {
-      return;
+      return !!(tipo || leadTipo);
     }
 
     // The image remains available in the inbox even when there is no open
@@ -1102,7 +1194,7 @@ export class WebhookService {
         !tipo &&
         answeringAPerson(conversation.messages, conversation.lastHumanReply)
       ) {
-        return;
+        return false;
       }
       // Inside a claim photo step the photo was expected and the claim is
       // missing. While the claim's details are still being collected, it is
@@ -1117,8 +1209,9 @@ export class WebhookService {
         to,
         phoneNumberId,
         conversationId: conversation.conversationId,
+        files,
       });
-      return;
+      return !!tipo;
     }
 
     // In a guided photo step: advance the deterministic flow and send the next
@@ -1155,16 +1248,91 @@ export class WebhookService {
         key,
         'guided',
         (count) => pluralizeClaimPhotoReply(messages, count),
-        { to, phoneNumberId, conversationId: conversation.conversationId },
+        {
+          to,
+          phoneNumberId,
+          conversationId: conversation.conversationId,
+          files,
+        },
       );
-      return;
+      return true;
     }
 
     await this.queuePhotoReply(key, 'loose', PHOTO_REPLIES.loose, {
       to,
       phoneNumberId,
       conversationId: conversation.conversationId,
+      files,
     });
+    return false;
+  }
+
+  private async processSharedItem(
+    from: string,
+    phoneNumberId: string,
+    item: SharedItem,
+    contactName?: string,
+  ): Promise<void> {
+    let context: BotContext;
+    let conversation: BotConversation;
+    try {
+      context = await this.api.getContext(phoneNumberId);
+      conversation = await this.api.getConversation(phoneNumberId, from);
+    } catch (error) {
+      this.logger.error(
+        `No se pudo registrar ${item.kind} de ${from}: ${(error as Error).message}`,
+      );
+      return;
+    }
+
+    // Where the claim happened: the location answers the question.
+    const step = this.parseFlowState(conversation.flowState)?.step;
+    if (
+      item.flowText &&
+      step &&
+      PLACE_STEPS.has(step) &&
+      !conversation.botPaused
+    )
+      return this.processMessage(
+        from,
+        item.flowText,
+        phoneNumberId,
+        undefined,
+        undefined,
+        contactName,
+        { content: item.content },
+      );
+
+    await this.api
+      .saveMessage(
+        conversation.conversationId,
+        'user',
+        item.content,
+        undefined,
+        contactName,
+      )
+      .catch((error: Error) =>
+        this.logger.error(`No se pudo guardar ${item.kind}: ${error.message}`),
+      );
+
+    if (
+      conversation.botPaused ||
+      context.botEnabled === false ||
+      !this.autoReplyEnabled ||
+      answeringAPerson(conversation.messages, conversation.lastHumanReply) ||
+      !(await this.automaticRepliesStillEnabled(phoneNumberId))
+    )
+      return;
+
+    const reply = SHARED_ITEM_REPLIES[item.kind];
+    await this.meta.sendText(
+      this.meta.normalizePhone(from),
+      reply,
+      phoneNumberId,
+    );
+    await this.api
+      .saveMessage(conversation.conversationId, 'assistant', reply)
+      .catch(() => undefined);
   }
 
   /**
@@ -1175,8 +1343,13 @@ export class WebhookService {
   private async queuePhotoReply(
     key: string,
     kind: PhotoReplyKind,
-    render: (count: number) => OutgoingMessage[],
-    target: { to: string; phoneNumberId: string; conversationId: number },
+    render: (count: number, files: boolean) => OutgoingMessage[],
+    target: {
+      to: string;
+      phoneNumberId: string;
+      conversationId: number;
+      files?: boolean;
+    },
   ): Promise<void> {
     const pending = this.photoReplies.get(key);
     if (pending && pending.kind !== kind) await this.flushPhotoReply(key);
@@ -1193,6 +1366,7 @@ export class WebhookService {
       render,
       timer,
       ...target,
+      files: (previous?.files ?? false) || target.files === true,
     });
   }
 
@@ -1210,7 +1384,9 @@ export class WebhookService {
       // The bot may have been switched off while the batch was arriving.
       if (!(await this.automaticRepliesStillEnabled(pending.phoneNumberId)))
         return;
-      for (const message of compactMessages(pending.render(pending.count))) {
+      for (const message of compactMessages(
+        pending.render(pending.count, pending.files),
+      )) {
         await this.dispatch(pending.to, message, pending.phoneNumberId);
         await this.api
           .saveMessage(

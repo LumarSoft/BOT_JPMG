@@ -2123,6 +2123,164 @@ describe('WebhookService', () => {
 
       expect(meta.sendText).not.toHaveBeenCalled();
     });
+
+    it('stores a PDF with its name and talks about a file', async () => {
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('%PDF'),
+        mimeType: 'application/pdf',
+      });
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+
+      await service.handleMedia('5491155556666', 'pdf-1', 'P1', 'wp1', 'Ana', {
+        document: { filename: 'comprobante.pdf' },
+      });
+      await settlePhotoReplies();
+
+      expect(api.attachAdjunto).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({
+          filename: 'comprobante.pdf',
+          mimeType: 'application/pdf',
+        }),
+        undefined,
+        false,
+      );
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '[El cliente envió un archivo: comprobante.pdf]',
+        undefined,
+        'Ana',
+      );
+      expect(sentTexts()).toEqual([
+        '📎 ¡Recibí tu archivo! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.',
+      ]);
+    });
+
+    it('reads the text sent with a photo instead of asking what it is for', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+
+      await service.handleMedia('5491155556666', 'c1', 'P1', 'wc1', 'Ana', {
+        caption: 'este es el comprobante',
+      });
+      await settlePhotoReplies();
+
+      expect(flow.handle).toHaveBeenCalledWith(
+        'P1:5491155556666',
+        { text: 'este es el comprobante', selectionId: undefined },
+        expect.anything(),
+      );
+      expect(sentTexts().join(' ')).not.toContain('Contame para qué');
+    });
+
+    it('does not read the text of a photo that answered a guided step', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        flowState: JSON.stringify({
+          step: 'SINIESTRO_FOTO_TARJETA',
+          data: { siniestroId: 9 },
+        }),
+      });
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: 9, attached: true });
+      flow.handle.mockResolvedValue({
+        messages: [{ kind: 'text', body: 'Ahora el carnet' }],
+        state: { step: 'SINIESTRO_FOTO_CARNET', data: {} },
+      });
+
+      await service.handleMedia('5491155556666', 'g1', 'P1', 'wg1', 'Ana', {
+        caption: 'acá está la tarjeta',
+      });
+      await settlePhotoReplies();
+
+      expect(flow.handle).toHaveBeenCalledTimes(1);
+      expect(sentTexts()).toEqual(['Ahora el carnet']);
+    });
+  });
+
+  describe('locations, contacts, videos and other files', () => {
+    beforeEach(() => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+      });
+      api.saveMessage.mockResolvedValue({});
+    });
+
+    it('keeps a video in the inbox and says it arrived', async () => {
+      await service.handleSharedItem(
+        '5491155556666',
+        'P1',
+        'wv1',
+        { kind: 'video', content: '[El cliente envió un video]' },
+        'Ana',
+      );
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '[El cliente envió un video]',
+        undefined,
+        'Ana',
+      );
+      expect(meta.sendText.mock.calls[0][1]).toContain('Recibí tu video');
+      expect(flow.handle).not.toHaveBeenCalled();
+    });
+
+    it('stays silent while a person from the office has the chat', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: true,
+      });
+
+      await service.handleSharedItem('5491155556666', 'P1', 'wl1', {
+        kind: 'location',
+        content: '📍 Ubicación: (https://maps.google.com/?q=1,2)',
+        flowText: 'Lugar: ubicación compartida',
+      });
+
+      expect(api.saveMessage).toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
+    });
+
+    it('takes a location as the place while a claim is being filled in', async () => {
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [],
+        flowState: JSON.stringify({ step: 'SINIESTRO_DATOS', data: {} }),
+      });
+
+      await service.handleSharedItem('5491155556666', 'P1', 'wl2', {
+        kind: 'location',
+        content:
+          '📍 Ubicación: Av. Pellegrini 1500, Rosario (https://maps.google.com/?q=1,2)',
+        flowText: 'Lugar: Av. Pellegrini 1500, Rosario',
+      });
+
+      expect(flow.handle).toHaveBeenCalledWith(
+        'P1:5491155556666',
+        { text: 'Lugar: Av. Pellegrini 1500, Rosario', selectionId: undefined },
+        expect.anything(),
+      );
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '📍 Ubicación: Av. Pellegrini 1500, Rosario (https://maps.google.com/?q=1,2)',
+        undefined,
+        undefined,
+      );
+    });
   });
 
   describe('taking out a quoted coverage', () => {

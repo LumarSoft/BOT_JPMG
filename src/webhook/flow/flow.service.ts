@@ -74,7 +74,7 @@ import type {
   ProductPlanSummary,
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
-import { recentHumanReply } from '../closers';
+import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 import {
@@ -260,6 +260,68 @@ const PERSON_MENTION_STEPS = new Set<FlowStep>([
   'LLM_COTIZACION',
   'ASESOR_MOTIVO',
 ]);
+
+/** What "Otra póliza" was picked for, worded so the office files it right. */
+const OTHER_POLIZA_REQUEST: Partial<Record<FlowStep, string>> = {
+  BAJA_POLIZA: 'Quiere dar de baja otra póliza',
+  BAJA_CONFIRM: 'Quiere dar de baja otra póliza',
+  DOC_POLIZA: 'Pide la documentación de otra póliza',
+  CUPON_POLIZA: 'Pide los cupones de pago de otra póliza',
+};
+
+/**
+ * Steps with something filled in that a bare greeting must not throw away. The
+ * pickers that start a flow are left out: nothing is lost going back there.
+ */
+const IN_PROGRESS_STEPS = new Set<FlowStep>([
+  'SINIESTRO_DATOS',
+  'SINIESTRO_FECHA',
+  'SINIESTRO_DESC',
+  'SINIESTRO_HORA',
+  'SINIESTRO_LOCALIDAD',
+  'SINIESTRO_CALLE',
+  'SINIESTRO_ALTURA',
+  'SINIESTRO_CONFIRM',
+  'SINIESTRO_FOTO_TARJETA',
+  'SINIESTRO_FOTO_CARNET',
+  'SINIESTRO_TERCERO',
+  'SINIESTRO_TERCERO_TARJETA',
+  'SINIESTRO_TERCERO_CARNET',
+  'SINIESTRO_FOTO_DANIO',
+  'BAJA_CONFIRM',
+  'COT_LEAD_FIELDS',
+  'COT_LEAD_NOMBRE',
+  'COT_LEAD_TELEFONO',
+  'COT_DOC_DNI_FRENTE',
+  'COT_DOC_DNI_DORSO',
+  'COT_DOC_CERO_KM',
+  'COT_DOC_TARJETA_AZUL',
+  'COT_DOC_NO_RODAMIENTO',
+  'COT_DOC_FOTOS_VEHICULO',
+  'COT_DOC_TARJETA_GNC',
+]);
+
+/**
+ * What the customer was doing at a step, for the office ("Venía con la
+ * denuncia del siniestro") and for picking up where they left off. Null where
+ * there is nothing in progress.
+ */
+export function stepTopic(step: FlowStep): string | null {
+  if (step === 'SINIESTRO_TYPE') return 'siniestros';
+  if (step.startsWith('SINIESTRO_')) return 'la denuncia del siniestro';
+  if (step.startsWith('BAJA_')) return 'el pedido de baja';
+  if (step.startsWith('DOC_')) return 'el pedido de documentación';
+  if (step === 'CUPON_POLIZA') return 'el pedido de cupones de pago';
+  if (step.startsWith('COT_DOC_'))
+    return 'los documentos para contratar el seguro';
+  if (
+    step === 'COTIZAR_TIPO' ||
+    step === 'LLM_COTIZACION' ||
+    step.startsWith('COT_')
+  )
+    return 'la cotización';
+  return null;
+}
 
 /** The office person a message names ("Hola Mili", "decile a Milagros"), if any. */
 export function staffNamed(
@@ -727,24 +789,7 @@ export class FlowService {
     if (sel === OPT.stuckMenu) {
       return this.toMainMenu(key, ctx);
     }
-    if (sel === OPT.stuckAsesor) {
-      await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
-      this.setState(
-        key,
-        existing.state.audience === 'lead' ? 'LEAD_MENU' : 'CLIENT_MENU',
-      );
-      return {
-        messages: [
-          {
-            kind: 'text',
-            body:
-              `Listo, tomé nota ✍️. Un asesor te va a contactar a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
-              (await this.closedNote()),
-          },
-          existing.state.audience === 'lead' ? leadMenu() : clientMenu(),
-        ],
-      };
-    }
+    if (sel === OPT.stuckAsesor) return this.startAdvisor(ctx, key);
 
     // Second escape hatch: "cancelar" / "volver". Pickers and capture steps
     // deliberately never leak to the LLM, so without this the only way out is
@@ -762,12 +807,34 @@ export class FlowService {
       return this.prepend('Listo, lo dejamos acá.', this.toMainMenu(key, ctx));
     }
 
+    // "Asesor" works from any step, like "menú": with the claim buttons on
+    // screen it got "decime si es una denuncia nueva…" again.
+    if (
+      !sel &&
+      existing.state.step !== 'ASESOR_MOTIVO' &&
+      existing.state.step !== 'LEAD_CONTACT' &&
+      ADVISOR_RE.test(fold(input.text).trim())
+    )
+      return this.advisorRequest(input, ctx, key);
+
     // A standalone greeting mid-session means "take me back to the menu", not a
     // FAQ chat — deterministic and free, and honoring the declared audience.
     // A repeated copy sent within a few seconds while the menu is already open
     // is recorded by the webhook but intentionally receives no second reply.
     // Skipped for taps (selectionId) since those are never typed greetings.
     if (!sel && GREETING_RE.test(input.text.trim())) {
+      // Halfway through a claim, a cancellation or the papers for a policy, a
+      // "Buenas" before the answer used to throw away what was filled in.
+      const topic = stepTopic(existing.state.step);
+      if (topic && IN_PROGRESS_STEPS.has(existing.state.step))
+        return {
+          messages: [
+            {
+              kind: 'text',
+              body: `¡Hola! 👋 Seguimos con ${topic} donde lo dejamos. Si querés empezar de nuevo, escribí *menú*.`,
+            },
+          ],
+        };
       if (this.isRepeatedGreeting(existing.state, input.text)) {
         this.logger.log('Saludo repetido en menú ignorado');
         return { messages: [] };
@@ -1393,18 +1460,157 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    if (BARE_ADVISOR_RE.test(fold(input.text).trim())) {
-      this.setState(key, 'ASESOR_MOTIVO');
+    if (BARE_ADVISOR_RE.test(fold(input.text).trim()))
+      return this.startAdvisor(ctx, key);
+    return this.handleAsesorMotivo(input, ctx, key);
+  }
+
+  /**
+   * The customer asked for a person. The office hears about it right away,
+   * with what they were doing or asking: waiting for the reason first left
+   * requests nobody heard of when the customer never typed it and the chat
+   * closed. What they add next joins that same alert (the API keeps one open
+   * matter per chat).
+   */
+  private async startAdvisor(
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const prior = this.load(key)?.state;
+    const asked =
+      typeof prior?.data.lastQuestion === 'string'
+        ? prior.data.lastQuestion
+        : null;
+    const topic = prior ? stepTopic(prior.step) : null;
+    const reason = [
+      'Pidió hablar con un asesor.',
+      asked ? `Su consulta: "${clip(asked)}".` : 'Todavía no contó el motivo.',
+      topic ? `Venía con ${topic}.` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    await this.api
+      .requestHandoff(ctx.conversationId, reason)
+      .catch(() => undefined);
+    this.setState(key, 'ASESOR_MOTIVO', {
+      alerted: true,
+      ...(asked ? { lastQuestion: asked } : {}),
+    });
+    const hours = attentionHoursOf(ctx.attentionHours);
+    if (asked) return { messages: [advisorSameQuestion(asked)] };
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Listo, ya le avisé a la oficina 🙌 Un asesor te contacta por este chat (${hours}).` +
+            (await this.closedNote()) +
+            '\n\nPara que llegue con todo, contame brevemente el motivo.',
+        },
+      ],
+    };
+  }
+
+  /**
+   * What the customer says after the office was alerted: the reason joins the
+   * alert, the menu option they tap is what they want now, and a "gracias" is
+   * not a reason (it reached the office as one).
+   */
+  private async addAdvisorReason(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const sel = input.selectionId;
+    const hours = attentionHoursOf(ctx.attentionHours);
+    const asked =
+      typeof state.data.lastQuestion === 'string'
+        ? state.data.lastQuestion
+        : null;
+    if (sel === OPT.asesorOtra) {
+      this.setState(key, 'ASESOR_MOTIVO', { alerted: true });
       return {
         messages: [
           {
             kind: 'text',
-            body: `Contame brevemente el motivo y un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).`,
+            body: 'Dale, contame brevemente el motivo y se lo sumo al aviso.',
           },
         ],
       };
     }
-    return this.handleAsesorMotivo(input, ctx, key);
+    const same =
+      !!asked &&
+      (sel === OPT.asesorMisma ||
+        (!sel &&
+          /^(?:si|sip|dale|ok|okey|pasala|pasalo|esa|eso)\b/.test(
+            fold(input.text).trim(),
+          ) &&
+          words(input.text).split(' ').length <= 3));
+    if (
+      (sel && sel !== OPT.asesor && CLIENT_MENU_OPTS.has(sel)) ||
+      (!sel && MENU_TITLES.has(words(input.text)))
+    ) {
+      const audience = this.audienceOf(key, ctx);
+      if (audience === 'lead') {
+        this.setState(key, 'LEAD_MENU');
+        return this.handleLeadMenu(input, ctx, key);
+      }
+      this.setState(key, 'CLIENT_MENU');
+      return this.handleClientMenu(input, ctx, key);
+    }
+    if (!same && !sel && isCloser(input.text)) {
+      this.backToMenuState(key, ctx);
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: `👍 El aviso ya está en la oficina: un asesor te escribe por este chat (${hours}).`,
+          },
+        ],
+      };
+    }
+    if (!same && input.text.trim())
+      await this.api
+        .requestHandoff(ctx.conversationId, `Motivo: ${input.text.trim()}`)
+        .catch(() => undefined);
+    return this.advisorNoted(ctx, key);
+  }
+
+  /** Leaves the advisor step for the menu of whoever the customer said they are. */
+  private backToMenuState(
+    key: string,
+    ctx: FlowContext,
+  ): 'client' | 'lead' | undefined {
+    const audience = this.audienceOf(key, ctx);
+    this.setState(
+      key,
+      audience === 'lead'
+        ? 'LEAD_MENU'
+        : audience === 'client'
+          ? 'CLIENT_MENU'
+          : 'ROOT',
+    );
+    return audience;
+  }
+
+  /** "Listo, tomé nota", then the menu of whoever the customer said they are. */
+  private async advisorNoted(
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const note = {
+      kind: 'text' as const,
+      body:
+        `Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
+        (await this.closedNote()),
+    };
+    // Someone who asked for a person on their first message never said, so
+    // no menu follows.
+    const audience = this.backToMenuState(key, ctx);
+    if (audience === 'lead') return { messages: [note, leadMenu()] };
+    if (audience === 'client') return { messages: [note, clientMenu()] };
+    return { messages: [note] };
   }
 
   /**
@@ -1497,24 +1703,10 @@ export class FlowService {
         return {
           messages: [{ kind: 'text', body: this.gruaText() }, clientMenu()],
         };
-      case OPT.asesor: {
-        // What they already asked ("no me aparece la cuota 4") is offered as
-        // the reason: two customers had to type their question again.
-        const asked = this.load(key)?.state.data.lastQuestion;
-        if (typeof asked === 'string') {
-          this.setState(key, 'ASESOR_MOTIVO', { lastQuestion: asked });
-          return { messages: [advisorSameQuestion(asked)] };
-        }
-        this.setState(key, 'ASESOR_MOTIVO');
-        return {
-          messages: [
-            {
-              kind: 'text',
-              body: `Contame brevemente el motivo y un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).`,
-            },
-          ],
-        };
-      }
+      case OPT.asesor:
+        // What they already asked ("no me aparece la cuota 4") goes with the
+        // alert: two customers had to type their question again.
+        return this.startAdvisor(ctx, key);
       default:
         // Hybrid router: the keyword matcher didn't catch a transactional
         // intent, so instead of a dead-end "no te entendí" we hand this single
@@ -1850,6 +2042,17 @@ export class FlowService {
             'No encontré pólizas vigentes a tu nombre, así que no puedo registrar la denuncia automáticamente.',
           );
         this.setState(key, 'SINIESTRO_POLIZA', { polizas });
+        // One policy: no list to pick from, just say which one it is.
+        if (polizas.length === 1)
+          return this.prepend(
+            `La denuncia es sobre tu ${polizaMention(polizas[0])}.`,
+            await this.handleSiniestroPoliza(
+              this.load(key)!.state,
+              { text: '', selectionId: `${POLIZA_PREFIX}${polizas[0].id}` },
+              ctx,
+              key,
+            ),
+          );
         return {
           messages: [
             polizaPicker(polizas, '¿Sobre qué póliza es la denuncia?'),
@@ -1859,6 +2062,16 @@ export class FlowService {
       case 'baja_poliza': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
         if (!polizas.length) return this.noPolizas(key);
+        // One policy: straight to the confirmation, which still offers "Es
+        // otra póliza" for one the bot can't see.
+        if (polizas.length === 1) {
+          this.setState(key, 'BAJA_CONFIRM', {
+            polizas,
+            polizaId: polizas[0].id,
+            single: true,
+          });
+          return { messages: [this.bajaConfirmMessage(polizas[0], true)] };
+        }
         this.setState(key, 'BAJA_POLIZA', { polizas });
         return {
           messages: [
@@ -1872,6 +2085,16 @@ export class FlowService {
         const polizas = await this.api.getPolizas(ctx.conversationId);
         if (polizas.length === 0) return this.noPolizas(key);
         this.setState(key, 'DOC_POLIZA', { polizas });
+        if (polizas.length === 1)
+          return this.prepend(
+            `Es sobre tu ${polizaMention(polizas[0])}.`,
+            await this.handleDocPoliza(
+              this.load(key)!.state,
+              { text: '', selectionId: `${POLIZA_PREFIX}${polizas[0].id}` },
+              ctx,
+              key,
+            ),
+          );
         return {
           messages: [
             polizaPicker(polizas, '¿De qué póliza querés la documentación?', {
@@ -2042,12 +2265,20 @@ export class FlowService {
     return { messages: [this.bajaConfirmMessage(poliza)] };
   }
 
-  private bajaConfirmMessage(poliza: PolizaSummary): OutgoingMessage {
+  private bajaConfirmMessage(
+    poliza: PolizaSummary,
+    otherOption = false,
+  ): OutgoingMessage {
     return {
       kind: 'buttons',
-      body: `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificateNumber}*${poliza.vehicle?.licensePlate ? ` (${poliza.vehicle.licensePlate})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
+      body: otherOption
+        ? `¿Confirmás que querés solicitar la baja de tu ${polizaMention(poliza)}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`
+        : `¿Confirmás que querés solicitar la baja de la póliza *${poliza.certificateNumber}*${poliza.vehicle?.licensePlate ? ` (${poliza.vehicle.licensePlate})` : ''}? La oficina recibirá el pedido y te confirmará cuándo queda efectiva.`,
       buttons: [
         { id: OPT.confirmar, title: 'Solicitar baja' },
+        ...(otherOption
+          ? [{ id: OTHER_POLIZA_ID, title: 'Es otra póliza' }]
+          : []),
         { id: OPT.cancelar, title: 'Cancelar' },
       ],
     };
@@ -2069,11 +2300,15 @@ export class FlowService {
         ],
       };
     }
+    const other = this.otherPoliza(input, key);
+    if (other) return other;
     const poliza = (state.data.polizas as PolizaSummary[]).find(
       (p) => p.id === state.data.polizaId,
     )!;
     if (choice !== OPT.confirmar)
-      return this.retry(key, state, [this.bajaConfirmMessage(poliza)]);
+      return this.retry(key, state, [
+        this.bajaConfirmMessage(poliza, state.data.single === true),
+      ]);
     await this.api.requestPolicyCancellation(ctx.conversationId, poliza.id);
     this.setState(key, 'CLIENT_MENU');
     return {
@@ -2248,8 +2483,11 @@ export class FlowService {
     // Only a real past or present date counts; anything else is asked again.
     if (extracted.fecha && !parseFecha(extracted.fecha)) extracted.fecha = null;
     const datos = mergeDatos(known, extracted);
-    const faltan = pendientes(datos);
-    const progressed = faltan.length < pendientes(known).length;
+    // The street number is asked once: "cerca de San Martín" after being
+    // asked is the place, and asking again made a customer cancel the claim.
+    const opts = { alturaYaPedida: asked.includes('altura') };
+    const faltan = pendientes(datos, opts);
+    const progressed = faltan.length < pendientes(known, opts).length;
 
     if (faltan.length) {
       const data = {
@@ -2448,7 +2686,14 @@ export class FlowService {
 
     // Start the guided photo capture. Each photo the client sends from here is
     // attached to THIS claim and labeled by type (tarjeta verde / carnet / tercero).
-    this.setState(key, 'SINIESTRO_FOTO_TARJETA', { siniestroId: siniestro.id });
+    // Whether another vehicle was involved is already in the checklist:
+    // the photo steps don't ask it again.
+    const otroVehiculo = (state.data.datos as SiniestroDatos | undefined)
+      ?.otroVehiculo;
+    this.setState(key, 'SINIESTRO_FOTO_TARJETA', {
+      siniestroId: siniestro.id,
+      ...(typeof otroVehiculo === 'boolean' ? { otroVehiculo } : {}),
+    });
     return {
       messages: [
         {
@@ -2488,7 +2733,8 @@ export class FlowService {
   }
 
   private askPhoto(key: string, step: FlowStep, body: string): FlowResult {
-    this.setState(key, step);
+    // The claim's data (siniestroId, otroVehiculo) goes along the photo steps.
+    this.setState(key, step, this.load(key)?.state.data ?? {});
     return { messages: [{ kind: 'text', body }] };
   }
 
@@ -2514,7 +2760,10 @@ export class FlowService {
 
   private handleSinFotoCarnet(input: UserInput, key: string): FlowResult {
     if (!this.photoAdvances(input)) return this.retryPhoto();
-    this.setState(key, 'SINIESTRO_TERCERO');
+    const otroVehiculo = this.load(key)?.state.data.otroVehiculo;
+    if (otroVehiculo === false) return this.askDanio(key);
+    if (otroVehiculo === true) return this.askTerceroTarjeta(key);
+    this.setState(key, 'SINIESTRO_TERCERO', this.load(key)?.state.data ?? {});
     return {
       messages: [
         {
@@ -2541,13 +2790,7 @@ export class FlowService {
       /\bhubo\b/.test(t);
     const no = input.selectionId === TERCERO_NO || /^no\b/.test(t);
 
-    if (yes) {
-      return this.askPhoto(
-        key,
-        'SINIESTRO_TERCERO_TARJETA',
-        'Mandame la *foto de la tarjeta verde del tercero* (si la tenés). (o *no la tengo*)',
-      );
-    }
+    if (yes) return this.askTerceroTarjeta(key);
     if (no) return this.askDanio(key);
 
     return this.retry(key, state, [
@@ -2560,6 +2803,14 @@ export class FlowService {
         ],
       },
     ]);
+  }
+
+  private askTerceroTarjeta(key: string): FlowResult {
+    return this.askPhoto(
+      key,
+      'SINIESTRO_TERCERO_TARJETA',
+      'Mandame la *foto de la tarjeta verde del tercero* (si la tenés). (o *no la tengo*)',
+    );
   }
 
   private handleSinTerceroTarjeta(input: UserInput, key: string): FlowResult {
@@ -2836,6 +3087,8 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const current = this.load(key)?.state;
+    if (current?.step === 'ASESOR_MOTIVO' && current.data.alerted === true)
+      return this.addAdvisorReason(current, input, ctx, key);
     const asked =
       current?.step === 'ASESOR_MOTIVO' &&
       typeof current.data.lastQuestion === 'string'
@@ -2860,31 +3113,22 @@ export class FlowService {
             fold(input.text).trim(),
           ) &&
           words(input.text).split(' ').length <= 3));
-    const reason = same ? asked : input.text;
+    const otherFor =
+      current?.step === 'ASESOR_MOTIVO' &&
+      typeof current.data.otherPoliza === 'string'
+        ? current.data.otherPoliza
+        : null;
+    const reason = same
+      ? asked
+      : otherFor
+        ? `${otherFor} (no figura en el bot): ${input.text}`
+        : input.text;
     // Mark the conversation as pending in the API so it surfaces in the admin
     // inbox. Best-effort: a failed call should not block the bot reply.
     await this.api
       .requestHandoff(ctx.conversationId, reason)
       .catch(() => undefined);
-    const note = {
-      kind: 'text' as const,
-      body:
-        `Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
-        (await this.closedNote()),
-    };
-    // Back to the menu of whoever they said they are. Someone who asked for a
-    // person on their first message never said, so no menu follows.
-    const audience = this.audienceOf(key, ctx);
-    if (audience === 'lead') {
-      this.setState(key, 'LEAD_MENU');
-      return { messages: [note, leadMenu()] };
-    }
-    if (audience === 'client') {
-      this.setState(key, 'CLIENT_MENU');
-      return { messages: [note, clientMenu()] };
-    }
-    this.setState(key, 'ROOT');
-    return { messages: [note] };
+    return this.advisorNoted(ctx, key);
   }
 
   private async handleLeadContact(
@@ -3756,7 +4000,10 @@ export class FlowService {
   /** "Otra póliza" in a picker: the customer describes it and the office takes it. */
   private otherPoliza(input: UserInput, key: string): FlowResult | null {
     if (input.selectionId !== OTHER_POLIZA_ID) return null;
-    this.setState(key, 'ASESOR_MOTIVO');
+    // What the customer was asking for goes with the description, or the
+    // office reads "la del seguro de vida" without knowing it is a cancellation.
+    const asking = OTHER_POLIZA_REQUEST[this.load(key)?.state.step ?? 'ROOT'];
+    this.setState(key, 'ASESOR_MOTIVO', asking ? { otherPoliza: asking } : {});
     return { messages: [otherPolizaPrompt()] };
   }
 

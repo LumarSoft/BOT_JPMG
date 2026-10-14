@@ -284,6 +284,49 @@ describe('account status answers', () => {
     ).not.toContain('Total vencido');
   });
 
+  describe('a debit installment past its due date', () => {
+    const daysAgo = (days: number) =>
+      new Date(Date.now() - days * 86_400_000).toISOString();
+    const debit = (dueDate: string, status = 'overdue') => ({
+      ...base,
+      paymentMethod: 'Débito Tarjeta',
+      unpaidInstallments: [{ number: 1, amount: '21339.00', dueDate, status }],
+    });
+
+    it('shows it in process, not overdue, while the bank collects it', () => {
+      // A customer read "⚠️ vencida" on a debit that was still in process.
+      const text = formatEstadoCuenta([debit(daysAgo(4))]);
+      expect(text).toContain('⏳ en proceso de débito');
+      expect(text).not.toContain('vencida');
+      expect(text).toContain('dejá el dinero disponible');
+    });
+
+    it('calls it overdue once it is too old to be in process', () => {
+      const text = formatEstadoCuenta([debit(daysAgo(60))]);
+      expect(text).toContain('⚠️ vencida');
+      expect(text).not.toContain('en proceso de débito');
+    });
+
+    it('keeps a rejection as a rejection', () => {
+      const text = formatEstadoCuenta([debit(daysAgo(4), 'rejected')]);
+      expect(text).toContain('⛔ rechazo de débito');
+      expect(text).not.toContain('en proceso');
+    });
+
+    it('never shows a coupon installment in process', () => {
+      const text = formatEstadoCuenta([
+        { ...debit(daysAgo(4)), paymentMethod: 'Convenio' },
+      ]);
+      expect(text).toContain('⚠️ vencida');
+    });
+
+    it('answers "no me aparece" with the debit in process', () => {
+      expect(
+        paymentAnswer([debit(daysAgo(4))], 'no me aparece la cuota'),
+      ).toContain('cuota 1 en proceso de débito');
+    });
+  });
+
   it('answers only the two questions the account status alone does not', () => {
     expect(
       paymentAnswer([base], 'no me aparece la cuota para pagar'),

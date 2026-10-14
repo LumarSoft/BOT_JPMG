@@ -7,6 +7,7 @@ describe('InactivityWarningService', () => {
         { conversationId: 1, waId: 'w1', phoneNumberId: 'p1' },
         { conversationId: 2, waId: 'w2', phoneNumberId: 'p1' },
       ]),
+      saveMessage: jest.fn().mockResolvedValue({}),
     };
     const meta = {
       sendText: jest.fn().mockResolvedValue(undefined),
@@ -18,6 +19,15 @@ describe('InactivityWarningService', () => {
 
     expect(api.claimPendingWarnings).toHaveBeenCalledTimes(1);
     expect(meta.sendText).toHaveBeenCalledTimes(2);
+    // Kept in the inbox, without reopening the session it just closed.
+    expect(api.saveMessage).toHaveBeenCalledWith(
+      1,
+      'assistant',
+      expect.stringContaining('Por inactividad'),
+      undefined,
+      undefined,
+      { keepActivity: true },
+    );
   });
 
   it('does not run a second sweep while one is in flight', async () => {

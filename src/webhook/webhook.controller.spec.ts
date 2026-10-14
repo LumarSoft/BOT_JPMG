@@ -7,7 +7,12 @@ import { SentMessageRegistry } from './sent-message-registry.service';
 
 describe('WebhookController', () => {
   let controller: WebhookController;
-  let webhookService: { handleMessage: jest.Mock; handleAudio: jest.Mock };
+  let webhookService: {
+    handleMessage: jest.Mock;
+    handleAudio: jest.Mock;
+    handleMedia: jest.Mock;
+    handleSharedItem: jest.Mock;
+  };
   let api: {
     recordAgentEcho: jest.Mock;
     persistCoexistenceHistory: jest.Mock;
@@ -20,6 +25,8 @@ describe('WebhookController', () => {
     webhookService = {
       handleMessage: jest.fn().mockResolvedValue(undefined),
       handleAudio: jest.fn().mockResolvedValue(undefined),
+      handleMedia: jest.fn().mockResolvedValue(undefined),
+      handleSharedItem: jest.fn().mockResolvedValue(undefined),
     };
     api = {
       recordAgentEcho: jest.fn().mockResolvedValue(undefined),
@@ -166,6 +173,153 @@ describe('WebhookController', () => {
       'John',
     );
     expect(webhookService.handleMessage).not.toHaveBeenCalled();
+  });
+
+  /** Delivers one inbound message from wa1 (profile "John") to number P1. */
+  function receive(message: Record<string, unknown>) {
+    controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                contacts: [{ wa_id: 'wa1', profile: { name: 'John' } }],
+                messages: [
+                  { from: 'wa1', id: 'm1', timestamp: '1', ...message },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+  }
+
+  it('passes the text written with a photo', () => {
+    receive({
+      type: 'image',
+      image: {
+        id: 'img-1',
+        mime_type: 'image/jpeg',
+        caption: 'el comprobante',
+      },
+    });
+    expect(webhookService.handleMedia).toHaveBeenCalledWith(
+      'wa1',
+      'img-1',
+      'P1',
+      'm1',
+      'John',
+      { caption: 'el comprobante' },
+    );
+  });
+
+  it('stores a PDF like a photo, with its name and text', () => {
+    receive({
+      type: 'document',
+      document: {
+        id: 'doc-1',
+        mime_type: 'application/pdf',
+        filename: 'comprobante.pdf',
+        caption: 'ya pagué',
+      },
+    });
+    expect(webhookService.handleMedia).toHaveBeenCalledWith(
+      'wa1',
+      'doc-1',
+      'P1',
+      'm1',
+      'John',
+      { document: { filename: 'comprobante.pdf' }, caption: 'ya pagué' },
+    );
+  });
+
+  it('notes a file the API cannot store instead of dropping it', () => {
+    receive({
+      type: 'document',
+      document: {
+        id: 'doc-2',
+        mime_type: 'application/msword',
+        filename: 'nota.doc',
+      },
+    });
+    expect(webhookService.handleMedia).not.toHaveBeenCalled();
+    expect(webhookService.handleSharedItem).toHaveBeenCalledWith(
+      'wa1',
+      'P1',
+      'm1',
+      {
+        kind: 'file',
+        content:
+          '[El cliente envió un archivo que el bot no puede abrir: nota.doc]',
+      },
+      'John',
+    );
+  });
+
+  it('turns a shared location into the place of a claim', () => {
+    receive({
+      type: 'location',
+      location: {
+        latitude: -32.95,
+        longitude: -60.66,
+        name: 'Shopping',
+        address: 'Av. Circunvalación 5400, Rosario',
+      },
+    });
+    expect(webhookService.handleSharedItem).toHaveBeenCalledWith(
+      'wa1',
+      'P1',
+      'm1',
+      {
+        kind: 'location',
+        content:
+          '📍 Ubicación: Shopping, Av. Circunvalación 5400, Rosario (https://maps.google.com/?q=-32.95,-60.66)',
+        flowText: 'Lugar: Shopping, Av. Circunvalación 5400, Rosario',
+      },
+      'John',
+    );
+  });
+
+  it('keeps a video and a contact card for the inbox', () => {
+    receive({ type: 'video', video: { id: 'v1', mime_type: 'video/mp4' } });
+    receive({
+      type: 'contacts',
+      contacts: [
+        {
+          name: { formatted_name: 'Taller Pérez' },
+          phones: [{ phone: '+54 341 555-0000' }],
+        },
+      ],
+    });
+    expect(webhookService.handleSharedItem).toHaveBeenNthCalledWith(
+      1,
+      'wa1',
+      'P1',
+      'm1',
+      { kind: 'video', content: '[El cliente envió un video]' },
+      'John',
+    );
+    expect(webhookService.handleSharedItem).toHaveBeenNthCalledWith(
+      2,
+      'wa1',
+      'P1',
+      'm1',
+      {
+        kind: 'contacts',
+        content:
+          '[El cliente compartió un contacto: Taller Pérez +54 341 555-0000]',
+      },
+      'John',
+    );
   });
 
   it('records a WhatsApp Business app echo so the API can pause the bot', () => {
