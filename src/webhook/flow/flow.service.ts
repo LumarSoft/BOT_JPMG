@@ -22,12 +22,21 @@ import type {
   UserInput,
 } from './flow.types';
 import {
+  advisorSameQuestion,
   ALL_POLIZAS_ID,
   claimPhotoAddedText,
   vehiclePhotoAddedText,
   clientMenu,
   CLIENT_MENU_OPTS,
   cotizarMenu,
+  DEBIT_FAILED_RE,
+  displayName,
+  INSTALLMENT_MISSING_RE,
+  OTHER_POLIZA_ID,
+  otherPolizaPrompt,
+  pagosMenu,
+  paymentAnswer,
+  phoneQuestion,
   COTIZAR_FIXED,
   COTIZAR_LABEL,
   COTIZAR_ONLINE,
@@ -65,6 +74,7 @@ import type {
   ProductPlanSummary,
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
+import { recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 import {
@@ -144,6 +154,83 @@ const PAYMENT_PROOF_RE =
 
 /** Activity this recent means the same conversation is still going on. */
 const MID_CONVERSATION_MS = 10 * 60_000;
+
+/**
+ * A person from the office wrote to this chat this recently: a customer coming
+ * back about it the next morning ("¿ya está hecha la denuncia?") is following
+ * that up, not starting over. A claim taken by hand one afternoon was asked
+ * about at 9 the next day, and the bot answered "¿ya sos cliente?" and the DNI.
+ */
+const OFFICE_THREAD_MS = 72 * 60 * 60_000;
+
+/**
+ * Policies the bot can't see: accidentes personales and the nómina of drivers
+ * or employees (mostly in SanCor), other insurers, clauses added for a third
+ * party. Asked for "las pólizas de los choferes que tengo en nómina", the bot
+ * listed the customer's trucks. Folded text.
+ */
+const OFFICE_ONLY_POLICY_RE =
+  /\bnomina\b|\bchofer(?:es)?\b|\baccidentes? personal(?:es)?\b|\bsancor\b|\b(?:la|una|poliza de|seguro de) ap\b|\bclausula\b|\bsubrogacion\b|\bno repeticion\b/;
+
+/** Titles of the client menu rows, which reach the flow as typed text too. */
+const MENU_TITLES = new Set(
+  (clientMenu() as Extract<OutgoingMessage, { kind: 'list' }>).rows.map((r) =>
+    words(r.title),
+  ),
+);
+
+function words(text: string): string {
+  return fold(text)
+    .replace(/[^a-z0-9ñ ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Words of a message that only greets ("Hola buen día", "buenas, ¿cómo andás?"). */
+const GREETING_WORDS = new Set(
+  (
+    'hola holas holis ola buen buenos buenas dia dias tarde tardes noche noches ' +
+    'que tal como estas esta andas anda va todo bien saludos hey'
+  ).split(' '),
+);
+
+/**
+ * A greeting with nothing else in it. GREETING_RE takes one greeting; this
+ * one takes them combined, which the model read as following up whatever the
+ * office said last — and a "Hola buen día" reached the office as a request.
+ */
+function isGreetingOnly(text: string): boolean {
+  const w = words(text).split(' ').filter(Boolean);
+  return (
+    w.length > 0 &&
+    w.length <= 6 &&
+    w.every((x) => GREETING_WORDS.has(x) || /^hola+$/.test(x))
+  );
+}
+
+/**
+ * The customer's own words when they asked something ("no me aparece la cuota
+ * 4"), worth passing to the office as is. Null for a menu tap or a word or two.
+ */
+function questionOf(text: string | undefined): string | null {
+  if (!text) return null;
+  const w = words(text);
+  if (!w || MENU_TITLES.has(w) || w.split(' ').length < 3) return null;
+  return text.trim();
+}
+
+/** The identification data once "¿hablo con…?" is no longer the question. */
+function withoutPhoneQuestion(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const rest = { ...data };
+  delete rest.phoneConfirm;
+  delete rest.fromGreeting;
+  return rest;
+}
+
+const clip = (text: string, max = 300) =>
+  text.length > max ? `${text.slice(0, max)}…` : text;
 
 /** A new incident being reported, as people say it. Folded text. */
 const NEW_INCIDENT_RE =
@@ -514,6 +601,8 @@ type ClientAction =
 interface ActionOptions {
   /** Coupons asked for together with the policy papers ("cupón y póliza"). */
   withDocs?: boolean;
+  /** What the customer wrote to ask for it, answered along with the data. */
+  question?: string;
 }
 
 /**
@@ -576,8 +665,17 @@ export class FlowService {
     // A message to an office person by name ("Hola Mili, ¿cómo estás?") alerts
     // her, and the bot still works out what the customer needs: handing the
     // chat over would leave every such conversation to the office.
-    const named = await this.notifyStaff(input, ctx, this.load(key)?.state);
+    const prior = this.load(key)?.state;
+    const officeThread =
+      prior?.officeThread === true || this.answeringOffice(ctx);
+    ctx = { ...ctx, officeThread };
+    const named = await this.notifyStaff(input, ctx, prior);
     const result = await this.computeTurn(key, input, ctx);
+    // Remembered for the session: the API stops reporting that person's reply
+    // as soon as the bot answers.
+    const entry = this.states.get(key);
+    if (officeThread && entry)
+      entry.state = { ...entry.state, officeThread: true };
     return named ? withStaffNotice(result, named) : result;
   }
 
@@ -754,6 +852,7 @@ export class FlowService {
     const bareGreeting =
       !sel &&
       (GREETING_RE.test(input.text.trim()) ||
+        isGreetingOnly(input.text) ||
         OPENING_COMMAND_RE.test(fold(input.text).trim()));
     // The customer is answering a person from the office: no introduction.
     const personRecently = ctx.answeringPerson === true;
@@ -833,6 +932,37 @@ export class FlowService {
     if (!sel && !bareGreeting) {
       const routed = await this.routeOpening(input, ctx, key, opener);
       if (routed) return routed;
+    }
+    // Only a greeting is left here (anything else was routed above). Someone
+    // the office was attending in the last days: "¿ya sos cliente?" read as if
+    // nobody knew them.
+    if (!sel && ctx.officeThread && !personRecently) {
+      this.setState(key, 'ROOT', { officeGreeted: true });
+      return this.rememberGreeting(
+        key,
+        input.text,
+        {
+          messages: [
+            {
+              kind: 'text',
+              body: '¡Hola! 👋 Contame en qué te ayudo. Si es por lo que venías hablando con la oficina, decime y le aviso.',
+            },
+          ],
+        },
+        bareGreeting,
+      );
+    }
+    // A client's own number: "¿hablo con Juan?" instead of "¿ya sos cliente?"
+    // and the DNI after it.
+    if (!sel) {
+      const asked = this.askPhoneMatch(
+        ctx,
+        key,
+        'menu',
+        { fromGreeting: true },
+        opener,
+      );
+      if (asked) return asked;
     }
     return this.rememberGreeting(
       key,
@@ -962,6 +1092,9 @@ export class FlowService {
       // Identify up front instead of on the first action that needs it, so every
       // request (an advisor handoff included) reaches the admin tied to the
       // client and its producer code.
+      this.setState(key, 'ROOT', {}, 'client');
+      const asked = this.askPhoneMatch(ctx, key, 'menu');
+      if (asked) return asked;
       this.setState(key, 'IDENTIFY', { pendingAction: 'menu' }, 'client');
       return {
         messages: [
@@ -1076,7 +1209,7 @@ export class FlowService {
     // The office's last line only helps when the customer is answering it; a
     // reply to the bot's own question must not be read as a follow-up.
     const reply =
-      ctx.answeringPerson && ctx.lastHumanReply
+      (ctx.answeringPerson || ctx.officeThread) && ctx.lastHumanReply
         ? {
             content: ctx.lastHumanReply.content,
             minutesAgo: Math.round(
@@ -1115,7 +1248,17 @@ export class FlowService {
     key: string,
     opener: string | null,
   ): Promise<FlowResult | null> {
+    if (isGreetingOnly(input.text)) return null;
     const intent = await this.readIntent(input, ctx);
+    if (
+      intent &&
+      !['saludo', 'cotizar', 'siniestro', 'grua'].includes(intent) &&
+      OFFICE_ONLY_POLICY_RE.test(fold(input.text))
+    )
+      return this.withOpener(
+        opener,
+        await this.officeOnlyRequest(input.text, ctx, key),
+      );
     switch (intent) {
       case null:
       case 'saludo':
@@ -1145,9 +1288,16 @@ export class FlowService {
       case 'documentos':
       case 'pagos': {
         // The model files coupons under documentos or pagos; neither path can
-        // deliver them.
+        // deliver them. A debit that didn't go through or an installment that
+        // "doesn't show up" is answered from the account status, even when
+        // the message says "factura" or "cupón".
         const t = fold(input.text);
-        const action: ClientAction = CUPON_RE.test(t) ? 'cupones' : intent;
+        const action: ClientAction =
+          DEBIT_FAILED_RE.test(t) || INSTALLMENT_MISSING_RE.test(t)
+            ? 'pagos'
+            : CUPON_RE.test(t)
+              ? 'cupones'
+              : intent;
         return this.withOpener(
           opener,
           await this.guardAsClient(
@@ -1178,7 +1328,7 @@ export class FlowService {
         return { messages: [], handoff: 'faq' };
       case 'seguimiento':
         return (
-          (await this.personFollowUp(input, ctx)) ?? {
+          (await this.personFollowUp(input, ctx, key)) ?? {
             messages: [],
             handoff: 'faq',
           }
@@ -1267,8 +1417,16 @@ export class FlowService {
   private async personFollowUp(
     input: UserInput,
     ctx: FlowContext,
+    key: string,
   ): Promise<FlowResult | null> {
-    if (!ctx.answeringPerson) return null;
+    // Days later the person is no longer in the middle of it: the customer
+    // hears that it was passed on.
+    // Or right after the bot offered to pass on what they were talking about.
+    if (!ctx.answeringPerson)
+      return this.answeringOffice(ctx) ||
+        this.load(key)?.state.data.officeGreeted === true
+        ? this.officeFollowUp(input.text, ctx, key)
+        : null;
     // Without a reason on purpose: the API then keeps a single pending matter
     // for the chat however many messages follow. With the text as reason, a
     // customer writing four lines to Mili opened four "Pedido de asesor".
@@ -1291,15 +1449,38 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const opt = input.selectionId ?? this.matchClientIntent(input.text);
+    const typed = !input.selectionId;
+
+    if (
+      typed &&
+      OFFICE_ONLY_POLICY_RE.test(fold(input.text)) &&
+      opt !== OPT.cotizacion &&
+      opt !== OPT.siniestros &&
+      opt !== OPT.grua
+    )
+      return this.officeOnlyRequest(input.text, ctx, key);
 
     switch (opt) {
-      case OPT.siniestros:
+      case OPT.siniestros: {
+        // "¿Ya está hecha la denuncia?" already says which one it is.
+        const sub = typed ? this.matchSiniestroIntent(input.text) : null;
+        if (sub)
+          return this.guard(
+            ctx,
+            key,
+            sub === OPT.sinNueva ? 'siniestro_nueva' : 'siniestro_consultar',
+            {},
+            input.text,
+          );
         this.setState(key, 'SINIESTRO_TYPE');
         return { messages: [siniestroTypeMenu()] };
+      }
       case OPT.cotizacion:
         return this.enterCotizar(input, ctx, key);
       case OPT.pagos:
         return this.guard(ctx, key, 'pagos', {}, input.text);
+      case OPT.cambioPago:
+        return this.paymentChangeRequest(ctx, key);
       case OPT.bajaPoliza:
         return this.guard(ctx, key, 'baja_poliza', {}, input.text);
       case OPT.documentos:
@@ -1316,7 +1497,14 @@ export class FlowService {
         return {
           messages: [{ kind: 'text', body: this.gruaText() }, clientMenu()],
         };
-      case OPT.asesor:
+      case OPT.asesor: {
+        // What they already asked ("no me aparece la cuota 4") is offered as
+        // the reason: two customers had to type their question again.
+        const asked = this.load(key)?.state.data.lastQuestion;
+        if (typeof asked === 'string') {
+          this.setState(key, 'ASESOR_MOTIVO', { lastQuestion: asked });
+          return { messages: [advisorSameQuestion(asked)] };
+        }
         this.setState(key, 'ASESOR_MOTIVO');
         return {
           messages: [
@@ -1326,6 +1514,7 @@ export class FlowService {
             },
           ],
         };
+      }
       default:
         // Hybrid router: the keyword matcher didn't catch a transactional
         // intent, so instead of a dead-end "no te entendí" we hand this single
@@ -1391,6 +1580,17 @@ export class FlowService {
     opts: ActionOptions = {},
     said?: string,
   ): Promise<FlowResult> {
+    const question = questionOf(opts.question ?? said);
+    if (question) opts = { ...opts, question };
+    // A claim the office took by hand in this chat is not in our records:
+    // asking for the DNI to say "no tenés denuncias" helped nobody.
+    if (action === 'siniestro_consultar' && ctx.officeThread && !ctx.client)
+      return this.officeFollowUp(question ?? '', ctx, key);
+    const pending = {
+      pendingAction: action,
+      ...(opts.withDocs ? { pendingWithDocs: true } : {}),
+      ...(question ? { pendingQuestion: question } : {}),
+    };
     if (!ctx.client && said) {
       const params = await this.identificationIn(said, action, ctx);
       if (params) {
@@ -1402,18 +1602,14 @@ export class FlowService {
           opts,
         );
         if (result) return result;
-        this.setState(key, 'IDENTIFY', {
-          pendingAction: action,
-          ...(opts.withDocs ? { pendingWithDocs: true } : {}),
-        });
+        this.setState(key, 'IDENTIFY', pending);
         return { messages: [{ kind: 'text', body: NOT_FOUND_TEXT }] };
       }
     }
     if (!ctx.client) {
-      this.setState(key, 'IDENTIFY', {
-        pendingAction: action,
-        ...(opts.withDocs ? { pendingWithDocs: true } : {}),
-      });
+      const asked = this.askPhoneMatch(ctx, key, action, pending);
+      if (asked) return asked;
+      this.setState(key, 'IDENTIFY', pending);
       return {
         messages: [
           {
@@ -1433,6 +1629,23 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const raw = input.text.trim();
+    if (state.data.phoneConfirm) {
+      const t = fold(raw);
+      if (
+        input.selectionId === OPT.phoneSi ||
+        (!input.selectionId &&
+          /^(?:si|sip|claro|correcto|exacto|soy yo|el mismo|la misma)\b/.test(
+            t,
+          ))
+      )
+        return this.confirmPhoneMatch(state, ctx, key);
+      if (input.selectionId === OPT.phoneNo || /^no\b/.test(t))
+        return this.declinePhoneMatch(state, ctx, key);
+      // Anything else (a DNI, a plate, "asesor") is read as usual.
+      const rest = withoutPhoneQuestion(state.data);
+      state = { ...state, data: rest };
+      this.setState(key, 'IDENTIFY', rest);
+    }
     if (!raw) {
       return {
         messages: [
@@ -1509,6 +1722,9 @@ export class FlowService {
 
     const result = await this.identifyAndRun(params, action, ctx, key, {
       withDocs: state.data.pendingWithDocs === true,
+      ...(typeof state.data.pendingQuestion === 'string'
+        ? { question: state.data.pendingQuestion }
+        : {}),
     });
     return (
       result ?? this.retry(key, state, [{ kind: 'text', body: NOT_FOUND_TEXT }])
@@ -1591,16 +1807,29 @@ export class FlowService {
         return { messages: [clientMenu()] };
       case 'pagos': {
         const estado = await this.api.getEstadoCuenta(ctx.conversationId);
-        this.setState(key, 'CLIENT_MENU');
+        const question = questionOf(opts.question);
+        // Kept so "Hablar con un asesor" can pass it on without retyping.
+        this.setState(
+          key,
+          'CLIENT_MENU',
+          question ? { lastQuestion: question } : {},
+        );
+        const answer = question ? paymentAnswer(estado, question) : null;
         return {
           messages: [
-            { kind: 'text', body: formatEstadoCuenta(estado) },
-            clientMenu(),
+            {
+              kind: 'text',
+              body:
+                formatEstadoCuenta(estado) + (answer ? `\n\n${answer}` : ''),
+            },
+            estado.length ? pagosMenu() : clientMenu(),
           ],
         };
       }
       case 'siniestro_consultar': {
         const siniestros = await this.api.getSiniestros(ctx.conversationId);
+        if (siniestros.length === 0 && ctx.officeThread)
+          return this.officeFollowUp(opts.question ?? '', ctx, key);
         this.setState(key, 'CLIENT_MENU');
         return {
           messages: [
@@ -1633,7 +1862,9 @@ export class FlowService {
         this.setState(key, 'BAJA_POLIZA', { polizas });
         return {
           messages: [
-            polizaPicker(polizas, '¿De qué póliza querés solicitar la baja?'),
+            polizaPicker(polizas, '¿De qué póliza querés solicitar la baja?', {
+              otherRow: true,
+            }),
           ],
         };
       }
@@ -1643,7 +1874,9 @@ export class FlowService {
         this.setState(key, 'DOC_POLIZA', { polizas });
         return {
           messages: [
-            polizaPicker(polizas, '¿De qué póliza querés la documentación?'),
+            polizaPicker(polizas, '¿De qué póliza querés la documentación?', {
+              otherRow: true,
+            }),
           ],
         };
       }
@@ -1664,7 +1897,7 @@ export class FlowService {
               withDocs
                 ? '¿De qué póliza necesitás los cupones y la documentación?'
                 : '¿De qué póliza necesitás los cupones de pago?',
-              { allRow: true },
+              { allRow: true, otherRow: true },
             ),
           ],
         };
@@ -1681,6 +1914,8 @@ export class FlowService {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
     const withDocs = state.data.withDocs === true;
     const t = fold(input.text);
+    const other = this.otherPoliza(input, key);
+    if (other) return other;
     if (
       input.selectionId === ALL_POLIZAS_ID ||
       /\b(todas|todos|ambas|ambos|las dos|los dos)\b/.test(t)
@@ -1697,7 +1932,7 @@ export class FlowService {
       polizaPicker(
         polizas,
         'No reconocí esa póliza. Elegí una de la lista, o escribí *menú* para volver.',
-        { allRow: true },
+        { allRow: true, otherRow: true },
       ),
     ]);
   }
@@ -1791,13 +2026,17 @@ export class FlowService {
     key: string,
   ): FlowResult {
     const polizas = state.data.polizas as PolizaSummary[];
+    const other = this.otherPoliza(input, key);
+    if (other) return other;
     const id = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
     const poliza =
       polizas.find((p) => p.id === id) ??
       this.matchPolizaByText(input.text, polizas);
     if (!poliza)
       return this.retry(key, state, [
-        polizaPicker(polizas, 'Elegí la póliza para solicitar la baja.'),
+        polizaPicker(polizas, 'Elegí la póliza para solicitar la baja.', {
+          otherRow: true,
+        }),
       ]);
     this.setState(key, 'BAJA_CONFIRM', { ...state.data, polizaId: poliza.id });
     return { messages: [this.bajaConfirmMessage(poliza)] };
@@ -2503,6 +2742,8 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    const other = this.otherPoliza(input, key);
+    if (other) return other;
     let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
 
     if (
@@ -2514,6 +2755,9 @@ export class FlowService {
     }
 
     if (polizaId === null || !polizas.some((p) => p.id === polizaId)) {
+      // "Choferes": the drivers' policy is one we don't have.
+      if (!input.selectionId && OFFICE_ONLY_POLICY_RE.test(fold(input.text)))
+        return this.officeOnlyRequest(input.text, ctx, key);
       // Can't resolve policy — LLM asks naturally; state stays DOC_POLIZA.
       return { messages: [], handoff: 'faq' };
     }
@@ -2591,10 +2835,36 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
+    const current = this.load(key)?.state;
+    const asked =
+      current?.step === 'ASESOR_MOTIVO' &&
+      typeof current.data.lastQuestion === 'string'
+        ? current.data.lastQuestion
+        : null;
+    if (asked && input.selectionId === OPT.asesorOtra) {
+      this.setState(key, 'ASESOR_MOTIVO');
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: `Dale, contame brevemente el motivo y un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).`,
+          },
+        ],
+      };
+    }
+    const same =
+      asked &&
+      (input.selectionId === OPT.asesorMisma ||
+        (!input.selectionId &&
+          /^(?:si|sip|dale|ok|okey|pasala|pasalo|esa|eso)\b/.test(
+            fold(input.text).trim(),
+          ) &&
+          words(input.text).split(' ').length <= 3));
+    const reason = same ? asked : input.text;
     // Mark the conversation as pending in the API so it surfaces in the admin
     // inbox. Best-effort: a failed call should not block the bot reply.
     await this.api
-      .requestHandoff(ctx.conversationId, input.text)
+      .requestHandoff(ctx.conversationId, reason)
       .catch(() => undefined);
     const note = {
       kind: 'text' as const,
@@ -3392,6 +3662,209 @@ export class FlowService {
     return { messages: [] };
   }
 
+  /**
+   * A person from the office wrote here in the last days and the bot has not
+   * said anything since: what the customer writes now goes on with that.
+   */
+  private answeringOffice(ctx: FlowContext): boolean {
+    return (
+      !ctx.botSpoke &&
+      recentHumanReply(ctx.lastHumanReply, Date.now(), OFFICE_THREAD_MS)
+    );
+  }
+
+  /**
+   * Back to the menu of whoever they said they are, without sending it: the
+   * reply already says what happens next.
+   */
+  private settleAfterRequest(key: string, ctx: FlowContext): OutgoingMessage[] {
+    const audience = this.audienceOf(key, ctx);
+    if (audience === 'client') {
+      this.setState(key, 'CLIENT_MENU');
+      return [clientMenu()];
+    }
+    if (audience === 'lead') {
+      this.setState(key, 'LEAD_MENU');
+      return [leadMenu()];
+    }
+    this.setState(key, 'ROOT');
+    return [];
+  }
+
+  /**
+   * The customer asks about something a person from the office was handling
+   * in this chat in the last days. That person gets it with the customer's
+   * words, and the customer hears so — instead of the DNI and "no tenés
+   * denuncias" for a claim the office took by hand.
+   */
+  private async officeFollowUp(
+    text: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        text.trim()
+          ? `Consulta sobre lo que venía viendo la oficina: "${clip(text.trim())}"`
+          : undefined,
+      )
+      .catch(() => undefined);
+    this.settleAfterRequest(key, ctx);
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Le pasé tu consulta a la persona de la oficina que te venía atendiendo 🙌 Te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()) +
+            '\n\nSi necesitás otra cosa, escribí *menú*.',
+        },
+      ],
+    };
+  }
+
+  /**
+   * A policy we don't have (accidentes personales, a nómina, another insurer, a
+   * clause for a third party): the office gets the request as it was written.
+   */
+  private async officeOnlyRequest(
+    text: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Pedido sobre una póliza que el bot no tiene (accidentes personales, nómina u otra compañía): "${clip(text.trim())}"`,
+      )
+      .catch(() => undefined);
+    const menu = this.settleAfterRequest(key, ctx);
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Los seguros de accidentes personales, las nóminas y las pólizas de otras compañías los maneja directamente la oficina, así que ya le pasé tu pedido 🙌 Te responden por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
+        },
+        ...menu,
+      ],
+    };
+  }
+
+  /** "Otra póliza" in a picker: the customer describes it and the office takes it. */
+  private otherPoliza(input: UserInput, key: string): FlowResult | null {
+    if (input.selectionId !== OTHER_POLIZA_ID) return null;
+    this.setState(key, 'ASESOR_MOTIVO');
+    return { messages: [otherPolizaPrompt()] };
+  }
+
+  /** "Cambiar forma de pago": the office asks for the card or CBU itself. */
+  private async paymentChangeRequest(
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        'Quiere cambiar la forma de pago (adherir tarjeta o CBU, o pasar a cupón).',
+      )
+      .catch(() => undefined);
+    this.setState(key, 'CLIENT_MENU');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Listo, le pasé a la oficina tu pedido para cambiar la forma de pago 🙌 Te escriben por este chat para pedirte los datos de la tarjeta o el CBU (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
+        },
+        clientMenu(),
+      ],
+    };
+  }
+
+  /**
+   * "¿Hablo con Juan?" when the number writing is one client's phone in the
+   * cartera, instead of asking for the DNI. Null when there is no such match
+   * (or no usable first name, as with a company), so the caller asks as usual.
+   */
+  private askPhoneMatch(
+    ctx: FlowContext,
+    key: string,
+    action: ClientAction,
+    data: Record<string, unknown> = {},
+    opener?: string | null,
+  ): FlowResult | null {
+    if (ctx.client) return null;
+    const name = displayName(ctx.phoneMatch?.firstName);
+    if (!name) return null;
+    this.setState(key, 'IDENTIFY', {
+      ...data,
+      pendingAction: action,
+      phoneConfirm: true,
+    });
+    return { messages: [phoneQuestion(name, opener)] };
+  }
+
+  private async confirmPhoneMatch(
+    state: FlowState,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    try {
+      await this.api.identifyByPhone(ctx.conversationId);
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : 0;
+      if (status !== 404) throw error;
+      return this.askDniInstead(
+        state,
+        key,
+        'No pude confirmarlo con este número.',
+      );
+    }
+    const action = (state.data.pendingAction as ClientAction) ?? 'menu';
+    return this.prepend(
+      '✅ ¡Listo, te identifiqué!',
+      await this.runAction(action, ctx, key, {
+        withDocs: state.data.pendingWithDocs === true,
+        ...(typeof state.data.pendingQuestion === 'string'
+          ? { question: state.data.pendingQuestion }
+          : {}),
+      }),
+    );
+  }
+
+  private declinePhoneMatch(
+    state: FlowState,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
+    // Answered to a greeting: they never said whether they are a client.
+    if (state.data.fromGreeting) {
+      this.setState(key, 'ROOT');
+      return { messages: [welcomeMenu(undefined, ctx.botName, 'none')] };
+    }
+    return this.askDniInstead(state, key, 'Dale.');
+  }
+
+  private askDniInstead(
+    state: FlowState,
+    key: string,
+    lead: string,
+  ): FlowResult {
+    this.setState(key, 'IDENTIFY', withoutPhoneQuestion(state.data));
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: `${lead} Pasame el *DNI del titular* (o el *CUIT* si es una empresa) o la *patente* del vehículo asegurado.\n\n_Escribí *menú* para volver o *finalizar* para terminar._`,
+        },
+      ],
+    };
+  }
+
   private toMainMenu(key: string, ctx: FlowContext): FlowResult {
     // Respect the branch the user already declared so "menú" doesn't bounce a
     // known client/lead back to the "¿sos cliente?" question.
@@ -3666,7 +4139,7 @@ export class FlowService {
     // Following one up wins over the words of the incident itself: "el estado
     // de mi denuncia" used to start a new claim.
     if (
-      /\bconsultar|\bestado\b|\bseguimiento|\bcomo (?:va|sigue)\b|\bya ten[i]a/.test(
+      /\bconsultar|\bestado\b|\bseguimiento|\bcomo (?:va|sigue)\b|\bya ten[i]a|\bnovedad|\bya (?:esta|estan|fue|la) (?:hecha|hecho|cargada|cargado|presentada|ingresada|hicieron|cargaron|presentaron)|\bse (?:hizo|cargo|presento|ingreso)\b|\bque paso con\b/.test(
         t,
       )
     )

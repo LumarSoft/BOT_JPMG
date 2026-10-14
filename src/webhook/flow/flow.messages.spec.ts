@@ -3,6 +3,7 @@ import {
   displayName,
   formatEstadoCuenta,
   gncAnswer,
+  paymentAnswer,
   gncButtons,
   leadMenu,
   polizaPicker,
@@ -201,4 +202,91 @@ describe('gncAnswer', () => {
 
   it('ignores a yes to a question that was not about GNC', () =>
     expect(gncAnswer('si', '¿El código postal es 2000?')).toBeUndefined());
+});
+
+describe('account status answers', () => {
+  const base: EstadoCuentaPoliza = {
+    id: 1,
+    certificateNumber: '1000001',
+    riskType: 'auto',
+    lastMovement: 'REFACTURACION',
+    paymentMethod: 'Convenio',
+    validTo: '2027-07-27T00:00:00.000Z',
+    vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'PALIO' },
+    lastInstallment: { number: 3, dueDate: '2026-09-27T00:00:00.000Z' },
+    paidInstallments: 3,
+    unpaidInstallments: [],
+    hasRejectedInstallments: false,
+  };
+
+  it('shows a due date as the calendar day it was stored as', () => {
+    const text = formatEstadoCuenta([
+      {
+        ...base,
+        unpaidInstallments: [
+          {
+            number: 4,
+            amount: '100',
+            dueDate: '2026-10-06T00:00:00.000Z',
+            status: 'pending',
+          },
+        ],
+      },
+    ]);
+    expect(text).toContain('vence 06/10/2026');
+  });
+
+  it('tells when the next installment is due once everything billed is paid', () => {
+    const text = formatEstadoCuenta([base]);
+    expect(text).toContain('Próxima cuota (4)');
+    expect(text).toContain('27/10/2026');
+    expect(text).toContain('cupón');
+  });
+
+  it('does not announce an installment past the end of the policy', () => {
+    const text = formatEstadoCuenta([
+      { ...base, validTo: '2026-10-27T00:00:00.000Z' },
+    ]);
+    expect(text).not.toContain('Próxima cuota');
+  });
+
+  it('adds up the overdue coupons but never a debit still being collected', () => {
+    const overdue = [
+      {
+        number: 2,
+        amount: '100.50',
+        dueDate: '2026-09-06T00:00:00.000Z',
+        status: 'overdue',
+      },
+      {
+        number: 3,
+        amount: '100.50',
+        dueDate: '2026-10-06T00:00:00.000Z',
+        status: 'overdue',
+      },
+    ];
+    expect(
+      formatEstadoCuenta([{ ...base, unpaidInstallments: overdue }]),
+    ).toContain('Total vencido');
+    expect(
+      formatEstadoCuenta([
+        {
+          ...base,
+          paymentMethod: 'Débito Tarjeta',
+          unpaidInstallments: overdue,
+        },
+      ]),
+    ).not.toContain('Total vencido');
+  });
+
+  it('answers only the two questions the account status alone does not', () => {
+    expect(
+      paymentAnswer([base], 'no me aparece la cuota para pagar'),
+    ).toContain('todavía no se emitió');
+    expect(paymentAnswer([base], 'por qué no se debitó?')).toContain(
+      'se paga con *cupón*',
+    );
+    expect(paymentAnswer([base], 'cuánto debo')).toBeNull();
+    expect(paymentAnswer([], 'no se debitó')).toBeNull();
+  });
 });

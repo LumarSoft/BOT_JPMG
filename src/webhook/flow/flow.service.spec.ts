@@ -36,6 +36,8 @@ describe('FlowService', () => {
     getPricing: jest.Mock;
     getHours: jest.Mock;
     identifyClient: jest.Mock;
+    identifyByPhone: jest.Mock;
+    getSiniestros: jest.Mock;
   };
   let extractor: { extract: jest.Mock };
   let interpreter: { interpret: jest.Mock };
@@ -102,6 +104,11 @@ describe('FlowService', () => {
         client: { firstName: 'Ana', lastName: 'Gómez' },
         policyCount: 1,
       }),
+      identifyByPhone: jest.fn().mockResolvedValue({
+        client: { firstName: 'Ana', lastName: 'Gómez' },
+        policyCount: 1,
+      }),
+      getSiniestros: jest.fn().mockResolvedValue([]),
     };
     extractor = { extract: jest.fn() };
     interpreter = {
@@ -1606,7 +1613,8 @@ describe('FlowService', () => {
         await send({ text: 'hola' }, clientCtx);
         await send({ text: 'me robaron el auto' }, clientCtx);
 
-        expect(stored?.step).toBe('SINIESTRO_TYPE');
+        // A new claim: straight to its policy, no "¿nueva o consultar?".
+        expect(stored?.step).toBe('SINIESTRO_POLIZA');
       });
     });
   });
@@ -2369,7 +2377,7 @@ describe('FlowService', () => {
 
       const res = await send(
         { text: 'sí' },
-        { ...ctx, answeringPerson: false },
+        { ...ctx, answeringPerson: false, botSpoke: true },
       );
 
       expect(res.handoff).toBe('faq');
@@ -2441,5 +2449,231 @@ describe('FlowService', () => {
       expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
       expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
     });
+  });
+
+  describe('chats the office answered by hand (14/10)', () => {
+    const withModel: FlowContext = { ...leadCtx, phoneNumberId: 'P1' };
+    const client = {
+      id: 1,
+      firstName: 'ANA',
+      lastName: 'GOMEZ',
+      dni: '30123456',
+      email: '',
+      phone: null,
+      city: null,
+    };
+    const vehicle = {
+      licensePlate: 'AB123CD',
+      brand: 'CHEVROLET',
+      model: 'ONIX',
+    };
+    // Paid with a coupon, the three installments billed so far all paid.
+    const onixAlDia = {
+      id: 7,
+      certificateNumber: '1000001',
+      riskType: 'auto',
+      lastMovement: 'ENDOSOS VARIOS',
+      paymentMethod: 'Convenio',
+      validTo: '2027-07-27T00:00:00.000Z',
+      vehicle,
+      lastInstallment: { number: 3, dueDate: '2026-09-27T00:00:00.000Z' },
+      paidInstallments: 3,
+      unpaidInstallments: [],
+      hasRejectedInstallments: false,
+    };
+
+    it('tells why an installment does not show up instead of only the account status', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([onixAlDia]);
+
+      const res = await send(
+        {
+          text: 'Buenos dias. No me aparece la factura para pagar mi seguro. Dni 30123456. Pago desde mercado pago',
+        },
+        withModel,
+      );
+
+      const body = JSON.stringify(res.messages);
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '30123456' });
+      expect(body).toContain('todavía no se emitió');
+      expect(body).toContain('27/10/2026');
+      expect(body).toContain(OPT.cambioPago);
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('passes the question already asked to the advisor without retyping it', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([onixAlDia]);
+      const question = 'Creo que ya deberia pagar la cuota 4 y no me aparece';
+      await send({ text: question }, { ...withModel, client });
+
+      const offer = await send(
+        { text: '👤 Hablar con un asesor', selectionId: OPT.asesor },
+        { ...withModel, client },
+      );
+      expect(JSON.stringify(offer.messages)).toContain(question);
+
+      await send(
+        { text: 'Sí, pasala', selectionId: OPT.asesorMisma },
+        { ...withModel, client },
+      );
+      expect(api.requestHandoff).toHaveBeenCalledWith(1, question);
+    });
+
+    it('explains a debit that did not go through by how each policy is paid', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([
+        {
+          ...onixAlDia,
+          paymentMethod: 'Plan De Pago',
+          unpaidInstallments: [
+            {
+              number: 3,
+              amount: '79500.00',
+              dueDate: '2026-10-06T00:00:00.000Z',
+              status: 'overdue',
+            },
+          ],
+        },
+        {
+          ...onixAlDia,
+          id: 8,
+          paymentMethod: 'Débito Tarjeta',
+          vehicle: { licensePlate: 'A123BCD', brand: 'HONDA', model: 'STORM' },
+          unpaidInstallments: [
+            {
+              number: 1,
+              amount: '21339.00',
+              dueDate: '2026-10-10T00:00:00.000Z',
+              status: 'overdue',
+            },
+          ],
+        },
+      ]);
+
+      const res = await send(
+        { text: 'quería saber porque no se débito el seguro' },
+        { ...withModel, client },
+      );
+
+      const body = JSON.stringify(res.messages);
+      expect(body).toContain('no tiene débito automático');
+      expect(body).toContain('en proceso');
+      expect(body).toContain('06/10/2026');
+    });
+
+    it('asks "¿hablo con…?" for a number that is a client phone instead of the DNI', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([onixAlDia]);
+      const ctx = { ...withModel, phoneMatch: { firstName: 'JUAN CARLOS' } };
+
+      const ask = await send(
+        { text: 'Hola buenos días quería saber porque no se débito el seguro' },
+        ctx,
+      );
+      expect(JSON.stringify(ask.messages)).toContain('¿Hablo con *Juan*?');
+      expect(JSON.stringify(ask.messages)).not.toContain('DNI');
+
+      const res = await send(
+        { text: 'Sí, soy Juan', selectionId: OPT.phoneSi },
+        ctx,
+      );
+      expect(api.identifyByPhone).toHaveBeenCalledWith(1);
+      expect(JSON.stringify(res.messages)).toContain('te identifiqué');
+      expect(JSON.stringify(res.messages)).toContain('Sobre el débito');
+    });
+
+    it('asks for the DNI when the person is not the phone owner', async () => {
+      const ctx = { ...withModel, phoneMatch: { firstName: 'JUAN' } };
+      await send({ text: 'Buenos días' }, ctx);
+      expect(stored?.step).toBe('IDENTIFY');
+
+      const res = await send(
+        { text: 'No, soy otra persona', selectionId: OPT.phoneNo },
+        ctx,
+      );
+      expect(api.identifyByPhone).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
+    });
+
+    it('passes policies it does not have (a nómina in SanCor) to the office', async () => {
+      await send({ text: 'hola' }, { ...leadCtx, client });
+
+      const res = await send(
+        { text: 'Las pólizas de los choferes que tengo en nómina' },
+        { ...leadCtx, client },
+      );
+
+      expect(api.getPolizas).not.toHaveBeenCalled();
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('choferes que tengo en nómina'),
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'los maneja directamente la oficina',
+      );
+    });
+
+    it('offers "Otra póliza" when picking a policy for its papers', async () => {
+      await send({ text: 'hola' }, { ...leadCtx, client });
+      const picker = await send(
+        { text: '📄 Documentación', selectionId: OPT.documentos },
+        { ...leadCtx, client },
+      );
+      expect(JSON.stringify(picker.messages)).toContain('Otra póliza');
+
+      await send(
+        { text: 'Otra póliza', selectionId: 'pol_otra' },
+        { ...leadCtx, client },
+      );
+      await send(
+        { text: 'la de accidentes personales de mis empleados' },
+        { ...leadCtx, client },
+      );
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'la de accidentes personales de mis empleados',
+      );
+    });
+
+    it.each(['seguimiento', 'siniestro'] as const)(
+      'follows up a claim the office took by hand instead of asking for the DNI (read as %s)',
+      async (intent) => {
+        // In a real run the model read "Hola buen dia" as following up what the
+        // office said, and the greeting reached the office as a request.
+        intents.interpret.mockResolvedValue(intent);
+        const officeYesterday: FlowContext = {
+          ...withModel,
+          lastHumanReply: {
+            content: 'Y necesito foto de tu carnet de ambos lados',
+            createdAt: new Date(Date.now() - 19 * 3_600_000).toISOString(),
+          },
+          answeringPerson: false,
+        };
+
+        const hello = await send({ text: 'Hola buen dia' }, officeYesterday);
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+        expect(intents.interpret).not.toHaveBeenCalled();
+        expect(JSON.stringify(hello.messages)).toContain(
+          'venías hablando con la oficina',
+        );
+        expect(JSON.stringify(hello.messages)).not.toContain('ya sos cliente');
+
+        // The bot answered, so the API no longer reports the person's reply.
+        const res = await send(
+          { text: 'Quería saber si ya esta hecha la denuncia del siniestro' },
+          { ...withModel, lastHumanReply: null, botSpoke: true },
+        );
+
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('ya esta hecha la denuncia'),
+        );
+        const body = JSON.stringify(res.messages);
+        expect(body).toContain('te venía atendiendo');
+        expect(body).not.toContain('DNI');
+        expect(api.getSiniestros).not.toHaveBeenCalled();
+      },
+    );
   });
 });

@@ -175,10 +175,11 @@ export const HUMAN_FOLLOWUP_MS = 12 * 60 * 60_000;
 export function recentHumanReply(
   reply: HumanReply | null | undefined,
   now: number = Date.now(),
+  windowMs: number = HUMAN_FOLLOWUP_MS,
 ): boolean {
   if (!reply) return false;
   const at = Date.parse(reply.createdAt);
-  return Number.isFinite(at) && now - at <= HUMAN_FOLLOWUP_MS;
+  return Number.isFinite(at) && now - at <= windowMs;
 }
 
 /**

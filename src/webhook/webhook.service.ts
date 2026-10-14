@@ -568,6 +568,10 @@ export class WebhookService {
         // falls back to its menus instead of spending another call.
         llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
         staffNames: context.staffNames ?? [],
+        phoneMatch: conversation.phoneMatch ?? null,
+        botSpoke: conversation.messages.some(
+          (m) => m.role === 'assistant' && m.source !== 'app_echo',
+        ),
       },
     );
 

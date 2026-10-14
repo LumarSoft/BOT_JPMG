@@ -288,6 +288,14 @@ export class ApiService {
     return data;
   }
 
+  /** Links the client whose cartera phone is this number (see `phoneMatch`). */
+  async identifyByPhone(conversationId: number): Promise<IdentifyResult> {
+    const { data } = await this.http.post<IdentifyResult>(
+      `/bot/conversation/${conversationId}/identify-by-phone`,
+    );
+    return data;
+  }
+
   async getPolizas(conversationId: number): Promise<PolizaSummary[]> {
     const { data } = await this.http.get<PolizaSummary[]>(
       `/bot/conversation/${conversationId}/polizas`,

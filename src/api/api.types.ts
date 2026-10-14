@@ -50,11 +50,18 @@ export interface BotConversation {
    * fresh. Lets the bot resume the exact step after a restart instead of greeting
    * from scratch. Cleared by the API when a new session starts. */
   flowState: string | null;
-  /** Last message a person from the office wrote in this chat within 24 h,
+  /** Last message a person from the office wrote in this chat within 72 h,
    * whatever the session. Absent from an older API. */
   lastHumanReply?: HumanReply | null;
   /** When the chat had activity before this message, across sessions. */
   previousActivityAt?: string | null;
+  /** Unidentified, but this number is one client's phone in the cartera. */
+  phoneMatch?: PhoneMatch | null;
+}
+
+/** First name of the client whose cartera phone is the number writing. */
+export interface PhoneMatch {
+  firstName: string;
 }
 
 export interface HumanReply {
@@ -166,7 +173,10 @@ export interface EstadoCuentaPoliza {
   riskType: string;
   lastMovement: string;
   paymentMethod: string | null;
+  validTo?: string | null;
   vehicle: VehiculoSummary | null;
+  /** Latest installment billed so far; the next one isn't in the cartera yet. */
+  lastInstallment?: { number: number; dueDate: string | null } | null;
   paidInstallments: number;
   unpaidInstallments: CuotaImpaga[];
   hasRejectedInstallments: boolean;

@@ -1,5 +1,6 @@
 import type {
   CatalogField,
+  CuotaImpaga,
   EstadoCuentaPoliza,
   PolizaDocumento,
   PolizaSummary,
@@ -28,6 +29,8 @@ export const OPT = {
   documentos: 'm_documentos',
   // Not shown in the menu: typed requests for payment coupons route here.
   cupones: 'm_cupones',
+  // Offered after the account status: adhere a card/CBU or move to coupons.
+  cambioPago: 'm_cambio_pago',
   bajaPoliza: 'm_baja_poliza',
   grua: 'm_grua',
   asesor: 'm_asesor',
@@ -55,6 +58,12 @@ export const OPT = {
   // offered when a step has failed to understand the user twice
   stuckMenu: 'stuck_menu',
   stuckAsesor: 'stuck_asesor',
+  // "¿hablo con Juan?" — the number writing is that client's phone
+  phoneSi: 'id_phone_si',
+  phoneNo: 'id_phone_no',
+  // "¿le paso a la oficina tu consulta?" after asking for an advisor
+  asesorMisma: 'asesor_misma',
+  asesorOtra: 'asesor_otra',
 } as const;
 
 /** The client menu's option ids — the taps that still mean something after a
@@ -66,6 +75,7 @@ export const CLIENT_MENU_OPTS = new Set<string>([
   OPT.pagos,
   OPT.documentos,
   OPT.cupones,
+  OPT.cambioPago,
   OPT.bajaPoliza,
   OPT.grua,
   OPT.asesor,
@@ -77,11 +87,17 @@ export const ROOT_OPTS = new Set<string>([OPT.cliente, OPT.noCliente]);
 export const POLIZA_PREFIX = 'pol_';
 /** "Todas mis pólizas" row of the coupon picker. */
 export const ALL_POLIZAS_ID = `${POLIZA_PREFIX}todas`;
+/** "Otra póliza" row: one we don't have (another insurer, a nómina). */
+export const OTHER_POLIZA_ID = `${POLIZA_PREFIX}otra`;
 export const DOC_PREFIX = 'doc_';
 export const PLAN_PREFIX = 'plan_';
 
 // ─── Helpers ────────────────────────────────────────────────
 
+/**
+ * Due dates and incident dates are calendar days stored at UTC midnight: read
+ * in Argentine time they fell on the day before ("vence 05/10" for the 6th).
+ */
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -90,6 +106,7 @@ function fmtDate(iso: string | null): string {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
+    timeZone: 'UTC',
   });
 }
 
@@ -633,7 +650,7 @@ export function siniestroTypeMenu(): OutgoingMessage {
 export function polizaPicker(
   polizas: PolizaSummary[],
   body: string,
-  options: { allRow?: boolean } = {},
+  options: { allRow?: boolean; otherRow?: boolean } = {},
 ): OutgoingMessage {
   const rows: ListRow[] = polizas.map((p) => ({
     id: `${POLIZA_PREFIX}${p.id}`,
@@ -643,7 +660,81 @@ export function polizaPicker(
   // A WhatsApp list holds at most 10 rows.
   if (options.allRow && rows.length > 1 && rows.length < 10)
     rows.push({ id: ALL_POLIZAS_ID, title: 'Todas mis pólizas' });
+  // Asked for the drivers' accidentes personales (in SanCor), a customer
+  // could only pick one of his trucks.
+  if (options.otherRow && rows.length < 10)
+    rows.push({
+      id: OTHER_POLIZA_ID,
+      title: 'Otra póliza',
+      description: 'No está en la lista',
+    });
   return { kind: 'list', body, button: 'Elegir póliza', rows };
+}
+
+/** What to send for "Otra póliza": the office takes it from the description. */
+export function otherPolizaPrompt(): OutgoingMessage {
+  return {
+    kind: 'text',
+    body: 'Contame cuál es (patente, a nombre de quién está o de qué compañía) y qué necesitás, y se lo paso a la oficina.',
+  };
+}
+
+/** "¿Hablo con Juan?" — the number writing is that client's phone. */
+export function phoneQuestion(
+  name: string,
+  opener?: string | null,
+): OutgoingMessage {
+  const yes = `Sí, soy ${name}`;
+  return {
+    kind: 'buttons',
+    body: `${opener ? `${opener} ` : ''}¿Hablo con *${name}*? Si sos vos, te identifico con este número y seguimos.`,
+    buttons: [
+      // WhatsApp cuts button titles at 20 characters.
+      { id: OPT.phoneSi, title: yes.length <= 20 ? yes : 'Sí, soy yo' },
+      { id: OPT.phoneNo, title: 'No, soy otra persona' },
+    ],
+  };
+}
+
+/** Offers the reason the customer already gave instead of asking for it again. */
+export function advisorSameQuestion(question: string): OutgoingMessage {
+  const quoted =
+    question.length > 200 ? `${question.slice(0, 200)}…` : question;
+  return {
+    kind: 'buttons',
+    body: `¿Le paso a la oficina tu consulta?\n\n_“${quoted}”_`,
+    buttons: [
+      { id: OPT.asesorMisma, title: 'Sí, pasala' },
+      { id: OPT.asesorOtra, title: 'Es otra cosa' },
+    ],
+  };
+}
+
+/** What follows the account status: the payment things only the office can do. */
+export function pagosMenu(): OutgoingMessage {
+  return {
+    kind: 'list',
+    body: '¿Necesitás algo más con tus pagos?',
+    button: 'Ver opciones',
+    rows: [
+      {
+        id: OPT.cupones,
+        title: '🧾 Pedir cupón de pago',
+        description: 'La oficina te lo manda por acá',
+      },
+      {
+        id: OPT.cambioPago,
+        title: '💳 Cambiar forma de pago',
+        description: 'Adherir tarjeta o CBU, o pasar a cupón',
+      },
+      {
+        id: OPT.asesor,
+        title: '👤 Hablar con un asesor',
+        description: 'Te contacta un asesor',
+      },
+      { id: OPT.menu, title: '↩️ Volver al menú' },
+    ],
+  };
 }
 
 /** Reply to photos of the incident added to a claim in the guided photo step. */
@@ -714,6 +805,67 @@ export function siniestroConfirm(
 
 // ─── Data formatting (free text) ────────────────────────────
 
+/**
+ * "¿Por qué no se debitó?", "no me descontaron la cuota", "rechazaron el
+ * débito", "le di stop debit". Folded text.
+ */
+export const DEBIT_FAILED_RE =
+  /\bno (?:se )?(?:me |le |nos )?(?:(?:pudo|pudieron|pueden) )?(?:debit|descont|cobr)|\brechaz|\bstop debit|\bno (?:paso|entro|impacto) el (?:debito|pago)/;
+
+/**
+ * "No me aparece la factura para pagar", "ya debería pagar la cuota 4 y no me
+ * aparece en la aplicación". Folded text.
+ */
+export const INSTALLMENT_MISSING_RE =
+  /\bno (?:me |le |nos )?(?:aparece|aparecen|figura|figuran|sale|salen|encuentro|lo encuentro|la encuentro|llego|llegaron)\b.*\b(?:factura|cuota|cupon|boleta|pagar|pago|app|aplicacion)|\b(?:factura|cuota|cupon|boleta)s?\b.*\bno (?:me |le )?(?:aparece|figura|sale|llego)|\bya (?:deberia|tendria que|tengo que) pagar\b/;
+
+/** Triunfo's "Débito Tarjeta", "Débito Caja de Ahorro"…; the rest is paid with a coupon. */
+function paysByDebit(
+  p: Pick<EstadoCuentaPoliza, 'paymentMethod'>,
+): boolean | null {
+  const method = fold(p.paymentMethod ?? '').trim();
+  if (!method) return null;
+  return method.startsWith('debito');
+}
+
+function paymentLine(p: EstadoCuentaPoliza): string {
+  const debit = paysByDebit(p);
+  if (debit === null) return '';
+  return debit
+    ? '\n💳 Se paga por *débito automático*.'
+    : '\n🧾 Se paga con *cupón* (no tiene débito automático).';
+}
+
+/** The month after a due date, same day (clamped), as a calendar day in UTC. */
+function nextMonth(iso: string): Date | null {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m, Math.min(d.getUTCDate(), last)));
+}
+
+/**
+ * The installment after the latest one billed, when it still falls within the
+ * policy: Triunfo bills a few at a time, so with everything paid the next one
+ * is not in the cartera yet — and not in the customer's app either.
+ */
+function nextInstallment(
+  p: EstadoCuentaPoliza,
+): { number: number; dueDate: string } | null {
+  const last = p.lastInstallment;
+  if (!last?.dueDate) return null;
+  const next = nextMonth(last.dueDate);
+  if (!next) return null;
+  const until = p.validTo ? new Date(p.validTo) : null;
+  if (until && !isNaN(until.getTime()) && next >= until) return null;
+  return { number: last.number + 1, dueDate: next.toISOString() };
+}
+
+const isOverdue = (c: CuotaImpaga) =>
+  c.status === 'overdue' || c.status === 'rejected';
+
 export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
   if (polizas.length === 0) {
     return 'No encontré pólizas asociadas a tu cuenta. Si creés que es un error, te derivo con un asesor.';
@@ -724,7 +876,11 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
     // certificate number — same label the claim flow uses.
     const head = `*${polizaLabel(p)}*\n_${polizaRef(p)}_`;
     if (p.unpaidInstallments.length === 0) {
-      return `${head}\n✅ Sin cuotas impagas. ${p.paidInstallments} cuota(s) paga(s).`;
+      const next = nextInstallment(p);
+      const proxima = next
+        ? `\n🗓️ Próxima cuota (${next.number}): vence alrededor del ${fmtDate(next.dueDate)}. Todavía no está emitida.`
+        : '';
+      return `${head}\n✅ Sin cuotas impagas. ${p.paidInstallments} cuota(s) paga(s).${proxima}${paymentLine(p)}`;
     }
     const cuotas = p.unpaidInstallments
       .map((c) => {
@@ -737,13 +893,85 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
         return `  • Cuota ${c.number}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag})`;
       })
       .join('\n');
+    // Only for coupons: debit installments often show as overdue while the
+    // bank is still collecting them, so a total there would ask for money twice.
+    const vencidas = p.unpaidInstallments.filter(isOverdue);
+    const total =
+      paysByDebit(p) === false && vencidas.length > 1
+        ? `\n  *Total vencido: ${fmtMoney(vencidas.reduce((sum, c) => sum + Number(c.amount), 0))}*`
+        : '';
     const aviso = p.hasRejectedInstallments
       ? '\n⚠️ Hay un rechazo de débito. Un asesor te va a contactar para regularizarlo.'
       : '';
-    return `${head}\n${cuotas}${aviso}`;
+    return `${head}\n${cuotas}${total}${paymentLine(p)}${aviso}`;
   });
 
   return ['💳 *Estado de cuenta*', ...blocks].join('\n\n');
+}
+
+/**
+ * The answer to what the customer asked about their payments, from the same
+ * account status. Two questions the office was answering by hand: a debit that
+ * didn't go through (a policy paid with a coupon has no debit) and an
+ * installment that "doesn't show up" (it isn't billed yet). Null for anything
+ * else, which the account status alone answers.
+ */
+export function paymentAnswer(
+  polizas: EstadoCuentaPoliza[],
+  question: string,
+): string | null {
+  if (polizas.length === 0) return null;
+  const t = fold(question);
+  if (DEBIT_FAILED_RE.test(t)) return debitAnswer(polizas);
+  if (INSTALLMENT_MISSING_RE.test(t)) return missingAnswer(polizas);
+  return null;
+}
+
+function debitAnswer(polizas: EstadoCuentaPoliza[]): string {
+  const lines = polizas.map((p) => {
+    const label = `*${polizaLabel(p)}*`;
+    const vencidas = p.unpaidInstallments.filter(isOverdue);
+    const debit = paysByDebit(p);
+    if (debit === false) {
+      const deuda = vencidas.length
+        ? ` Tiene ${vencidas.length === 1 ? `la cuota ${vencidas[0].number} vencida` : `${vencidas.length} cuotas vencidas`} por ${fmtMoney(vencidas.reduce((sum, c) => sum + Number(c.amount), 0))}.`
+        : '';
+      return `• ${label}: no tiene débito automático, se paga con *cupón*. Por eso no se debitó.${deuda}`;
+    }
+    if (p.hasRejectedInstallments)
+      return `• ${label}: el banco *rechazó el débito*. Se puede pagar con cupón o volver a adherir la tarjeta o la cuenta.`;
+    if (p.unpaidInstallments.length)
+      return `• ${label}: tiene débito automático. Si en tu banco figura *en proceso*, dejá el dinero disponible: se debita en estos días. Si llega el rechazo, la oficina te avisa para que la pagues con cupón.`;
+    return `• ${label}: ${debit ? 'tiene débito automático y ' : ''}figura al día.`;
+  });
+  const coupon = polizas.some(
+    (p) => paysByDebit(p) === false || p.hasRejectedInstallments,
+  );
+  return (
+    `📌 *Sobre el débito:*\n${lines.join('\n')}` +
+    (coupon
+      ? '\n\nSi querés, abajo podés pedir el *cupón* para pagarla o *cambiar la forma de pago* (tarjeta o CBU).'
+      : '')
+  );
+}
+
+function missingAnswer(polizas: EstadoCuentaPoliza[]): string {
+  const lines = polizas.map((p) => {
+    const label = `*${polizaLabel(p)}*`;
+    const [first] = p.unpaidInstallments;
+    if (first) {
+      const how =
+        paysByDebit(p) === true
+          ? ' Se cobra por débito automático.'
+          : ' Si no te aparece para pagar, pedí el *cupón* abajo y te lo manda la oficina.';
+      return `• ${label}: tenés la cuota ${first.number} ${isOverdue(first) ? 'vencida' : 'pendiente'} (vence ${fmtDate(first.dueDate)}).${how}`;
+    }
+    const next = nextInstallment(p);
+    return next
+      ? `• ${label}: ya pagaste todas las cuotas emitidas. La cuota ${next.number} *todavía no se emitió*, por eso no te aparece: va a estar para pagar cerca del vencimiento (${fmtDate(next.dueDate)}).`
+      : `• ${label}: no tenés cuotas pendientes de pago.`;
+  });
+  return `📌 *Sobre tu consulta:*\n${lines.join('\n')}`;
 }
 
 export function formatSiniestros(siniestros: SiniestroSummary[]): string {
