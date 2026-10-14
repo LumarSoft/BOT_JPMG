@@ -949,7 +949,8 @@ describe('WebhookService', () => {
         ['opción 3', 120250],
         ['la última', 120250],
         ['la GL GNC', 120249],
-        ['la de 5 puertas GLS', undefined],
+        // "5 puertas" is how people (and the bot) say InfoAuto's "5P".
+        ['la de 5 puertas GLS', 120250],
         ['GLS', 120250],
       ])('reads "%s" as the client picking a version', (text, codia) => {
         expect(select(text, listed)).toBe(codia);
@@ -961,6 +962,35 @@ describe('WebhookService', () => {
         expect(select('2', short)).toBe(120249);
         expect(select('la tercera', short)).toBe(120250);
         expect(select('la 7', short)).toBeUndefined();
+      });
+
+      it('reads a pick when the bot wrote "puertas" for InfoAuto\'s "P"', () => {
+        // The 14/10 suite: "1" against "1. 3 puertas L/13" picked nothing and
+        // the quote stopped with "hay varias versiones posibles".
+        const gol = (text: string, previous: string) =>
+          (
+            service as unknown as { selectRememberedVehicle: Select }
+          ).selectRememberedVehicle.call(
+            service,
+            {
+              vehicleType: 'auto',
+              candidates: [
+                { codia: 460727, description: 'GOL TREND 1.6 3 P L/13' },
+                {
+                  codia: 460773,
+                  description: 'GOL TREND 1.6 3 P L/13 HIGHLINE',
+                },
+                { codia: 460740, description: 'GOL TREND 1.6 5 P L/13 PACK I' },
+              ],
+            },
+            text,
+            previous,
+          )?.selected?.codia;
+        const shown =
+          '1. 3 puertas L/13\n2. 3 puertas L/13 Highline\n3. 5 puertas L/13 Pack I';
+        expect(gol('1', shown)).toBe(460727);
+        expect(gol('la 2', shown)).toBe(460773);
+        expect(gol('3', shown)).toBe(460740);
       });
 
       it('does not read an engine size, a position without a list or the bot list as a pick', () => {

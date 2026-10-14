@@ -3054,7 +3054,7 @@ describe('FlowService', () => {
       );
       expect(api.requestPolicyCancellation).toHaveBeenCalled();
       expect(body(baja)).toContain('fuera de horario');
-      expect(stored?.step).toBe('CLIENT_MENU');
+      expect((stored as FlowState | null)?.step).toBe('CLIENT_MENU');
     });
   });
 });

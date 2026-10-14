@@ -113,12 +113,31 @@ const VERSION_FILLER = new Set(
   ).split(' '),
 );
 
-const versionWords = (text: string): string[] =>
+/**
+ * The same thing written the way the bot shows it and the way InfoAuto has it:
+ * the bot listed "3 puertas L/13" for "GOL TREND 1.6 3 P L/13", and the
+ * customer's "1" picked nothing.
+ */
+const VERSION_SYNONYMS: Record<string, string> = {
+  puertas: 'p',
+  puerta: 'p',
+  ptas: 'p',
+  pta: 'p',
+  automatico: 'at',
+  automatica: 'at',
+  aut: 'at',
+};
+
+export const versionWords = (text: string): string[] =>
   fold(text)
     .replace(/[^a-z0-9]+/g, ' ')
+    // "5P", "1.6L": the digit and the letters are separate words either way.
+    .replace(/(\d)([a-z])/g, '$1 $2')
+    .replace(/([a-z])(\d)/g, '$1 $2')
     .trim()
     .split(' ')
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((w) => VERSION_SYNONYMS[w] ?? w);
 
 /** Claim steps before it is filed (on confirmation): its details, not photos. */
 const CLAIM_DRAFT_STEPS = new Set<string>([
