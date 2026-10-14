@@ -2476,7 +2476,7 @@ describe('FlowService', () => {
       paymentMethod: 'Convenio',
       validTo: '2027-07-27T00:00:00.000Z',
       vehicle,
-      lastInstallment: { number: 3, dueDate: '2026-09-27T00:00:00.000Z' },
+      nextDueDate: '2026-10-27T00:00:00.000Z',
       paidInstallments: 3,
       unpaidInstallments: [],
       hasRejectedInstallments: false,

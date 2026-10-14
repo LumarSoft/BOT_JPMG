@@ -175,8 +175,8 @@ export interface EstadoCuentaPoliza {
   paymentMethod: string | null;
   validTo?: string | null;
   vehicle: VehiculoSummary | null;
-  /** Latest installment billed so far; the next one isn't in the cartera yet. */
-  lastInstallment?: { number: number; dueDate: string | null } | null;
+  /** When the next installment is due, estimated: it isn't billed yet. */
+  nextDueDate?: string | null;
   paidInstallments: number;
   unpaidInstallments: CuotaImpaga[];
   hasRejectedInstallments: boolean;

@@ -213,7 +213,7 @@ describe('account status answers', () => {
     paymentMethod: 'Convenio',
     validTo: '2027-07-27T00:00:00.000Z',
     vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'PALIO' },
-    lastInstallment: { number: 3, dueDate: '2026-09-27T00:00:00.000Z' },
+    nextDueDate: '2026-10-27T00:00:00.000Z',
     paidInstallments: 3,
     unpaidInstallments: [],
     hasRejectedInstallments: false,
@@ -238,16 +238,21 @@ describe('account status answers', () => {
 
   it('tells when the next installment is due once everything billed is paid', () => {
     const text = formatEstadoCuenta([base]);
-    expect(text).toContain('Próxima cuota (4)');
+    expect(text).toContain('Próxima cuota: vence alrededor del');
     expect(text).toContain('27/10/2026');
     expect(text).toContain('cupón');
   });
 
-  it('does not announce an installment past the end of the policy', () => {
-    const text = formatEstadoCuenta([
-      { ...base, validTo: '2026-10-27T00:00:00.000Z' },
-    ]);
-    expect(text).not.toContain('Próxima cuota');
+  it('announces nothing when there is no next installment to estimate', () => {
+    expect(formatEstadoCuenta([{ ...base, nextDueDate: null }])).not.toContain(
+      'Próxima cuota',
+    );
+  });
+
+  it('does not take an unknown payment method for a debit', () => {
+    expect(
+      paymentAnswer([{ ...base, paymentMethod: null }], 'no se debitó'),
+    ).toContain('no tengo registrada su forma de pago');
   });
 
   it('adds up the overdue coupons but never a debit still being collected', () => {

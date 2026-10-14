@@ -836,33 +836,6 @@ function paymentLine(p: EstadoCuentaPoliza): string {
     : '\n🧾 Se paga con *cupón* (no tiene débito automático).';
 }
 
-/** The month after a due date, same day (clamped), as a calendar day in UTC. */
-function nextMonth(iso: string): Date | null {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return null;
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth() + 1;
-  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(y, m, Math.min(d.getUTCDate(), last)));
-}
-
-/**
- * The installment after the latest one billed, when it still falls within the
- * policy: Triunfo bills a few at a time, so with everything paid the next one
- * is not in the cartera yet — and not in the customer's app either.
- */
-function nextInstallment(
-  p: EstadoCuentaPoliza,
-): { number: number; dueDate: string } | null {
-  const last = p.lastInstallment;
-  if (!last?.dueDate) return null;
-  const next = nextMonth(last.dueDate);
-  if (!next) return null;
-  const until = p.validTo ? new Date(p.validTo) : null;
-  if (until && !isNaN(until.getTime()) && next >= until) return null;
-  return { number: last.number + 1, dueDate: next.toISOString() };
-}
-
 const isOverdue = (c: CuotaImpaga) =>
   c.status === 'overdue' || c.status === 'rejected';
 
@@ -876,9 +849,9 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
     // certificate number — same label the claim flow uses.
     const head = `*${polizaLabel(p)}*\n_${polizaRef(p)}_`;
     if (p.unpaidInstallments.length === 0) {
-      const next = nextInstallment(p);
-      const proxima = next
-        ? `\n🗓️ Próxima cuota (${next.number}): vence alrededor del ${fmtDate(next.dueDate)}. Todavía no está emitida.`
+      // Batches are numbered from 1 again, so the next one goes without a number.
+      const proxima = p.nextDueDate
+        ? `\n🗓️ Próxima cuota: vence alrededor del ${fmtDate(p.nextDueDate)}. Todavía no figura emitida.`
         : '';
       return `${head}\n✅ Sin cuotas impagas. ${p.paidInstallments} cuota(s) paga(s).${proxima}${paymentLine(p)}`;
     }
@@ -932,6 +905,8 @@ function debitAnswer(polizas: EstadoCuentaPoliza[]): string {
     const label = `*${polizaLabel(p)}*`;
     const vencidas = p.unpaidInstallments.filter(isOverdue);
     const debit = paysByDebit(p);
+    if (debit === null)
+      return `• ${label}: no tengo registrada su forma de pago. ${vencidas.length ? 'Figura con cuotas vencidas: la oficina lo revisa con vos.' : 'Figura al día.'}`;
     if (debit === false) {
       const deuda = vencidas.length
         ? ` Tiene ${vencidas.length === 1 ? `la cuota ${vencidas[0].number} vencida` : `${vencidas.length} cuotas vencidas`} por ${fmtMoney(vencidas.reduce((sum, c) => sum + Number(c.amount), 0))}.`
@@ -942,7 +917,7 @@ function debitAnswer(polizas: EstadoCuentaPoliza[]): string {
       return `• ${label}: el banco *rechazó el débito*. Se puede pagar con cupón o volver a adherir la tarjeta o la cuenta.`;
     if (p.unpaidInstallments.length)
       return `• ${label}: tiene débito automático. Si en tu banco figura *en proceso*, dejá el dinero disponible: se debita en estos días. Si llega el rechazo, la oficina te avisa para que la pagues con cupón.`;
-    return `• ${label}: ${debit ? 'tiene débito automático y ' : ''}figura al día.`;
+    return `• ${label}: tiene débito automático y figura al día.`;
   });
   const coupon = polizas.some(
     (p) => paysByDebit(p) === false || p.hasRejectedInstallments,
@@ -966,9 +941,8 @@ function missingAnswer(polizas: EstadoCuentaPoliza[]): string {
           : ' Si no te aparece para pagar, pedí el *cupón* abajo y te lo manda la oficina.';
       return `• ${label}: tenés la cuota ${first.number} ${isOverdue(first) ? 'vencida' : 'pendiente'} (vence ${fmtDate(first.dueDate)}).${how}`;
     }
-    const next = nextInstallment(p);
-    return next
-      ? `• ${label}: ya pagaste todas las cuotas emitidas. La cuota ${next.number} *todavía no se emitió*, por eso no te aparece: va a estar para pagar cerca del vencimiento (${fmtDate(next.dueDate)}).`
+    return p.nextDueDate
+      ? `• ${label}: ya pagaste todas las cuotas emitidas. La próxima *todavía no se emitió*, por eso no te aparece: va a estar para pagar cerca del vencimiento (${fmtDate(p.nextDueDate)}).`
       : `• ${label}: no tenés cuotas pendientes de pago.`;
   });
   return `📌 *Sobre tu consulta:*\n${lines.join('\n')}`;
