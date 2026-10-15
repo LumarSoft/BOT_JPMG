@@ -481,7 +481,7 @@ module.exports = [
     steps: [
       { text: 'Hola' },
       // fixtures/voz.m4a says "Hola, quería saber cuánto debo de mi seguro".
-      { audio: true, max: 60000, expect: { reply: true, none: [/No pude (entender|descargar) el audio/] } },
+      { audio: true, max: 60000, expect: { reply: true, none: [/No pude (entender|descargar) el audio/, /¿Qué querés cotizar\?/] } },
     ],
   },
 
@@ -512,7 +512,7 @@ module.exports = [
   },
 
   {
-    id: 'P16', area: 'Pendientes conocidos', name: '"¿Cuánto debo de mi seguro?" en el "¿ya sos cliente?" abre Cotización', wa: wa(), known: 'la regex "cuánto…seguro" de handleRoot toma la deuda como cotización (encontrado por esta batería el 15/10)',
+    id: 'P16', area: 'Primer mensaje e identificación', name: '"¿Cuánto debo de mi seguro?" en el "¿ya sos cliente?" pide el DNI, no abre Cotización', wa: wa(), regression: 'encontrado por esta batería (15/10)',
     steps: [
       { text: 'Hola' },
       { text: 'Quería saber cuánto debo de mi seguro', expect: { any: [/DNI/], none: [/¿Qué querés cotizar\?/] } },

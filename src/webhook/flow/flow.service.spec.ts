@@ -1682,6 +1682,35 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('LLM_COTIZACION');
     });
 
+    it.each([
+      'Quería saber cuánto debo de mi seguro',
+      '¿cuánto adeudo del seguro del auto?',
+      'quiero ver mis cuotas del seguro',
+    ])(
+      'asks for the DNI with the payments action for "%s" from ROOT',
+      async (text) => {
+        await send({ text: 'hola' });
+        const res = await send({ text });
+
+        expect(stored?.step).toBe('IDENTIFY');
+        expect(stored?.data.pendingAction).toBe('pagos');
+        expect(bodies(res)).not.toContain('¿Qué querés cotizar?');
+        expect(intents.interpret).not.toHaveBeenCalledWith(
+          expect.objectContaining({ text }),
+        );
+      },
+    );
+
+    it.each([
+      '¿cuánto sale un seguro para mi auto?',
+      '¿cuánto sale la cuota del seguro de un auto?',
+    ])('still quotes "%s" from ROOT', async (text) => {
+      await send({ text: 'hola' });
+      await send({ text });
+
+      expect(stored?.step).toBe('LLM_COTIZACION');
+    });
+
     it('still leaves the quote when the user clearly asks for another flow', async () => {
       await send({ text: 'hola' });
       await declareClient();

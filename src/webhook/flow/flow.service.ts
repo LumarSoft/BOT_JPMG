@@ -376,6 +376,15 @@ const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
 
 /**
+ * Asking about one's own debt or installments ("¿cuánto debo de mi seguro?",
+ * "mis cuotas"). Wins over the loose "cuánto…seguro" quote match, which used
+ * to open Cotización for it. "¿Cuánto sale la cuota?" is still a quote.
+ * Folded text.
+ */
+const OWN_DEBT_RE =
+  /\b(cuanto|lo que) (debo|adeudo|tengo que pagar|me falta pagar)\b|\bdeuda\b|\badeud|\b(mis?) (cuotas?|pagos?|vencimientos?)\b|\bestado de (cuenta|pagos?)\b|\bpagar (mi|mis)\b/;
+
+/**
  * Brands that only make cars / only make motorcycles, so "quiero cotizar mi
  * gol trend… vw" is known to be a car without the word "auto". Brands that
  * make both (Honda, Suzuki) are left to the quote model.
@@ -1227,10 +1236,22 @@ export class FlowService {
     }
 
     // ── 2. Direct intent routing (before asking client/non-client) ──
+    // A question about their own debt is a client's request, not a quote,
+    // even when it says "cuánto… seguro".
+    const folded = fold(input.text);
+    if (
+      !sel &&
+      OWN_DEBT_RE.test(folded) &&
+      !/\bcotiz|\bpresupuest/.test(folded)
+    ) {
+      const routed = await this.routeOpening(input, ctx, key, null, 'pagos');
+      if (routed) return routed;
+    }
+
     // Cotizar doesn't need identification → go straight to the quote flow
     // (jumping to the named category when the message already specifies one).
     if (
-      QUOTE_INTENT_RE.test(fold(input.text)) ||
+      QUOTE_INTENT_RE.test(folded) ||
       /\bcotiz|\bpresupuest|\bcu[aá]nto.*seguro|\bprecio.*seguro/.test(t)
     ) {
       return this.enterCotizar(input, ctx, key);
