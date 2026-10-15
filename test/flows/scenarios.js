@@ -1,0 +1,531 @@
+// Full-flow scenarios (npm run test:flows). Synthetic data only (data/seed.sql):
+// DNI 99000001 Ana (1 auto, al día, phone → waId 5493419990001), 99000002 Lucas
+// (auto plan de pago + moto con débito en proceso, waId 5493419990002), CUIT
+// 30712345671 empresa (2 camiones), 99000004 Marta (débito rechazado), 99000006
+// Gustavo (1 auto, waId 5493419990006), and a chat the office answered by hand
+// (waId 5493419990120).
+//
+// Each scenario: `steps` are what the customer (or the office, `echo`) sends;
+// `expect` checks what the bot answered to that step (`any`/`none` regexes,
+// `silent`, `count`, `reply`); `db` checks the database afterwards ($WA is the
+// scenario's number). `drive` answers a model-led quote until `until` shows up.
+// `regression` names the real chat a case comes from; `known` marks a gap not
+// fixed yet (reported, but it does not fail the run). `stage: 'inactivity'`
+// scenarios are checked again once the local session timeout (2 min) passes:
+// `afterIdle.goodbye` says whether the inactivity goodbye must go out.
+
+const ident = (dni) => [
+  { text: 'Hola', expect: { any: [/ya sos cliente/i] } },
+  { select: 'cliente', title: 'Sí, soy cliente', expect: { any: [/DNI/] } },
+  { text: dni, expect: { any: [/te identifiqué/i] } },
+];
+const handoffs = (name, test) => ({
+  name,
+  sql: "SELECT REPLACE(REPLACE(n.body,'\\n',' '),'\\t',' ') FROM Notification n JOIN Conversation c ON c.id=n.refId WHERE c.waId='$WA' AND n.type='handoff' AND n.deletedAt IS NULL ORDER BY n.id",
+  test,
+});
+const noMenuWord = /escrib[ií]\s*\*?men[uú]\*?\s*y\s*eleg/i;
+
+// One number per scenario, all under the 5493419990 prefix the cleanup removes.
+let n = 0;
+const wa = () => `54934199902${String(n++).padStart(2, '0')}`;
+
+module.exports = [
+  // ─── Primer mensaje e identificación ─────────────────────────────
+  {
+    id: 'P01', area: 'Primer mensaje e identificación', name: 'Saludo → ¿sos cliente? → DNI → menú', wa: wa(),
+    steps: [
+      { text: 'Hola buen día', expect: { any: [/NICO/, /ya sos cliente/i] } },
+      { select: 'cliente', title: 'Sí, soy cliente', expect: { any: [/DNI del titular/] } },
+      { text: '99.000.001', expect: { any: [/te identifiqué/i, /m_siniestros/, /m_pagos/] } },
+    ],
+  },
+  {
+    id: 'P02', area: 'Primer mensaje e identificación', name: 'Empresa se identifica con CUIT', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'cliente', title: 'Sí, soy cliente' },
+      { text: '30-71234567-1', expect: { any: [/te identifiqué/i], none: [/TRANSPORTES PRUEBA SRL/] } },
+    ],
+  },
+  {
+    id: 'P03', area: 'Primer mensaje e identificación', name: 'Identificación por patente', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'cliente', title: 'Sí, soy cliente' },
+      { text: 'ZZ902AA', expect: { any: [/te identifiqué/i] } },
+    ],
+  },
+  {
+    id: 'P04', area: 'Primer mensaje e identificación', name: 'DNI que no existe', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'cliente', title: 'Sí, soy cliente' },
+      { text: '12345678', expect: { any: [/No encontré/i], none: [/te identifiqué/i] } },
+    ],
+  },
+  {
+    id: 'P05', area: 'Primer mensaje e identificación', name: 'Primer mensaje con pedido y DNI: no vuelve a pedir el DNI', wa: wa(), regression: '#168 (13/10)',
+    steps: [
+      { text: 'Hola quiero dar de baja la póliza del auto que vendí, mi dni es 99000001', expect: { any: [/te identifiqué/i, /baja/i], none: [/Pasame el \*DNI/] } },
+    ],
+  },
+  {
+    id: 'P06', area: 'Primer mensaje e identificación', name: '"Me chocaron" → DNI → directo a la denuncia', wa: wa(),
+    steps: [
+      { text: 'Hola, me chocaron recién estacionado', expect: { any: [/DNI/], none: [/ya sos cliente/i] } },
+      { text: '99000001', expect: { any: [/te identifiqué/i, /Para cargar la denuncia/i], none: [/Denuncia nueva\|/] } },
+    ],
+  },
+  {
+    id: 'P07', area: 'Primer mensaje e identificación', name: 'Número conocido: ¿Hablo con Ana? → Sí', wa: '5493419990001',
+    steps: [
+      { text: 'Hola', expect: { any: [/Hablo con \*Ana\*/] } },
+      { select: 'id_phone_si', title: 'Sí, soy Ana', expect: { any: [/te identifiqué/i, /m_pagos/] } },
+    ],
+  },
+  {
+    id: 'P08', area: 'Primer mensaje e identificación', name: 'Número conocido: "No, soy otra persona"', wa: '5493419990002',
+    steps: [
+      { text: 'Buenas tardes', expect: { any: [/Hablo con \*Lucas\*/] } },
+      { select: 'id_phone_no', title: 'No, soy otra persona', expect: { any: [/ya sos cliente/i], none: [/te identifiqué/i] } },
+    ],
+  },
+  {
+    id: 'P09', area: 'Primer mensaje e identificación', name: 'Escribe un pedido en vez de responder "¿Hablo con…?"', wa: '5493419990006', regression: '#195 (14/10)',
+    steps: [
+      { text: 'Hola buenas tardes', expect: { any: [/Hablo con \*Gustavo\*/] } },
+      { text: 'Me podrías enviar la cuponera de pagos', expect: { any: [/Gustavo/], none: [/DNI/] } },
+      { select: 'id_phone_si', title: 'Sí, soy Gustavo', expect: { any: [/cupones/i, /oficina/i] } },
+    ],
+    db: [handoffs('aviso de cupones', (r) => r.some(([b]) => /cupones/i.test(b)))],
+  },
+  {
+    id: 'P10', area: 'Primer mensaje e identificación', name: '"No, gracias" no es "no soy cliente"', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      { text: 'Hola' },
+      { text: 'No, gracias', expect: { none: [/Cotizar un seguro/] } },
+    ],
+  },
+  {
+    id: 'P11', area: 'Primer mensaje e identificación', name: 'Tema ajeno al seguro', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { text: '¿Me pasás una receta de pizza casera?', expect: { any: [/seguro/i], none: [/harina|levadura|muzzarella/i] } },
+    ],
+  },
+  {
+    id: 'P12', area: 'Primer mensaje e identificación', name: 'Pregunta por el horario', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { text: '¿Hasta qué hora atienden?', expect: { any: [/8/, /16/] } },
+    ],
+  },
+  {
+    id: 'P13', area: 'Primer mensaje e identificación', name: 'Finalizar la charla', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'finalizar', title: 'Finalizar', expect: { any: [/Cerramos la conversación/] } },
+    ],
+  },
+  {
+    id: 'P14', area: 'Primer mensaje e identificación', name: 'Mensaje para Mili: avisa y sigue atendiendo', wa: wa(), regression: 'revisión 12/10',
+    steps: [
+      { text: 'Hola Mili, ¿cómo estás?', expect: { any: [/Ya le avisé a Mili/] } },
+    ],
+    db: [handoffs('aviso para Mili', (r) => r.some(([b]) => /Mensaje para Mili/.test(b)))],
+  },
+  {
+    id: 'P15', area: 'Primer mensaje e identificación', name: 'Pólizas que el bot no ve (nómina) → oficina', wa: wa(), regression: '#111 (14/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Necesito las pólizas de los choferes que tengo en nómina', expect: { any: [/oficina/i], none: [/ONIX/] } },
+    ],
+    db: [handoffs('aviso de nómina', (r) => r.some(([b]) => /nómina/i.test(b)))],
+  },
+
+  // ─── Menú de clientes ───────────────────────────────────────────
+  {
+    id: 'M01', area: 'Menú de clientes', name: 'Siniestros → consultar (sin denuncias)', wa: wa(),
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true, expect: { any: [/sin_nueva/, /sin_consultar/] } },
+      { select: 'sin_consultar', title: 'Consultar una', expect: { any: [/No tenés denuncias/i] } },
+    ],
+  },
+  {
+    id: 'M02', area: 'Menú de clientes', name: 'Estado de cuenta: débito en proceso, no "vencida"', wa: wa(), regression: '#140 (14/10)',
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_pagos', title: '💳 Pagos y cobranzas', list: true, expect: { any: [/en proceso de débito/, /dejá el dinero disponible/, /m_cupones/], none: [/vencida/] } },
+    ],
+  },
+  {
+    id: 'M03', area: 'Menú de clientes', name: '"¿Por qué no se debitó?" responde por forma de pago', wa: wa(), regression: '#184 (14/10)',
+    steps: [
+      ...ident('99000002'),
+      { text: 'Quería saber por qué no se debitó la cuota del seguro', expect: { any: [/Sobre el débito/, /cupón/i] } },
+    ],
+  },
+  {
+    id: 'M04', area: 'Menú de clientes', name: 'Rechazo de débito: avisa a la oficina', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      ...ident('99000004'),
+      { select: 'm_pagos', title: '💳 Pagos y cobranzas', list: true, expect: { any: [/rechazo de débito/i, /Ya le avisé a la oficina/] } },
+    ],
+    db: [handoffs('aviso de rechazo', (r) => r.some(([b]) => /Rechazo de débito/.test(b)))],
+  },
+  {
+    id: 'M05', area: 'Menú de clientes', name: 'Cupones con varias pólizas, sin repetir el pedido', wa: wa(), regression: 'revisión 12/10 (cupones en bucle)',
+    steps: [
+      ...ident('99000002'),
+      { text: 'Necesito el cupón de pago', expect: { any: [/pol_todas/, /pol_otra/] } },
+      { select: 'pol_todas', title: 'Todas mis pólizas', list: true, expect: { any: [/Ya les pasé tu pedido/] } },
+      { text: 'me mandás el cupón?', expect: { any: [/Ya le pasé/] } },
+    ],
+    db: [handoffs('un solo aviso de cupones', (r) => r.filter(([b]) => /cupones/i.test(b)).length === 1)],
+  },
+  {
+    id: 'M06', area: 'Menú de clientes', name: 'Documentación con una sola póliza: sin lista, a la oficina', wa: wa(),
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/ONIX/, /No tengo los documentos/], none: [/pol_\d+/] } },
+    ],
+    db: [handoffs('aviso de documentación', (r) => r.some(([b]) => /documentación/i.test(b)))],
+  },
+  {
+    id: 'M07', area: 'Menú de clientes', name: 'Documentación de "Otra póliza" (empresa)', wa: wa(),
+    steps: [
+      ...ident('30712345671'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/pol_otra/] } },
+      { select: 'pol_otra', title: 'Otra póliza', list: true, expect: { any: [/Contame cuál es/] } },
+      { text: 'La de accidentes personales de los choferes', expect: { any: [/tomé nota/i] } },
+    ],
+    db: [handoffs('aviso dice que es documentación de otra póliza', (r) => r.some(([b]) => /Pide la documentación de otra póliza/.test(b)))],
+  },
+  {
+    id: 'M08', area: 'Menú de clientes', name: 'Baja con una sola póliza: confirma y registra', wa: wa(),
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_baja_poliza', title: 'Baja de póliza', list: true, expect: { any: [/Solicitar baja/, /Es otra póliza/] } },
+      { select: 'confirmar', title: 'Solicitar baja', expect: { any: [/Registré tu solicitud de baja/, /m_siniestros/] } },
+    ],
+    db: [{ name: 'pedido de baja', sql: "SELECT COUNT(*) FROM Notification n JOIN Conversation c ON c.id=n.refId WHERE c.waId='$WA' AND n.type='baja_poliza'", test: (r) => r[0][0] === '1' }],
+  },
+  {
+    id: 'M09', area: 'Menú de clientes', name: 'Baja con varias pólizas: elegir y cancelar', wa: wa(),
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_baja_poliza', title: 'Baja de póliza', list: true, expect: { any: [/PALIO/, /STORM/] } },
+      { drive: { max: 1, until: /Solicitar baja/, answer: (prev) => ({ select: (prev.match(/\[HONDA STORM\|(pol_\d+)\]/) || [])[1], title: 'HONDA STORM', list: true }), expect: { any: [/Solicitar baja/, /9900003/] } } },
+      { select: 'cancelar', title: 'Cancelar', expect: { any: [/Cancelé el pedido de baja/] } },
+    ],
+  },
+  {
+    id: 'M10', area: 'Menú de clientes', name: 'Auxilio / Grúa', wa: wa(),
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_grua', title: '🆘 Auxilio / Grúa', list: true, expect: { any: [/Grúa/] } },
+    ],
+  },
+  {
+    id: 'M11', area: 'Menú de clientes', name: 'Asesor: avisa enseguida y suma el motivo', wa: wa(), regression: '#196 (14/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_asesor', title: '👤 Hablar con un asesor', list: true, expect: { any: [/ya le avisé a la oficina/i] } },
+      { text: 'Necesito cambiar el domicilio de la póliza', expect: { any: [/tomé nota/i] } },
+    ],
+    db: [handoffs('un solo aviso con el motivo', (r) => r.length === 1 && /Motivo: Necesito cambiar el domicilio/.test(r[0][0]))],
+  },
+  {
+    id: 'M12', area: 'Menú de clientes', name: 'Asesor: "gracias" no es motivo y el menú sigue andando', wa: wa(), regression: '#154 (13/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_asesor', title: '👤 Hablar con un asesor', list: true },
+      { text: 'Gracias!', expect: { any: [/aviso ya está en la oficina/i] } },
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true, expect: { any: [/sin_nueva/] } },
+    ],
+    db: [handoffs('sin "Gracias" como motivo', (r) => r.length === 1 && !/Gracias/.test(r[0][0]))],
+  },
+  {
+    id: 'M13', area: 'Menú de clientes', name: '"¿Mi póliza cubre granizo?" es una pregunta, no Documentación', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      ...ident('99000001'),
+      { text: '¿Mi póliza cubre granizo?', expect: { reply: true, none: [/No tengo los documentos/, /documentación de tu/i] } },
+    ],
+  },
+  {
+    id: 'M14', area: 'Menú de clientes', name: '"Descuento de la cuota" no abre una baja', wa: wa(), regression: '#159 (14/10)',
+    steps: [
+      ...ident('99000002'),
+      { text: 'Necesito urgente hacer el descuento del vehículo cuota', expect: { reply: true, none: [/Solicitar baja/, /\|confirmar\]/] } },
+    ],
+  },
+  {
+    id: 'M15', area: 'Menú de clientes', name: 'Baja que no dice "baja": pregunta antes', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Quiero sacar el seguro del auto que vendí', expect: { any: [/dar de baja/i] } },
+      { select: 'baja_no', title: 'No, es otra cosa', expect: { any: [/te entendí mal/i] } },
+    ],
+  },
+  {
+    id: 'M16', area: 'Menú de clientes', name: 'La IA muestra el menú en vez de "escribí menú"', wa: wa(), regression: 'revisión 14/10 (24 veces)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_consultas', title: '💬 Otras consultas', list: true },
+      { text: '¿Qué tengo que hacer si me rompen el parabrisas del auto estacionado?', max: 60000, expect: { reply: true, any: [/m_siniestros/], none: [noMenuWord, /Modificaciones|Asistencia\b|Asesoría/] } },
+    ],
+  },
+
+  // ─── Siniestros ──────────────────────────────────────────────────
+  {
+    id: 'S01', area: 'Siniestros', name: 'Denuncia completa: una póliza, sin repreguntar tercero, fotos', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva', expect: { any: [/La denuncia es sobre tu CHEVROLET ONIX/, /Respondé todo en un solo mensaje/], none: [/pol_\d+/] } },
+      { text: 'Fue ayer a las 18 hs en Rosario, en Bv. Oroño 1500, iba hacia el norte. Me chocó de atrás un auto en el semáforo. Iba sola, sin lesionados. Fue un Fiat Uno patente AB123CD, conductor Juan Pérez, seguro La Segunda', max: 60000, expect: { any: [/Revisá la denuncia/, /Oroño/] } },
+      { select: 'confirmar', title: 'Confirmar', expect: { any: [/Registré tu denuncia/, /tarjeta verde/] } },
+      { image: true, expect: { any: [/carnet de conducir/], count: 1 } },
+      { text: 'no la tengo', expect: { any: [/tarjeta verde del tercero/], none: [/¿Hubo un \*tercero/] } },
+      { text: 'no la tengo' },
+      { text: 'no la tengo', expect: { any: [/fotos del siniestro/] } },
+      { text: 'listo', expect: { any: [/Sumé todo a tu denuncia/], none: [/a la brevedad/] } },
+    ],
+    db: [{ name: 'denuncia creada', sql: "SELECT COUNT(*) FROM Claim cl JOIN Client c ON c.id=cl.clientId WHERE c.dni='99000001' AND cl.description LIKE '%Oroño%'", test: (r) => Number(r[0][0]) >= 1 }],
+  },
+  {
+    id: 'S02', area: 'Siniestros', name: 'Parabrisas: referencia en vez de altura y "Buenas" a mitad', wa: wa(), regression: '#196 (14/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva' },
+      { text: 'Buenas', expect: { any: [/Seguimos con la denuncia/] } },
+      { text: 'Fue el 30/09 a las 18 en Rosario, por av circunvalación hacia el norte, nos saltó una piedra y se rajó el parabrisas. Íbamos 3, sin lesionados', max: 60000, expect: { any: [/Altura|otro vehículo/i] } },
+      { text: 'cerca de la intersección con av San Martín. No hubo otro vehículo', max: 60000, expect: { any: [/Revisá la denuncia/, /San Martín/], none: [/Altura \(número\)/] } },
+    ],
+  },
+  {
+    id: 'S03', area: 'Siniestros', name: '"Asesor" con los botones de Siniestros en pantalla', wa: wa(), regression: '#196 (14/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { text: 'Asesor', expect: { any: [/ya le avisé a la oficina/i], none: [/denuncia nueva/i] } },
+    ],
+    db: [handoffs('aviso con contexto', (r) => r.some(([b]) => /Venía con siniestros/.test(b)))],
+  },
+  {
+    id: 'S04', area: 'Siniestros', name: 'Ubicación compartida como lugar del hecho', wa: wa(),
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva' },
+      { text: 'Hoy a las 9 me chocaron de atrás en Rosario, iba hacia el sur, iba solo, sin heridos, el otro auto se fue', max: 60000, expect: { any: [/Calle/i] } },
+      { location: { latitude: -32.94, longitude: -60.65, name: 'Esquina', address: 'Av. Pellegrini 1500, Rosario' }, max: 60000, expect: { any: [/Revisá la denuncia/, /Pellegrini/] } },
+    ],
+  },
+  {
+    id: 'S05', area: 'Siniestros', name: 'Póliza con débito rechazado: igual toma la denuncia (el bloqueo está apagado a propósito)', wa: wa(),
+    steps: [
+      ...ident('99000004'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva', expect: { any: [/RENAULT SANDERO/, /Respondé todo/] } },
+    ],
+  },
+  {
+    id: 'S06', area: 'Siniestros', name: '"¿Cómo va mi denuncia?" no abre una nueva', wa: wa(), regression: 'prueba 13/10',
+    steps: [
+      { text: 'Hola, ¿cómo va mi denuncia?', expect: { any: [/DNI/] } },
+      { text: '99000002', expect: { any: [/No tenés denuncias/i], none: [/Respondé todo/] } },
+    ],
+  },
+  {
+    id: 'S07', area: 'Siniestros', name: 'Varias fotos del daño juntas: una sola respuesta', wa: wa(), regression: 'revisión 12/10 (foto repetida)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva' },
+      { text: 'Ayer 10 hs en Rosario, Córdoba 1200, iba al este, me rayaron la puerta estacionado, iba solo, sin heridos, no hubo otro vehículo', max: 60000 },
+      { select: 'confirmar', title: 'Confirmar' },
+      { text: 'no la tengo' },
+      { text: 'no la tengo', expect: { any: [/fotos del siniestro/] } },
+      { image: true, burst: 4, expect: { count: 1 } },
+    ],
+  },
+
+  // ─── Cotización ──────────────────────────────────────────────────
+  {
+    id: 'C01', area: 'Cotización', name: 'Auto online de punta a punta (Triunfo, sin presupuesto)', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true, expect: { any: [/cot_auto/] } },
+      { select: 'cot_auto', title: 'Auto', list: true, expect: { any: [/marca, modelo, año/] } },
+      { text: 'Volkswagen Gol Trend 1.6 2015, código postal 2000', max: 90000, quiet: 5000 },
+      {
+        drive: {
+          max: 4,
+          until: /por mes/,
+          answer: (prev) => /\|gnc_no\]/.test(prev) ? { select: 'gnc_no', title: 'No tiene GNC' }
+            : /(^|\n)\s*\*?1[.)]/.test(prev) ? { text: '1' }
+            : /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' }
+            : { text: 'Volkswagen Gol Trend 1.6 2015, Rosario' },
+          expect: { any: [/por mes/, /Responsabilidad Civil|\bA\b/], none: [noMenuWord] },
+        },
+      },
+      { text: 'Me interesa la A', max: 90000, quiet: 5000, expect: { any: [/DNI/] } },
+    ],
+  },
+  {
+    id: 'C02', area: 'Cotización', name: 'Moto online en el primer mensaje', wa: wa(),
+    steps: [
+      { text: 'Hola quiero cotizar una moto Honda Wave 110 2023, soy de Rosario', max: 90000, quiet: 5000 },
+      {
+        drive: {
+          max: 4,
+          until: /por mes/,
+          answer: (prev) => /(^|\n)\s*\*?1[.)]/.test(prev) ? { text: '1' }
+            : /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' }
+            : { text: 'Honda Wave 110 S 2023, código postal 2000' },
+          expect: { any: [/por mes/, /B1/], none: [/GNC/] },
+        },
+      },
+    ],
+  },
+  {
+    id: 'C03', area: 'Cotización', name: 'Hogar: plan fijo → nombre → teléfono', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_hogar', title: 'Hogar', list: true, expect: { any: [/plan_\d+/] } },
+      { drive: { max: 1, until: /nombre y apellido/, answer: (prev) => ({ select: (prev.match(/\|(plan_\d+)\]/) || [])[1], title: 'Plan', list: true }), expect: { any: [/nombre y apellido/] } } },
+      { text: 'Juan Prueba', expect: { any: [/teléfono/] } },
+      { text: '341 555-0000', expect: { any: [/Registré tu pedido de cotización/] } },
+    ],
+  },
+  {
+    id: 'C04', area: 'Cotización', name: '"Que me llamen" (no cliente)', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_vendedor', title: '📞 Que me llamen', list: true, expect: { any: [/nombre/] } },
+      { text: 'Juan Prueba, a la tarde', expect: { any: [/representante/i] } },
+    ],
+    db: [handoffs('aviso de contacto', (r) => r.some(([b]) => /Juan Prueba/.test(b)))],
+  },
+
+  // ─── No clientes ─────────────────────────────────────────────────
+  {
+    id: 'L01', area: 'No clientes', name: '"Todavía no" → "Ya soy cliente"', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no', expect: { any: [/Ya soy cliente/] } },
+      { select: 'cliente', title: '👤 Ya soy cliente', list: true, expect: { any: [/DNI del titular/] } },
+      { text: '99000001', expect: { any: [/te identifiqué/i] } },
+    ],
+  },
+  {
+    id: 'L02', area: 'No clientes', name: 'Pide su deuda desde el menú de no clientes', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { text: 'En realidad quiero saber cuánto debo de mi seguro', expect: { any: [/DNI/] } },
+      { text: '99000002', expect: { any: [/Estado de cuenta/] } },
+    ],
+  },
+  {
+    id: 'L03', area: 'No clientes', name: 'Consulta sobre coberturas sin dar precios', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_consultas', title: '💬 Otras consultas', list: true },
+      { text: '¿Qué cubre el seguro de bicicleta?', max: 60000, expect: { reply: true, none: [/\$\s?\d/, noMenuWord] } },
+    ],
+  },
+
+  // ─── Fotos, archivos y audios ────────────────────────────────────
+  {
+    id: 'X01', area: 'Fotos, archivos y audios', name: 'Foto suelta: pregunta para qué es una sola vez', wa: wa(), regression: 'revisión 12/10',
+    steps: [
+      ...ident('99000002'),
+      { image: true, burst: 3, expect: { any: [/Recibí tus 3 fotos/, /Contame para qué/], count: 1 } },
+    ],
+  },
+  {
+    id: 'X02', area: 'Fotos, archivos y audios', name: 'PDF con "este es el comprobante": va a la oficina', wa: wa(), regression: 'revisión 14/10',
+    steps: [
+      ...ident('99000002'),
+      { pdf: 'transferencia.pdf', caption: 'este es el comprobante de pago', expect: { any: [/tomé nota/i] } },
+    ],
+    db: [
+      handoffs('aviso del comprobante', (r) => r.some(([b]) => /comprobante/.test(b))),
+      { name: 'PDF en la charla', sql: "SELECT COUNT(*) FROM Message m JOIN Conversation c ON c.id=m.conversationId WHERE c.waId='$WA' AND m.content LIKE '%transferencia.pdf%'", test: (r) => r[0][0] === '1' },
+    ],
+  },
+  {
+    id: 'X03', area: 'Fotos, archivos y audios', name: 'Video, contacto, archivo y ubicación quedan y se responden', wa: wa(),
+    steps: [
+      ...ident('99000001'),
+      { video: true, expect: { any: [/Recibí tu video/] } },
+      { contact: 'Taller Norte', phone: '+54 341 555-0000', expect: { any: [/Recibí el contacto/] } },
+      { doc: 'nota.doc', expect: { any: [/no lo puedo abrir/] } },
+      { location: { latitude: -32.95, longitude: -60.66, name: 'Taller', address: 'Bv. Rondeau 1500, Rosario' }, expect: { any: [/Recibí tu ubicación/] } },
+    ],
+    db: [{ name: 'los 4 en la charla', sql: "SELECT COUNT(*) FROM Message m JOIN Conversation c ON c.id=m.conversationId WHERE c.waId='$WA' AND m.role='user' AND (m.content LIKE '%video%' OR m.content LIKE '%contacto%' OR m.content LIKE '%nota.doc%' OR m.content LIKE '%Ubicación%')", test: (r) => r[0][0] === '4' }],
+  },
+  {
+    id: 'X04', area: 'Fotos, archivos y audios', name: 'Audio: se transcribe y se responde', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      // fixtures/voz.m4a says "Hola, quería saber cuánto debo de mi seguro".
+      { audio: true, max: 60000, expect: { reply: true, none: [/No pude (entender|descargar) el audio/] } },
+    ],
+  },
+
+  // ─── Oficina ─────────────────────────────────────────────────────
+  {
+    id: 'O01', area: 'Oficina', name: 'La oficina escribe desde el celular: el bot se calla', wa: wa(),
+    steps: [
+      { text: 'Hola' },
+      { echo: 'Hola, soy Mili de la oficina. ¿En qué te ayudo?', expect: { silent: true } },
+      { text: 'Necesito hablar por mi póliza', expect: { silent: true } },
+    ],
+    db: [{ name: 'mensaje guardado para la oficina', sql: "SELECT COUNT(*) FROM Message m JOIN Conversation c ON c.id=m.conversationId WHERE c.waId='$WA' AND m.content='Necesito hablar por mi póliza'", test: (r) => r[0][0] === '1' }],
+  },
+  {
+    id: 'O02', area: 'Oficina', name: 'Sigue una charla que atendía la oficina (sin "¿sos cliente?")', wa: '5493419990120', regression: '#180 (14/10)',
+    steps: [
+      { text: 'Hola, ya te mandé las fotos que me pediste', expect: { none: [/ya sos cliente/i, /DNI/] } },
+    ],
+    db: [handoffs('aviso para quien atendía', (r) => r.length >= 1)],
+  },
+
+  // ─── Pendientes conocidos (no implementados todavía) ─────────────
+  {
+    id: 'G01', area: 'Pendientes conocidos', name: 'Respuesta automática de otra empresa: no contestar', wa: wa(), regression: '#118', known: 'guard anti-autorespuestas (pendiente)',
+    steps: [
+      { text: 'Gracias por comunicarte con Inmobiliaria Ejemplo. En breve te responderemos. Horario de atención: lunes a viernes de 9 a 18.', expect: { silent: true } },
+    ],
+  },
+
+  {
+    id: 'P16', area: 'Pendientes conocidos', name: '"¿Cuánto debo de mi seguro?" en el "¿ya sos cliente?" abre Cotización', wa: wa(), known: 'la regex "cuánto…seguro" de handleRoot toma la deuda como cotización (encontrado por esta batería el 15/10)',
+    steps: [
+      { text: 'Hola' },
+      { text: 'Quería saber cuánto debo de mi seguro', expect: { any: [/DNI/], none: [/¿Qué querés cotizar\?/] } },
+    ],
+  },
+
+  // ─── Inactividad (etapa aparte, timeout local de 2 min) ──────────
+  {
+    id: 'I01', stage: 'inactivity', afterIdle: { goodbye: true }, area: 'Inactividad', name: 'Charla común: cierre por inactividad guardado en el panel', wa: wa(),
+    steps: [{ text: 'Hola', expect: { any: [/ya sos cliente/i] } }],
+  },
+  {
+    id: 'I02', stage: 'inactivity', afterIdle: { goodbye: false }, area: 'Inactividad', name: 'Con pedido a la oficina: no manda el cierre', wa: wa(), regression: '#187/#195 (14/10)',
+    steps: [...ident('99000001'), { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/No tengo los documentos/] } }],
+  },
+];

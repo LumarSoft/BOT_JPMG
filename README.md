@@ -57,6 +57,33 @@ $ pnpm run test:e2e
 $ pnpm run test:cov
 ```
 
+## Prueba de todos los flujos (antes de cada deploy)
+
+`npm run test:flows` recorre de punta a punta todos los flujos de conversación del bot (identificación, menú, siniestros, pagos, cupones, documentación, baja, asesor, cotización de auto y moto, hogar, no clientes, fotos/PDF/audio/ubicación, oficina que toma la charla e inactividad), incluidos los casos sacados de chats reales que ya se arreglaron, para confirmar que nada se rompió.
+
+Qué hace, en una sola corrida (~7 min):
+
+1. Compila la API (`../api_john`) y el bot.
+2. Carga datos ficticios en la base local: DNI 99000001/2/4/6, CUIT 30712345671, números 5493419990xxx (`test/flows/data/seed.sql`).
+3. Levanta la API en el puerto 3001 (las cotizaciones van a Triunfo con `GenerarPresupuesto=false`, como máximo una cada 2 s) y el bot en el 3002, con WhatsApp interceptado: nada sale a Meta.
+4. Corre `test/flows/scenarios.js` (6 escenarios a la vez) y, aparte, los de inactividad (espera unos 4 min con el timeout local en 2 min).
+5. Muestra qué pasó y qué falló (con las últimas líneas de la charla) y borra todo lo que creó: datos, archivos subidos y cotizaciones de la corrida.
+
+```bash
+npm run test:flows                        # todo
+npm run test:flows -- --only=P09,C01      # algunos escenarios
+npm run test:flows -- --skip-inactivity   # sin la espera de inactividad (~3 min)
+npm run test:flows -- --no-build          # usar el dist/ actual de los dos repos
+npm run test:flows -- --keep              # dejar los datos en la base para mirarlos
+npm run test:flows -- --cleanup           # borrar los datos que dejó --keep
+```
+
+Requisitos: el repo de la API en `../api_john` (o `FLOWS_API_DIR=/ruta`) con su `.env` y la base local (`john_db`) con el número de prueba `1109940228878973` del productor 1; el cliente `mysql` instalado; los puertos 3001 y 3002 libres. Las credenciales salen de los `.env` locales y no se imprimen. Usa OpenAI (bot) y el cotizador de Triunfo de verdad: cuesta unos centavos por corrida.
+
+El resultado sale `0` si todo pasó, `1` si falló algún escenario y `2` si no pudo correr. Los pendientes conocidos (`known` en el escenario) se informan pero no hacen fallar la corrida. El detalle de cada charla queda en `test/flows/.out/results.json` y los logs de la API y el bot en `test/flows/.out/`.
+
+Para sumar un caso: agregar un escenario a `test/flows/scenarios.js` (qué manda el cliente en cada paso y qué debe contestar el bot, con regex; y opcionalmente qué debe quedar en la base). Siempre con datos ficticios, nunca de clientes reales.
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
