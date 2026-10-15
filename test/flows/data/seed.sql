@@ -9,15 +9,15 @@ INSERT INTO Client (dni, firstName, lastName, password, phone, producerId, produ
 SET @a=(SELECT id FROM Client WHERE dni='99000001'); SET @b=(SELECT id FROM Client WHERE dni='99000002');
 SET @c=(SELECT id FROM Client WHERE dni='30712345671'); SET @d=(SELECT id FROM Client WHERE dni='99000004'); SET @g=(SELECT id FROM Client WHERE dni='99000006');
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
- ('9900001','triunfo','auto','ENDOSOS VARIOS','2026-07-27','2027-07-27','Convenio','{}',@a,1,2,NOW(3));
+ ('9900001','triunfo','auto','ENDOSOS VARIOS','2026-07-27','2027-07-27','Convenio','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@a,1,2,NOW(3));
 SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ901AA','CHEVROLET','ONIX 1.4',@p);
 INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,68185,'2026-07-27','paid',@p),(2,68186,'2026-08-27','paid',@p),(3,68186,'2026-09-27','paid',@p);
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
- ('9900002','triunfo','auto','REFACTURACION','2026-02-06','2027-02-06','Plan De Pago','{}',@b,1,2,NOW(3));
+ ('9900002','triunfo','auto','REFACTURACION','2026-02-06','2027-02-06','Plan De Pago','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@b,1,2,NOW(3));
 SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ902AA','FIAT','PALIO',@p);
 INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,79499,'2026-08-06','paid',@p),(2,79500,'2026-09-06','paid',@p),(3,79500,'2026-10-06','paid',@p);
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
- ('9900003','triunfo','moto','REFACTURACION','2026-04-10','2027-01-10','Débito Tarjeta','{}',@b,1,2,NOW(3));
+ ('9900003','triunfo','moto','REFACTURACION','2026-04-10','2027-01-10','Débito Tarjeta','{"Articulo":481,"Empresa":"T","Sucursal":"CC"}',@b,1,2,NOW(3));
 SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('Z902AAA','HONDA','STORM',@p);
 INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,21339,'2026-10-10','overdue',@p),(2,21339,'2026-11-10','pending',@p),(3,21339,'2026-12-10','pending',@p);
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES

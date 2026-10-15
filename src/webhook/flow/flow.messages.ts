@@ -115,6 +115,8 @@ export const ALL_POLIZAS_ID = `${POLIZA_PREFIX}todas`;
 /** "Otra póliza" row: one we don't have (another insurer, a nómina). */
 export const OTHER_POLIZA_ID = `${POLIZA_PREFIX}otra`;
 export const DOC_PREFIX = 'doc_';
+/** "Todos los documentos" row of the document picker. */
+export const ALL_DOCS_ID = `${DOC_PREFIX}todos`;
 export const PLAN_PREFIX = 'plan_';
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -799,17 +801,18 @@ export function pluralizeClaimPhotoReply(
   });
 }
 
-export function docPicker(docs: PolizaDocumento[]): OutgoingMessage {
+export function docPicker(
+  docs: PolizaDocumento[],
+  body = '📄 ¿Qué documento querés que te envíe?',
+): OutgoingMessage {
   const rows: ListRow[] = docs.map((d) => ({
     id: `${DOC_PREFIX}${d.code}`,
-    title: d.name,
+    // Meta rejects list rows longer than 24 characters.
+    title: d.name.slice(0, 24),
   }));
-  return {
-    kind: 'list',
-    body: '📄 ¿Qué documento querés que te envíe?',
-    button: 'Ver documentos',
-    rows,
-  };
+  if (docs.length > 1)
+    rows.push({ id: ALL_DOCS_ID, title: 'Todos los documentos' });
+  return { kind: 'list', body, button: 'Ver documentos', rows };
 }
 
 export function siniestroConfirm(
@@ -1031,11 +1034,4 @@ export function formatSiniestros(siniestros: SiniestroSummary[]): string {
   });
 
   return ['🛡️ *Tus siniestros*', ...blocks].join('\n\n');
-}
-
-export function formatDocumento(doc: PolizaDocumento): string {
-  return (
-    `📄 *${doc.name}*\n${doc.url}\n\n` +
-    `Podés llevarla en el celular, no es obligatorio tenerla impresa.`
-  );
 }

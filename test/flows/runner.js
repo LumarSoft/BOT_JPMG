@@ -14,6 +14,7 @@ const to54 = (wa) => wa.replace(/^549/, '54');
 function render(d) {
   if (!d) return '';
   if (d.type === 'text') return d.text.body;
+  if (d.type === 'document') return `[documento ${d.document.filename}]${d.document.caption ? ` ${d.document.caption}` : ''}`;
   if (d.type === 'interactive') {
     const i = d.interactive;
     const opts = i.type === 'button'

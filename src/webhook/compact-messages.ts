@@ -38,6 +38,7 @@ export function compactMessages(
 }
 
 function merge(text: string, next: OutgoingMessage): OutgoingMessage | null {
+  if (next.kind === 'document') return null;
   const body = `${text}\n\n${next.body}`;
   if (next.kind === 'text') {
     return body.length <= TEXT_MAX ? { kind: 'text', body } : null;

@@ -24,6 +24,11 @@ axios.Axios.prototype.request = function (configOrUrl, config) {
     const buf = fs.readFileSync(path.join(FIXTURES, media(url.slice('https://fake-media/'.length))[0]));
     return Promise.resolve({ status: 200, data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length), headers: {}, config: cfg });
   }
+  if (url.includes('graph.facebook.com') && url.endsWith('/media')) {
+    const file = cfg.data && typeof cfg.data.get === 'function' ? cfg.data.get('file') : null;
+    fs.appendFileSync(OUT, JSON.stringify({ at: Date.now(), url, upload: file?.name ?? null, size: file?.size ?? 0 }) + '\n');
+    return Promise.resolve({ status: 200, data: { id: `media.suite${Date.now()}` }, headers: {}, config: cfg });
+  }
   if (url.includes('graph.facebook.com')) {
     const id = url.match(/graph\.facebook\.com\/v[\d.]+\/([A-Za-z0-9_-]+)$/)?.[1];
     if (id && (cfg.method || 'get').toLowerCase() === 'get')

@@ -30,6 +30,7 @@ describe('FlowService', () => {
     requestHandoff: jest.Mock;
     createLead: jest.Mock;
     getDocumentos: jest.Mock;
+    getDocumentoPdf: jest.Mock;
     requestPolicyCancellation: jest.Mock;
     getPolizas: jest.Mock;
     createSiniestro: jest.Mock;
@@ -72,6 +73,12 @@ describe('FlowService', () => {
       requestHandoff: jest.fn().mockResolvedValue(undefined),
       createLead: jest.fn().mockResolvedValue({ id: 1 }),
       getDocumentos: jest.fn().mockResolvedValue([]),
+      getDocumentoPdf: jest.fn((_conv: number, _pol: number, code: string) =>
+        Promise.resolve({
+          filename: `${code}.pdf`,
+          buffer: Buffer.from('%PDF-'),
+        }),
+      ),
       requestPolicyCancellation: jest.fn().mockResolvedValue({ id: 11 }),
       getPolizas: jest.fn().mockResolvedValue([
         {
@@ -1933,7 +1940,7 @@ describe('FlowService', () => {
       expect(JSON.stringify(res.messages)).toContain('foto');
     });
   });
-  describe('documentación cuando Triunfo no devuelve documentos', () => {
+  describe('documentación', () => {
     const clientCtx: FlowContext = {
       ...leadCtx,
       client: {
@@ -1965,6 +1972,93 @@ describe('FlowService', () => {
       });
       expect(res.state?.step).toBe('CLIENT_MENU');
     });
+
+    const papers = [
+      { code: '1050', name: 'Tarjeta verde (Mercosur)', url: 'https://x' },
+      { code: '1000', name: 'Certificado de cobertura', url: 'https://x' },
+      { code: '1040', name: 'Constancia de pago', url: 'https://x' },
+    ];
+
+    it('manda directo el papel que el cliente nombró', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        { text: 'me mandás la tarjeta verde del auto?' },
+        clientCtx,
+      );
+
+      expect(api.getDocumentoPdf).toHaveBeenCalledTimes(1);
+      expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1050');
+      expect(res.messages.map((m) => m.kind)).toEqual([
+        'document',
+        'text',
+        'list',
+      ]);
+      expect(res.messages[1].body).toContain(
+        'Ahí te mandé *Tarjeta verde (Mercosur)* de tu CHEVROLET CORSA',
+      );
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('"la constancia de pago" es un papel, no el estado de cuenta', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ text: 'necesito la constancia de pago' }, clientCtx);
+
+      expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+      expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1040');
+    });
+
+    it('ofrece la lista y "Todos" manda cada documento', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      const picker = await send(
+        { selectionId: OPT.documentos, text: '' },
+        clientCtx,
+      );
+      expect(stored?.step).toBe('DOC_TYPE');
+      expect(JSON.stringify(picker.messages)).toContain('doc_todos');
+
+      const res = await send({ selectionId: 'doc_todos', text: '' }, clientCtx);
+      expect(api.getDocumentoPdf).toHaveBeenCalledTimes(3);
+      expect(res.messages.filter((m) => m.kind === 'document')).toHaveLength(3);
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('elige el documento escrito con otras palabras', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+      await send({ text: 'el certificado' }, clientCtx);
+
+      expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1000');
+    });
+
+    it('lo que no se puede bajar de Triunfo va a la oficina', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      api.getDocumentoPdf.mockImplementation(
+        (_conv: number, _pol: number, code: string) =>
+          code === '1040'
+            ? Promise.reject(new Error('502'))
+            : Promise.resolve({
+                filename: `${code}.pdf`,
+                buffer: Buffer.from('%PDF-'),
+              }),
+      );
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+      const res = await send({ selectionId: 'doc_todos', text: '' }, clientCtx);
+
+      expect(res.messages.filter((m) => m.kind === 'document')).toHaveLength(2);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Pidió Constancia de pago de su póliza'),
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'No pude bajar *Constancia de pago* ahora',
+      );
+    });
   });
 
   describe('cupones de pago', () => {
@@ -1990,7 +2084,7 @@ describe('FlowService', () => {
     const bodies = (res: { messages: unknown[] }) =>
       JSON.stringify(res.messages);
 
-    it('pasa el pedido a la oficina sin mostrar documentos ni el estado de cuenta', async () => {
+    it('pasa el pedido a la oficina cuando Triunfo no tiene la cuponera, sin el estado de cuenta', async () => {
       await send({ text: 'hola' }, clientCtx);
       const res = await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
 
@@ -1998,7 +2092,8 @@ describe('FlowService', () => {
         1,
         'Pide los cupones de pago de su póliza CHEVROLET CORSA (Póliza 1741715 · ABC123). El bot no puede obtenerlos de Triunfo: enviárselos por este chat.',
       );
-      expect(api.getDocumentos).not.toHaveBeenCalled();
+      expect(api.getDocumentos).toHaveBeenCalledWith(1, 833);
+      expect(api.getDocumentoPdf).not.toHaveBeenCalled();
       expect(api.getEstadoCuenta).not.toHaveBeenCalled();
       expect(bodies(res)).toContain(
         'Los cupones de pago te los manda la oficina por este chat',
@@ -2059,6 +2154,43 @@ describe('FlowService', () => {
           'Pide los cupones de pago de su póliza FORD RANGER (Póliza 2000001 · AD456EF)',
         ),
       );
+    });
+
+    it('manda la cuponera cuando Triunfo la tiene, sin pasar por la oficina', async () => {
+      api.getDocumentos.mockResolvedValue([
+        { code: '1060', name: 'Cuponera de pago', url: 'https://x' },
+      ]);
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
+
+      expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1060');
+      expect(res.messages[0]).toMatchObject({
+        kind: 'document',
+        filename: '1060.pdf',
+      });
+      expect(bodies(res)).toContain('Ahí te mandé la cuponera de pago');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('con cupón y póliza manda la cuponera y ofrece los demás papeles', async () => {
+      api.getDocumentos.mockResolvedValue([
+        { code: '1050', name: 'Tarjeta verde (Mercosur)', url: 'https://x' },
+        { code: '1060', name: 'Cuponera de pago', url: 'https://x' },
+        { code: '1020', name: 'Póliza', url: 'https://x' },
+      ]);
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        {
+          text: 'me podrías pasar cupón de pago y póliza de la patente ABC123',
+        },
+        clientCtx,
+      );
+
+      expect(res.messages[0]).toMatchObject({ kind: 'document' });
+      expect(bodies(res)).toContain('doc_todos');
+      expect(stored?.step).toBe('DOC_TYPE');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
     });
 
     it('junta los cupones y la póliza en un solo pedido', async () => {

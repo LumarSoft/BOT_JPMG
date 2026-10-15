@@ -932,6 +932,27 @@ export class WebhookService {
           phoneNumberId,
         );
         break;
+      case 'document':
+        // sendMedia throws (it is the panel's path): a lost file must not end the turn.
+        await this.meta
+          .sendMedia(
+            to,
+            phoneNumberId,
+            {
+              buffer: message.buffer,
+              mimeType: 'application/pdf',
+              filename: message.filename,
+            },
+            message.body || undefined,
+          )
+          .catch(() =>
+            this.meta.sendText(
+              to,
+              `No pude enviarte *${message.filename}*. Pedímelo de nuevo en un rato o escribí *asesor*.`,
+              phoneNumberId,
+            ),
+          );
+        break;
     }
   }
 
@@ -958,6 +979,8 @@ export class WebhookService {
         return `${message.body}\n${message.buttons.map((b) => `[${b.title}]`).join(' ')}`;
       case 'list':
         return `${message.body}\n${message.rows.map((r) => `• ${r.title}`).join('\n')}`;
+      case 'document':
+        return `[documento ${message.filename}]${message.body ? `\n${message.body}` : ''}`;
     }
   }
 

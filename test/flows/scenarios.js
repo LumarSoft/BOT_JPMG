@@ -176,20 +176,44 @@ module.exports = [
     db: [handoffs('aviso de rechazo', (r) => r.some(([b]) => /Rechazo de débito/.test(b)))],
   },
   {
-    id: 'M05', area: 'Menú de clientes', name: 'Cupones con varias pólizas, sin repetir el pedido', wa: wa(), regression: 'revisión 12/10 (cupones en bucle)',
+    id: 'M05', area: 'Menú de clientes', name: 'Cupones con varias pólizas: manda la que Triunfo tiene, la otra a la oficina, sin repetir el pedido', wa: wa(), regression: 'revisión 12/10 (cupones en bucle)',
     steps: [
       ...ident('99000002'),
       { text: 'Necesito el cupón de pago', expect: { any: [/pol_todas/, /pol_otra/] } },
-      { select: 'pol_todas', title: 'Todas mis pólizas', list: true, expect: { any: [/Ya les pasé tu pedido/] } },
+      { select: 'pol_todas', title: 'Todas mis pólizas', list: true, expect: { any: [/\[documento Cuponera de pago - ZZ902AA\.pdf\]/, /Ahí te mandé la cuponera de pago de tu FIAT PALIO/, /Ya les pasé tu pedido para tu HONDA STORM/] } },
       { text: 'me mandás el cupón?', expect: { any: [/Ya le pasé/] } },
     ],
     db: [handoffs('un solo aviso de cupones', (r) => r.filter(([b]) => /cupones/i.test(b)).length === 1)],
   },
   {
-    id: 'M06', area: 'Menú de clientes', name: 'Documentación con una sola póliza: sin lista, a la oficina', wa: wa(),
+    id: 'M06', area: 'Menú de clientes', name: 'Documentación con una sola póliza: lista de papeles y "Todos" los manda en PDF', wa: wa(),
     steps: [
       ...ident('99000001'),
-      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/ONIX/, /No tengo los documentos/], none: [/pol_\d+/] } },
+      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/ONIX/, /Tarjeta verde \(Mercosur\)\|doc_1050/, /doc_todos/], none: [/pol_\d+/, /No tengo los documentos/] } },
+      { select: 'doc_todos', title: 'Todos los documentos', list: true, expect: { any: [/\[documento Tarjeta verde \(Mercosur\) - ZZ901AA\.pdf\]/, /\[documento Cláusulas - ZZ901AA\.pdf\]/, /Ahí te mandé/], none: [/No pude bajar/] } },
+    ],
+    db: [handoffs('sin aviso a la oficina', (r) => r.length === 0)],
+  },
+  {
+    id: 'M06b', area: 'Menú de clientes', name: 'Pide la tarjeta verde antes de identificarse: la manda sin lista', wa: wa(),
+    steps: [
+      { text: 'Hola, me mandás la tarjeta verde del auto?', expect: { any: [/DNI/] } },
+      { text: '99000001', expect: { any: [/\[documento Tarjeta verde \(Mercosur\) - ZZ901AA\.pdf\]/, /Ahí te mandé \*Tarjeta verde/], none: [/doc_todos/, /Certificado de cobertura - /] } },
+    ],
+    db: [handoffs('sin aviso a la oficina', (r) => r.length === 0)],
+  },
+  {
+    id: 'M06c', area: 'Menú de clientes', name: '"La constancia de pago" manda el PDF, no el estado de cuenta', wa: wa(),
+    steps: [
+      ...ident('99000001'),
+      { text: 'necesito la constancia de pago', expect: { any: [/\[documento Constancia de pago - ZZ901AA\.pdf\]/], none: [/Estado de cuenta/] } },
+    ],
+  },
+  {
+    id: 'M06d', area: 'Menú de clientes', name: 'Documentación de una póliza que Triunfo no tiene: a la oficina', wa: wa(),
+    steps: [
+      ...ident('99000004'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/SANDERO/, /No tengo los documentos/] } },
     ],
     db: [handoffs('aviso de documentación', (r) => r.some(([b]) => /documentación/i.test(b)))],
   },
@@ -526,6 +550,6 @@ module.exports = [
   },
   {
     id: 'I02', stage: 'inactivity', afterIdle: { goodbye: false }, area: 'Inactividad', name: 'Con pedido a la oficina: no manda el cierre', wa: wa(), regression: '#187/#195 (14/10)',
-    steps: [...ident('99000001'), { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/No tengo los documentos/] } }],
+    steps: [...ident('99000004'), { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/No tengo los documentos/] } }],
   },
 ];

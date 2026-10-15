@@ -323,6 +323,25 @@ export class ApiService {
     return data;
   }
 
+  /** One document of a policy as the PDF the API downloaded from Triunfo. */
+  async getDocumentoPdf(
+    conversationId: number,
+    polizaId: number,
+    code: string,
+  ): Promise<{ filename: string; buffer: Buffer }> {
+    const response = await this.http.get<ArrayBuffer>(
+      `/bot/conversation/${conversationId}/polizas/${polizaId}/documentos/${code}`,
+      // Triunfo can take a while to hand over the file.
+      { responseType: 'arraybuffer', timeout: 60_000 },
+    );
+    const disposition = String(response.headers['content-disposition'] ?? '');
+    const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    return {
+      filename: encoded ? decodeURIComponent(encoded) : `${code}.pdf`,
+      buffer: Buffer.from(response.data),
+    };
+  }
+
   async getSiniestros(conversationId: number): Promise<SiniestroSummary[]> {
     const { data } = await this.http.get<SiniestroSummary[]>(
       `/bot/conversation/${conversationId}/siniestros`,

@@ -36,7 +36,7 @@ Devolvé UNA intención:
 - saludo: solo saluda o se presenta, sin pedir nada ("hola", "buen día, soy Juan", "hola john").
 - cotizar: quiere cotizar, contratar o asegurar algo nuevo, o saber cuánto sale un seguro.
 - siniestro: tuvo un choque, robo, rotura, granizo u otro daño y quiere denunciarlo, o pregunta por una denuncia que ya hizo.
-- documentos: pide su póliza, tarjeta de circulación, certificado de cobertura, cupón de pago u otro papel de su seguro.
+- documentos: pide su póliza, tarjeta verde o de circulación, certificado de cobertura, constancia de pago, cupón de pago u otro papel de su seguro.
 - pagos: pregunta por deuda, cuotas, vencimientos, débitos o cómo pagar.
 - baja: quiere dar de baja o cancelar un seguro.
 - grua: necesita grúa, auxilio mecánico o remolque.

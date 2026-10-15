@@ -11,7 +11,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { ApiService } from '../../api/api.service';
-import type { PolizaSummary } from '../../api/api.types';
+import type { PolizaDocumento, PolizaSummary } from '../../api/api.types';
 import type {
   FlowContext,
   FlowHandleResult,
@@ -43,12 +43,12 @@ import {
   COTIZAR_LABEL,
   COTIZAR_ONLINE,
   COTIZAR_PRODUCT_TYPE,
+  ALL_DOCS_ID,
   docPicker,
   DOC_PREFIX,
   FIELD_OPT_PREFIX,
   fieldPrompt,
   fieldSelectPicker,
-  formatDocumento,
   goodbyeText,
   formatEstadoCuenta,
   formatSiniestros,
@@ -148,6 +148,39 @@ const OPENING_COMMAND_RE =
  * Folded text.
  */
 const CUPON_RE = /\bcupon(?:es|era|eras)?\b/;
+
+/** "La constancia de pago": a policy document, not the account status. Folded. */
+const PAYMENT_CERTIFICATE_RE = /\b(?:constancia|certificado) de pago\b/;
+
+/** Triunfo codes of the documents the bot asks for by name (see the API's document-types). */
+const DOC_CODE = {
+  tarjeta: '1050',
+  certificado: '1000',
+  constancia: '1040',
+  cuponera: '1060',
+  poliza: '1020',
+} as const;
+
+/** Documents a customer names ("la tarjeta verde", "la constancia de pago"). */
+function wantedDocs(text: string | undefined): string[] {
+  const t = fold(text ?? '');
+  const codes: string[] = [];
+  if (/\btarjeta\b|\btarjetita\b|\bmercosur\b/.test(t))
+    codes.push(DOC_CODE.tarjeta);
+  if (/\bcertificado\b(?! de pago)|\bconstancia de cobertura\b/.test(t))
+    codes.push(DOC_CODE.certificado);
+  if (PAYMENT_CERTIFICATE_RE.test(t)) codes.push(DOC_CODE.constancia);
+  if (/\bpoliza (?:completa|en pdf)\b|\bpdf de (?:la|mi) poliza\b/.test(t))
+    codes.push(DOC_CODE.poliza);
+  return codes;
+}
+
+/** ["A", "B", "C"] → "A, B y C". */
+function joinNames(names: string[]): string {
+  return names.length > 1
+    ? `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`
+    : (names[0] ?? '');
+}
 
 /** Policy papers asked for together with the coupons. Folded text. */
 /** A payment receipt being sent, or a payment that did not register. Folded. */
@@ -680,6 +713,8 @@ interface ActionOptions {
   withDocs?: boolean;
   /** What the customer wrote to ask for it, answered along with the data. */
   question?: string;
+  /** Documents named in the request (Triunfo codes), sent without a picker. */
+  docs?: string[];
 }
 
 /**
@@ -1132,7 +1167,7 @@ export class FlowService {
       case 'DOC_POLIZA':
         return this.handleDocPoliza(state, input, ctx, key);
       case 'DOC_TYPE':
-        return this.handleDocType(state, input, key);
+        return this.handleDocType(state, input, ctx, key);
       case 'CUPON_POLIZA':
         return this.handleCuponPoliza(state, input, ctx, key);
       case 'ASESOR_MOTIVO':
@@ -1435,9 +1470,11 @@ export class FlowService {
         const action: ClientAction =
           DEBIT_FAILED_RE.test(t) || INSTALLMENT_MISSING_RE.test(t)
             ? 'pagos'
-            : CUPON_RE.test(t)
-              ? 'cupones'
-              : intent;
+            : PAYMENT_CERTIFICATE_RE.test(t)
+              ? 'documentos'
+              : CUPON_RE.test(t)
+                ? 'cupones'
+                : intent;
         return this.withOpener(
           opener,
           await this.guardAsClient(
@@ -1536,9 +1573,11 @@ export class FlowService {
           action:
             DEBIT_FAILED_RE.test(t) || INSTALLMENT_MISSING_RE.test(t)
               ? 'pagos'
-              : CUPON_RE.test(t)
-                ? 'cupones'
-                : intent,
+              : PAYMENT_CERTIFICATE_RE.test(t)
+                ? 'documentos'
+                : CUPON_RE.test(t)
+                  ? 'cupones'
+                  : intent,
           withDocs: DOCS_TOO_RE.test(t),
         };
       case 'baja':
@@ -1926,6 +1965,8 @@ export class FlowService {
   ): Promise<FlowResult> {
     const question = questionOf(opts.question ?? said);
     if (question) opts = { ...opts, question };
+    const named = action === 'documentos' ? wantedDocs(said) : [];
+    if (named.length) opts = { ...opts, docs: named };
     // A claim the office took by hand in this chat is not in our records:
     // asking for the DNI to say "no tenés denuncias" helped nobody.
     if (action === 'siniestro_consultar' && ctx.officeThread && !ctx.client)
@@ -1934,6 +1975,7 @@ export class FlowService {
       pendingAction: action,
       ...(opts.withDocs ? { pendingWithDocs: true } : {}),
       ...(question ? { pendingQuestion: question } : {}),
+      ...(opts.docs ? { pendingDocs: opts.docs } : {}),
     };
     if (!ctx.client && said) {
       const params = await this.identificationIn(said, action, ctx);
@@ -2074,6 +2116,9 @@ export class FlowService {
       withDocs: state.data.pendingWithDocs === true,
       ...(typeof state.data.pendingQuestion === 'string'
         ? { question: state.data.pendingQuestion }
+        : {}),
+      ...(Array.isArray(state.data.pendingDocs)
+        ? { docs: state.data.pendingDocs as string[] }
         : {}),
     });
     return (
@@ -2254,17 +2299,22 @@ export class FlowService {
       case 'documentos': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
         if (polizas.length === 0) return this.noPolizas(key);
-        this.setState(key, 'DOC_POLIZA', { polizas });
-        if (polizas.length === 1)
-          return this.prepend(
-            `Es sobre tu ${polizaMention(polizas[0])}.`,
-            await this.handleDocPoliza(
-              this.load(key)!.state,
-              { text: '', selectionId: `${POLIZA_PREFIX}${polizas[0].id}` },
-              ctx,
-              key,
-            ),
+        this.setState(key, 'DOC_POLIZA', {
+          polizas,
+          ...(opts.docs?.length ? { wanted: opts.docs } : {}),
+        });
+        if (polizas.length === 1) {
+          const result = await this.handleDocPoliza(
+            this.load(key)!.state,
+            { text: '', selectionId: `${POLIZA_PREFIX}${polizas[0].id}` },
+            ctx,
+            key,
           );
+          // Sent documents already say which policy they are from.
+          return result.messages[0]?.kind === 'document'
+            ? result
+            : this.prepend(`Es sobre tu ${polizaMention(polizas[0])}.`, result);
+        }
         return {
           messages: [
             polizaPicker(polizas, '¿De qué póliza querés la documentación?', {
@@ -2342,13 +2392,57 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    const what = withDocs
-      ? 'los cupones de pago y la documentación'
-      : 'los cupones de pago';
+    // Triunfo hands over the cuponera of some Plan de Pago policies only, never
+    // Convenio ones: the bot sends what it gets and the office the rest.
+    const files: OutgoingMessage[] = [];
+    const missing: PolizaSummary[] = [];
+    for (const poliza of polizas) {
+      const file = await this.cuponeraOf(poliza, ctx);
+      if (file) files.push(file);
+      else missing.push(poliza);
+    }
+    const sentNote = files.length
+      ? `Ahí te mandé la cuponera de pago de ${joinNames(
+          polizas
+            .filter((p) => !missing.includes(p))
+            .map((p) => `tu ${polizaLabel(p)}`),
+        )}`
+      : '';
+    // With one policy the bot sends the papers itself, after the coupons, when
+    // Triunfo has them; otherwise the office gets one request for everything.
+    const docsToo =
+      withDocs &&
+      polizas.length === 1 &&
+      (await this.hasPapers(polizas[0], ctx));
+    const thenDocs = async (head: OutgoingMessage[]): Promise<FlowResult> => {
+      this.setState(key, 'DOC_POLIZA', { polizas });
+      const docs = await this.handleDocPoliza(
+        this.load(key)!.state,
+        { text: '', selectionId: `${POLIZA_PREFIX}${polizas[0].id}` },
+        ctx,
+        key,
+      );
+      return { ...docs, messages: [...head, ...docs.messages] };
+    };
+
+    if (missing.length === 0) {
+      const head: OutgoingMessage[] = [
+        ...files,
+        { kind: 'text', body: `${sentNote} 🙌` },
+      ];
+      if (docsToo) return thenDocs(head);
+      this.setState(key, 'CLIENT_MENU');
+      return { messages: [...head, clientMenu()] };
+    }
+
+    const what =
+      withDocs && !docsToo
+        ? 'los cupones de pago y la documentación'
+        : 'los cupones de pago';
     const which =
-      polizas.length === 1
-        ? `de su póliza ${polizaMention(polizas[0])}`
-        : `de todas sus pólizas: ${polizas.map(polizaMention).join('; ')}`;
+      missing.length === 1
+        ? `de su póliza ${polizaMention(missing[0])}`
+        : `de todas sus pólizas: ${missing.map(polizaMention).join('; ')}`;
     await this.api
       .requestHandoff(
         ctx.conversationId,
@@ -2356,29 +2450,65 @@ export class FlowService {
       )
       .catch(() => undefined);
 
-    const label = all
-      ? 'todas tus pólizas'
-      : polizas.length === 1
-        ? `tu ${polizaLabel(polizas[0])}`
-        : 'tus pólizas';
+    const label =
+      all && files.length === 0
+        ? 'todas tus pólizas'
+        : missing.length === 1
+          ? `tu ${polizaLabel(missing[0])}`
+          : 'tus pólizas';
     this.setState(key, 'CLIENT_MENU', {
       requested: { action: 'cupones', what, label },
     });
-    const papers = withDocs
-      ? 'Los cupones de pago y la documentación'
-      : 'Los cupones de pago';
-    return {
-      messages: [
-        {
-          kind: 'text',
-          body:
-            `${papers} te los manda la oficina por este chat 🙌 Ya les pasé tu pedido para ${label}. ` +
-            `Te los envían en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
-        },
-        clientMenu(),
-      ],
-    };
+    const papers =
+      withDocs && !docsToo
+        ? 'Los cupones de pago y la documentación'
+        : 'Los cupones de pago';
+    const head: OutgoingMessage[] = [
+      ...files,
+      {
+        kind: 'text',
+        body:
+          (sentNote ? `${sentNote}.\n\n` : '') +
+          `${papers} te los manda la oficina por este chat 🙌 Ya les pasé tu pedido para ${label}. ` +
+          `Te los envían en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
+          (await this.closedNote()),
+      },
+    ];
+    if (docsToo) return thenDocs(head);
+    return { messages: [...head, clientMenu()] };
+  }
+
+  /** Whether Triunfo has any document of the policy other than the cuponera. */
+  private async hasPapers(
+    poliza: PolizaSummary,
+    ctx: FlowContext,
+  ): Promise<boolean> {
+    const docs = await this.api
+      .getDocumentos(ctx.conversationId, poliza.id)
+      .catch((): PolizaDocumento[] => []);
+    return docs.some((d) => d.code !== DOC_CODE.cuponera);
+  }
+
+  /** The cuponera of a policy as a PDF to send, when Triunfo has it. */
+  private async cuponeraOf(
+    poliza: PolizaSummary,
+    ctx: FlowContext,
+  ): Promise<OutgoingMessage | null> {
+    try {
+      const docs = await this.api.getDocumentos(ctx.conversationId, poliza.id);
+      if (!docs.some((d) => d.code === DOC_CODE.cuponera)) return null;
+      const file = await this.api.getDocumentoPdf(
+        ctx.conversationId,
+        poliza.id,
+        DOC_CODE.cuponera,
+      );
+      return { kind: 'document', body: '', ...file };
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo bajar la cuponera de la póliza ${poliza.id}: ${(error as Error).message}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -3194,13 +3324,18 @@ export class FlowService {
       return { messages: [], handoff: 'faq' };
     }
 
-    const docs = await this.api.getDocumentos(ctx.conversationId, polizaId);
+    const poliza = polizas.find((p) => p.id === polizaId);
+    const docs = await this.api
+      .getDocumentos(ctx.conversationId, polizaId)
+      .catch((error: Error): PolizaDocumento[] => {
+        this.logger.warn(
+          `No se pudieron listar los documentos de la póliza ${polizaId}: ${error.message}`,
+        );
+        return [];
+      });
     if (docs.length === 0) {
-      // Triunfo does not return policy documents for the cartera yet, so this
-      // is the normal outcome today. The request used to end here with a
-      // promise nobody heard about; now it reaches the inbox as a handoff so
-      // the office sends the tarjeta/certificado/cupón by hand.
-      const poliza = polizas.find((p) => p.id === polizaId);
+      // Triunfo has nothing for this policy (or did not answer): the request
+      // reaches the inbox so the office sends the papers by hand.
       const reason =
         `Pidió la documentación de su póliza${poliza ? ` ${polizaMention(poliza)}` : ''}. ` +
         'Triunfo no devolvió documentos: enviarle tarjeta, certificado o cupón según corresponda.';
@@ -3228,35 +3363,156 @@ export class FlowService {
       };
     }
 
-    this.setState(key, 'DOC_TYPE', { docs });
-    return { messages: [docPicker(docs)] };
+    // What the customer named ("la tarjeta verde") goes straight to the chat.
+    const wanted = (state.data.wanted as string[] | undefined) ?? [];
+    const asked = docs.filter((d) => wanted.includes(d.code));
+    if (asked.length > 0 || docs.length === 1)
+      return this.sendDocs(
+        asked.length > 0 ? asked : docs,
+        polizaId,
+        poliza,
+        ctx,
+        key,
+      );
+
+    this.setState(key, 'DOC_TYPE', {
+      docs,
+      polizaId,
+      ...(poliza ? { poliza } : {}),
+    });
+    return {
+      messages: [
+        docPicker(
+          docs,
+          wanted.length > 0
+            ? '📄 No tengo ese documento de esta póliza, pero sí estos. ¿Cuál te mando?'
+            : undefined,
+        ),
+      ],
+    };
   }
 
-  private handleDocType(
+  private async handleDocType(
     state: FlowState,
     input: UserInput,
+    ctx: FlowContext,
     key: string,
-  ): FlowResult {
-    const docs =
-      (state.data.docs as
-        | { code: string; name: string; url: string }[]
-        | undefined) ?? [];
-    let codigo = this.parseStringRef(input.selectionId, DOC_PREFIX);
+  ): Promise<FlowResult> {
+    const docs = (state.data.docs as PolizaDocumento[] | undefined) ?? [];
+    const polizaId = state.data.polizaId as number | undefined;
+    const t = fold(input.text);
 
-    if (!codigo && input.text.trim()) {
-      codigo = this.matchDocByText(input.text, docs);
+    let chosen: PolizaDocumento[] = [];
+    if (
+      input.selectionId === ALL_DOCS_ID ||
+      (!input.selectionId && /\b(todos|todas|todo)\b/.test(t))
+    ) {
+      chosen = docs;
+    } else {
+      const codigo = this.parseStringRef(input.selectionId, DOC_PREFIX);
+      const named = codigo ? [codigo] : wantedDocs(input.text);
+      chosen = docs.filter((d) => named.includes(d.code));
+      if (chosen.length === 0 && !codigo && input.text.trim()) {
+        const match = this.matchDocByText(input.text, docs);
+        chosen = docs.filter((d) => d.code === match);
+      }
     }
 
-    const doc = docs.find((d) => d.code === codigo);
-
-    if (!doc) {
+    if (chosen.length === 0 || polizaId === undefined) {
       // Can't identify document — LLM asks naturally; state stays DOC_TYPE.
       return { messages: [], handoff: 'faq' };
     }
+    return this.sendDocs(
+      chosen,
+      polizaId,
+      state.data.poliza as PolizaSummary | undefined,
+      ctx,
+      key,
+    );
+  }
 
-    this.setState(key, 'CLIENT_MENU');
+  /**
+   * Sends policy documents as PDFs in the chat. A document Triunfo does not
+   * hand over goes to the office, as every document did before RESTDocumentosV2.
+   */
+  private async sendDocs(
+    docs: PolizaDocumento[],
+    polizaId: number,
+    poliza: PolizaSummary | undefined,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const files: OutgoingMessage[] = [];
+    const sent: PolizaDocumento[] = [];
+    const failed: PolizaDocumento[] = [];
+    for (const doc of docs) {
+      try {
+        const file = await this.api.getDocumentoPdf(
+          ctx.conversationId,
+          polizaId,
+          doc.code,
+        );
+        files.push({ kind: 'document', body: '', ...file });
+        sent.push(doc);
+      } catch (error) {
+        this.logger.warn(
+          `No se pudo bajar ${doc.name} de la póliza ${polizaId}: ${(error as Error).message}`,
+        );
+        failed.push(doc);
+      }
+    }
+
+    const of = poliza ? ` de tu ${polizaMention(poliza)}` : '';
+    const lines: string[] = [];
+    if (sent.length > 0) {
+      lines.push(
+        `Ahí te mandé ${joinNames(sent.map((d) => `*${d.name}*`))}${of} 🙌`,
+      );
+      if (
+        sent.some(
+          (d) => d.code === DOC_CODE.tarjeta || d.code === DOC_CODE.certificado,
+        )
+      )
+        lines.push(
+          sent.length === 1
+            ? 'Lo podés mostrar desde el celular, no hace falta imprimirlo.'
+            : 'Los podés mostrar desde el celular, no hace falta imprimirlos.',
+        );
+    }
+    if (failed.length > 0) {
+      await this.api
+        .requestHandoff(
+          ctx.conversationId,
+          `Pidió ${failed.map((d) => d.name).join(', ')}${poliza ? ` de su póliza ${polizaMention(poliza)}` : ''}. ` +
+            'El bot no pudo bajarlo de Triunfo: enviárselo por este chat.',
+        )
+        .catch(() => undefined);
+      lines.push(
+        `No pude bajar ${joinNames(failed.map((d) => `*${d.name}*`))} ahora. Ya le pasé el pedido a la oficina para que te lo mande por este chat ` +
+          `(${attentionHoursOf(ctx.attentionHours)}).` +
+          (await this.closedNote()),
+      );
+    }
+
+    this.setState(
+      key,
+      'CLIENT_MENU',
+      failed.length > 0
+        ? {
+            requested: {
+              action: 'documentos',
+              what: 'la documentación',
+              label: poliza ? `tu ${polizaLabel(poliza)}` : 'tu póliza',
+            },
+          }
+        : {},
+    );
     return {
-      messages: [{ kind: 'text', body: formatDocumento(doc) }, clientMenu()],
+      messages: [
+        ...files,
+        { kind: 'text', body: lines.join('\n') },
+        clientMenu(),
+      ],
     };
   }
 
@@ -3961,6 +4217,7 @@ export class FlowService {
     const t = fold(text);
     if (step === 'LLM_COTIZACION') return this.matchQuoteExit(t);
     if (/\bgrua\b|\bauxilio\b|\bremolque\b/.test(t)) return 'grua';
+    if (PAYMENT_CERTIFICATE_RE.test(t)) return 'documentos';
     if (
       /\bsiniestro\b|\bdenuncia\b|\bdenunciar\b|\bme chocaron\b|\bme robaron\b/.test(
         t,
@@ -4014,7 +4271,7 @@ export class FlowService {
       )
         return 'pago';
       if (
-        /\btarjeta (verde|de circulacion|del seguro)\b|\bcertificado de cobertura\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?|cuponeras?)\b|\b(necesito|quiero|descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis|los) (poliza|certificado|tarjeta|cupon|cupones|cuponera|documentacion)\b/.test(
+        /\btarjeta (verde|de circulacion|del seguro)\b|\bcertificado de cobertura\b|\bconstancia de (pago|cobertura)\b|\b(mis?) (polizas?|documentos?|documentacion|certificados?|cupon(es)?|cuponeras?)\b|\b(necesito|quiero|descargar|bajar|mandame|enviame|pasame) (la|el|mi|mis|los) (poliza|certificado|tarjeta|cupon|cupones|cuponera|documentacion)\b/.test(
           t,
         )
       )
@@ -4256,6 +4513,9 @@ export class FlowService {
         pendingAction: wanted.action,
         ...(wanted.withDocs ? { pendingWithDocs: true } : {}),
         ...(question ? { pendingQuestion: question } : {}),
+        ...(wanted.action === 'documentos' && wantedDocs(raw).length
+          ? { pendingDocs: wantedDocs(raw) }
+          : {}),
         phoneConfirm: true,
       });
       return {
@@ -4292,6 +4552,9 @@ export class FlowService {
         withDocs: state.data.pendingWithDocs === true,
         ...(typeof state.data.pendingQuestion === 'string'
           ? { question: state.data.pendingQuestion }
+          : {}),
+        ...(Array.isArray(state.data.pendingDocs)
+          ? { docs: state.data.pendingDocs as string[] }
           : {}),
       }),
     );
@@ -4568,8 +4831,10 @@ export class FlowService {
     )
       return OPT.siniestros;
     if (/precio/.test(t)) return OPT.cotizacion;
-    // Before pagos: "el cupón de pago" asks for the coupon, not the debt.
+    // Before pagos: "el cupón de pago" asks for the coupon, not the debt, and
+    // "la constancia de pago" for a document.
     if (CUPON_RE.test(t)) return OPT.cupones;
+    if (PAYMENT_CERTIFICATE_RE.test(t)) return OPT.documentos;
     if (/pago|cuota|deuda|debito|cobr|rechaz/.test(t)) return OPT.pagos;
     if (/document|poliza|tarjeta|certificado|cupon/.test(t))
       return OPT.documentos;
@@ -4655,14 +4920,11 @@ export class FlowService {
    * Tries to identify a document from free text using significant words from
    * its name (e.g. "tarjeta" matches "Tarjeta de circulación").
    */
-  private matchDocByText(
-    text: string,
-    docs: { code: string; name: string; url: string }[],
-  ): string | null {
-    const t = text.toLowerCase();
+  private matchDocByText(text: string, docs: PolizaDocumento[]): string | null {
+    const t = fold(text);
     for (const doc of docs) {
-      const words = doc.name
-        .toLowerCase()
+      const words = fold(doc.name)
+        .replace(/[()]/g, '')
         .split(/\s+/)
         .filter((w) => w.length > 4);
       if (words.length > 0 && words.some((w) => t.includes(w))) return doc.code;

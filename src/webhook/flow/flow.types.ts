@@ -89,7 +89,9 @@ export interface ListRow {
 export type OutgoingMessage =
   | { kind: 'text'; body: string }
   | { kind: 'buttons'; body: string; buttons: ReplyButton[] }
-  | { kind: 'list'; body: string; button: string; rows: ListRow[] };
+  | { kind: 'list'; body: string; button: string; rows: ListRow[] }
+  /** A PDF already downloaded (a policy document); `body` is its caption, may be empty. */
+  | { kind: 'document'; body: string; filename: string; buffer: Buffer };
 
 /** Which LLM sub-flow to run after the deterministic messages, if any. */
 export type LLMHandoff = 'cotizacion' | 'faq';
