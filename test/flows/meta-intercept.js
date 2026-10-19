@@ -1,7 +1,8 @@
 // Preloaded into the bot (node -r): every request to graph.facebook.com is
 // recorded in .out/meta-out.jsonl and answered OK, so nothing reaches WhatsApp.
 // Media downloads are served from fixtures/ by the media id's prefix: "pdf…" a
-// PDF, "aud…" a voice note, anything else a PNG.
+// PDF, "aud…" a voice note, "rec…" a payment receipt (JPEG), anything else a
+// PNG.
 const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
@@ -14,7 +15,8 @@ const axios = createRequire(path.join(BOT_DIR, 'package.json'))('axios');
 const media = (id) =>
   id.startsWith('pdf') ? ['fake.pdf', 'application/pdf']
     : id.startsWith('aud') ? ['voz.m4a', 'audio/mp4']
-      : ['fake.png', 'image/png'];
+      : id.startsWith('rec') ? ['comprobante.jpg', 'image/jpeg']
+        : ['fake.png', 'image/png'];
 
 const original = axios.Axios.prototype.request;
 axios.Axios.prototype.request = function (configOrUrl, config) {

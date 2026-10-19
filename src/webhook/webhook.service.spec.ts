@@ -100,6 +100,19 @@ describe('WebhookService', () => {
     }).compile();
 
     service = module.get<WebhookService>(WebhookService);
+    // No test reaches the real OpenAI: a photo out of the blue is looked at by
+    // the model, and tests that need an answer stub their own.
+    (
+      service as unknown as {
+        openai: { chat: { completions: { create: jest.Mock } } };
+      }
+    ).openai = {
+      chat: {
+        completions: {
+          create: jest.fn().mockRejectedValue(new Error('OpenAI sin stub')),
+        },
+      },
+    };
   });
 
   /** Replaces the internal OpenAI client with a stub that returns a plain reply. */
@@ -2493,14 +2506,14 @@ describe('WebhookService', () => {
       api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
 
       await service.handleMedia('5491155556666', 'pdf-1', 'P1', 'wp1', 'Ana', {
-        document: { filename: 'comprobante.pdf' },
+        document: { filename: 'poliza-vieja.pdf' },
       });
       await settlePhotoReplies();
 
       expect(api.attachAdjunto).toHaveBeenCalledWith(
         7,
         expect.objectContaining({
-          filename: 'comprobante.pdf',
+          filename: 'poliza-vieja.pdf',
           mimeType: 'application/pdf',
         }),
         undefined,
@@ -2509,13 +2522,81 @@ describe('WebhookService', () => {
       expect(api.saveMessage).toHaveBeenCalledWith(
         7,
         'user',
-        '[El cliente envió un archivo: comprobante.pdf]',
+        '[El cliente envió un archivo: poliza-vieja.pdf]',
         undefined,
         'Ana',
       );
       expect(sentTexts()).toEqual([
         '📎 ¡Recibí tu archivo! Contame para qué es y te ayudo: por ejemplo *siniestro*, *cotizar* o *asesor*.',
       ]);
+    });
+
+    it('passes a receipt file to the office instead of asking what it is for', async () => {
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('%PDF'),
+        mimeType: 'application/pdf',
+      });
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+
+      await service.handleMedia('5491155556666', 'pdf-2', 'P1', 'wp2', 'Ana', {
+        document: { filename: 'comprobante.pdf' },
+      });
+      await settlePhotoReplies();
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        7,
+        'Envió un comprobante de pago para registrar (archivo comprobante.pdf).',
+      );
+      expect(sentTexts()[0]).toContain('se lo pasé a la oficina');
+    });
+
+    it('looks at a loose photo and passes a payment receipt to the office', async () => {
+      api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+      const create = jest.fn().mockResolvedValue({
+        choices: [{ message: { content: '{"tipo":"comprobante_de_pago"}' } }],
+      });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+
+      await service.handleMedia('5491155556666', 'r1', 'P1', 'wr1', 'Ana');
+      await settlePhotoReplies();
+
+      const [request] = create.mock.calls[0] as [
+        { messages: { content: unknown }[] },
+      ];
+      expect(JSON.stringify(request.messages[1].content)).toContain(
+        'data:image/jpeg;base64,',
+      );
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        7,
+        'Envió un comprobante de pago para registrar (foto).',
+      );
+      expect(sentTexts()[0]).toContain('Recibí tu foto del pago');
+    });
+
+    it('asks what a loose photo is for when it is not a receipt', async () => {
+      api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+      const create = jest.fn().mockResolvedValue({
+        choices: [{ message: { content: '{"tipo":"otra"}' } }],
+      });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+
+      await service.handleMedia('5491155556666', 'r2', 'P1', 'wr2', 'Ana');
+      await settlePhotoReplies();
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(sentTexts()[0]).toContain('Contame para qué es');
     });
 
     it('reads the text sent with a photo instead of asking what it is for', async () => {

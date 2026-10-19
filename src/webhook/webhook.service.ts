@@ -247,7 +247,17 @@ const DEDUP_TTL_MS = 10 * 60 * 1000;
 export const PHOTO_REPLY_DELAY_MS = 8_000;
 
 /** What a batched photo reply says; photos of the same kind share one reply. */
-type PhotoReplyKind = 'guided' | 'loose' | 'unknown' | 'early' | 'needClaim';
+type PhotoReplyKind =
+  | 'guided'
+  | 'loose'
+  | 'unknown'
+  | 'early'
+  | 'needClaim'
+  | 'proof';
+
+/** A file whose name says it is a receipt ("comprobante.pdf"). */
+const PROOF_FILE_RE =
+  /comprobante|transferencia|transf|recibo|ticket|mercado ?pago|\bpago/i;
 
 interface PendingPhotoReply {
   kind: PhotoReplyKind;
@@ -307,6 +317,11 @@ const PHOTO_REPLIES: Record<
   needClaim: () =>
     text(
       'Para sumar fotos necesito que primero registremos la denuncia del siniestro. Escribime "siniestro" y arrancamos.',
+    ),
+  // A receipt: the office has to apply the payment (#86 waited three days).
+  proof: (n, files = false) =>
+    text(
+      `¡Gracias! 🙌 Recibí ${received(n, files)} del pago y se ${n === 1 ? 'lo' : 'los'} pasé a la oficina para que lo registre. Si falta algo, te escriben por este chat.`,
     ),
 };
 
@@ -1377,11 +1392,31 @@ export class WebhookService {
       // missing. While the claim's details are still being collected, it is
       // simply early. Anywhere else we don't know what the photo is for (a moto
       // to quote got "registremos la denuncia"), so ask instead of assuming.
-      const kind: PhotoReplyKind = tipo
+      let kind: PhotoReplyKind = tipo
         ? 'needClaim'
         : fillingNewClaim || flowState?.step.startsWith('SINIESTRO_')
           ? 'early'
           : 'unknown';
+      // "¡Recibí tu foto! Contame para qué es" to a payment receipt left it
+      // unregistered for days: a receipt goes to the office as such.
+      if (
+        kind === 'unknown' &&
+        (await this.isPaymentProof(
+          media,
+          document?.filename,
+          phoneNumberId,
+          key,
+          context.llmEnabled !== false,
+        ))
+      ) {
+        kind = 'proof';
+        await this.api
+          .requestHandoff(
+            conversation.conversationId,
+            `Envió un comprobante de pago para registrar (${files ? `archivo ${file.filename}` : 'foto'}).`,
+          )
+          .catch(() => undefined);
+      }
       await this.queuePhotoReply(key, kind, PHOTO_REPLIES[kind], {
         to,
         phoneNumberId,
@@ -1556,7 +1591,12 @@ export class WebhookService {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.photoReplies.delete(key);
-    if (options.dropQuestion && pending.kind === 'unknown') return;
+    // The caption is answered instead; a receipt's alert is already made.
+    if (
+      options.dropQuestion &&
+      (pending.kind === 'unknown' || pending.kind === 'proof')
+    )
+      return;
     try {
       // The bot may have been switched off while the batch was arriving.
       if (!(await this.automaticRepliesStillEnabled(pending.phoneNumberId)))
@@ -2509,6 +2549,80 @@ export class WebhookService {
     recent.push(now);
     this.llmCalls.set(key, recent);
     return true;
+  }
+
+  /**
+   * Whether a photo or file sent out of the blue is a payment receipt: by its
+   * name for a file, and a photo is looked at by the model. Any failure reads
+   * as "no", which leaves the usual "contame para qué es".
+   */
+  private async isPaymentProof(
+    media: { buffer: Buffer; mimeType: string },
+    filename: string | undefined,
+    phoneNumberId: string,
+    key: string,
+    llmEnabled: boolean,
+  ): Promise<boolean> {
+    if (filename && PROOF_FILE_RE.test(filename)) return true;
+    if (!media.mimeType.startsWith('image/')) return false;
+    if (!llmEnabled || !this.allowLlmCall(key)) return false;
+    try {
+      const completion = await this.openai.chat.completions.create(
+        {
+          model: this.model,
+          reasoning_effort: 'none',
+          max_completion_tokens: 30,
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'tipo_de_imagen',
+              strict: true,
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['tipo'],
+                properties: {
+                  tipo: {
+                    type: 'string',
+                    enum: ['comprobante_de_pago', 'otra'],
+                  },
+                },
+              },
+            },
+          },
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Clasificás una imagen que un cliente le mandó al WhatsApp de una productora de seguros. "comprobante_de_pago" = comprobante o captura de un pago, transferencia, depósito o ticket de pago (banco, Mercado Pago, Rapipago, Pago Fácil, etc.). "otra" = cualquier otra cosa (un auto, daños, un DNI, una tarjeta verde, un registro, una póliza, una denuncia, una conversación).',
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${media.mimeType};base64,${media.buffer.toString('base64')}`,
+                    detail: 'low',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        { timeout: 15_000, maxRetries: 0 },
+      );
+      await this.reportCompletionUsage(completion, phoneNumberId);
+      const content = completion.choices[0]?.message?.content ?? '';
+      const tipo = (JSON.parse(content || '{}') as { tipo?: string }).tipo;
+      this.logger.log(`Imagen suelta clasificada como "${tipo}"`);
+      return tipo === 'comprobante_de_pago';
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo clasificar la imagen: ${(error as Error).message}`,
+      );
+      return false;
+    }
   }
 
   /** Logs token usage and a running USD estimate for OpenAI cost visibility. */

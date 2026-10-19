@@ -202,6 +202,17 @@ function joinNames(names: string[]): string {
 const PAYMENT_PROOF_RE =
   /\b(ya pague|(?:envio|adjunto|mando|paso|te (?:mando|paso|envio)|aca (?:esta|va|tenes)|este es|es) (?:el |un |mi )?comprobante|comprobante (?:de (?:la )?(?:pago|transferencia))|no (?:se )?(?:acredito|acredita) (?:mi |el )?pago)\b/;
 
+/**
+ * A payment talked about right after a photo or a file: "Pago de septiembre de
+ * la patente…" with the receipt above. Folded. The bot showed the account
+ * status and the office applied the payment three days later (#86, 16/10).
+ */
+const PAID_RE =
+  /\b(?:pago|pague|pagado|pagamos|abone|abonado|abono|transferi|transferencia|deposite|deposito|comprobante|recibo)\b/;
+
+/** Asking how or where to pay is not a receipt. Folded. */
+const HOW_TO_PAY_RE = /\?|\b(?:como|donde|cuando|cuanto|puedo|tengo que)\b/;
+
 /** Activity this recent means the same conversation is still going on. */
 const MID_CONVERSATION_MS = 10 * 60_000;
 
@@ -820,6 +831,13 @@ export class FlowService {
     if (!sel && PAYMENT_PROOF_RE.test(fold(input.text))) {
       return this.handleAsesorMotivo(input, ctx, key);
     }
+    if (
+      !sel &&
+      PAID_RE.test(fold(input.text)) &&
+      !HOW_TO_PAY_RE.test(fold(input.text)) &&
+      this.sentFileJustBefore(ctx)
+    )
+      return this.paymentProof(input.text, ctx, key);
     // The model read a request only the office can do ("agregar a una persona
     // a la póliza"): it reaches the office with what was asked. It used to
     // answer "tocá *Hablar con un asesor*", one more step for the customer.
@@ -1935,8 +1953,11 @@ export class FlowService {
 
     switch (opt) {
       case OPT.siniestros: {
-        // "¿Ya está hecha la denuncia?" already says which one it is.
-        const sub = typed ? this.matchSiniestroIntent(input.text) : null;
+        // "¿Ya está hecha la denuncia?" already says which one it is, typed or
+        // passed along with the option the model opened.
+        const sub = input.text.trim()
+          ? this.matchSiniestroIntent(input.text)
+          : null;
         if (sub)
           return this.guard(
             ctx,
@@ -1981,6 +2002,14 @@ export class FlowService {
         // switch to LLM_FAQ state — the user stays in CLIENT_MENU, so the next
         // message is routed deterministically again and there's no LLM lock-in
         // (one model call per unmatched message, which keeps cost bounded).
+        // The question stays for "Hablar con un asesor".
+        if (questionOf(input.text)) {
+          const current = this.load(key)?.state;
+          this.setState(key, 'CLIENT_MENU', {
+            ...(current?.step === 'CLIENT_MENU' ? current.data : {}),
+            lastQuestion: questionOf(input.text),
+          });
+        }
         return { messages: [], handoff: 'faq' };
     }
   }
@@ -2361,6 +2390,29 @@ export class FlowService {
     key: string,
     opts: ActionOptions = {},
   ): Promise<FlowResult> {
+    const result = await this.runActionStep(action, ctx, key, opts);
+    // What they asked stays for "Hablar con un asesor", wherever the action
+    // left them at the menu: two customers had to type it again (#211, #226).
+    const question = questionOf(opts.question);
+    const state = this.load(key)?.state;
+    if (
+      question &&
+      state?.step === 'CLIENT_MENU' &&
+      typeof state.data.lastQuestion !== 'string'
+    )
+      this.setState(key, 'CLIENT_MENU', {
+        ...state.data,
+        lastQuestion: question,
+      });
+    return result;
+  }
+
+  private async runActionStep(
+    action: ClientAction,
+    ctx: FlowContext,
+    key: string,
+    opts: ActionOptions,
+  ): Promise<FlowResult> {
     const repeated = await this.alreadyRequested(action, ctx, key);
     if (repeated) return repeated;
     switch (action) {
@@ -2370,6 +2422,8 @@ export class FlowService {
       case 'pagos': {
         const estado = await this.api.getEstadoCuenta(ctx.conversationId);
         const question = questionOf(opts.question);
+        if (estado.length === 0)
+          return this.noPolizas(key, ctx, 'su estado de cuenta', opts.question);
         // Kept so "Hablar con un asesor" can pass it on without retyping.
         this.setState(
           key,
@@ -2404,6 +2458,30 @@ export class FlowService {
         const siniestros = await this.api.getSiniestros(ctx.conversationId);
         if (siniestros.length === 0 && ctx.officeThread)
           return this.officeFollowUp(opts.question ?? '', ctx, key);
+        // A question about a claim ("¿habrá problema si denuncio los vidrios
+        // si pagué tarde?") got only "no tenés denuncias": the office answers it.
+        const question = questionOf(opts.question);
+        if (siniestros.length === 0 && question) {
+          await this.api
+            .requestHandoff(
+              ctx.conversationId,
+              `Consulta sobre un siniestro (no tiene denuncias cargadas en el bot): "${clip(question)}"`,
+            )
+            .catch(() => undefined);
+          this.setState(key, 'CLIENT_MENU', { lastQuestion: question });
+          return {
+            messages: [
+              {
+                kind: 'text',
+                body:
+                  `No tengo denuncias tuyas registradas, así que le pasé tu consulta a la oficina para que te responda por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+                  (await this.closedNote()) +
+                  '\n\nSi querés hacer la denuncia ahora, elegí *Siniestros* y después *Denuncia nueva*.',
+              },
+              clientMenu(),
+            ],
+          };
+        }
         this.setState(key, 'CLIENT_MENU');
         return {
           messages: [
@@ -2443,7 +2521,13 @@ export class FlowService {
       }
       case 'baja_poliza': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
-        if (!polizas.length) return this.noPolizas(key);
+        if (!polizas.length)
+          return this.noPolizas(
+            key,
+            ctx,
+            'la baja de su póliza',
+            opts.question,
+          );
         // One policy: straight to the confirmation, which still offers "Es
         // otra póliza" for one the bot can't see.
         if (polizas.length === 1) {
@@ -2465,7 +2549,13 @@ export class FlowService {
       }
       case 'documentos': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
-        if (polizas.length === 0) return this.noPolizas(key);
+        if (polizas.length === 0)
+          return this.noPolizas(
+            key,
+            ctx,
+            'la documentación de su póliza',
+            opts.question,
+          );
         this.setState(key, 'DOC_POLIZA', {
           polizas,
           ...(opts.docs?.length ? { wanted: opts.docs } : {}),
@@ -2492,7 +2582,8 @@ export class FlowService {
       }
       case 'cupones': {
         const polizas = await this.api.getPolizas(ctx.conversationId);
-        if (polizas.length === 0) return this.noPolizas(key);
+        if (polizas.length === 0)
+          return this.noPolizas(key, ctx, 'los cupones de pago', opts.question);
         const withDocs = opts.withDocs === true;
         if (polizas.length === 1)
           return this.requestCupones(polizas, false, withDocs, ctx, key);
@@ -4943,13 +5034,75 @@ export class FlowService {
     };
   }
 
-  private noPolizas(key: string): FlowResult {
-    this.setState(key, 'CLIENT_MENU');
+  /**
+   * A payment receipt: the office has to apply it, so it hears about it with
+   * what the customer wrote, and the customer hears that it was passed on.
+   */
+  private async paymentProof(
+    text: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Envió un comprobante de pago para registrar: "${clip(text.trim())}".`,
+      )
+      .catch(() => undefined);
+    const note = {
+      kind: 'text' as const,
+      body:
+        `¡Gracias! 🙌 Le pasé el comprobante a la oficina para que registre el pago. Si falta algo, te escriben por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+        (await this.closedNote()),
+    };
+    const audience = this.backToMenuState(key, ctx);
+    if (audience === 'lead') return { messages: [note, leadMenu()] };
+    if (audience === 'client') return { messages: [note, clientMenu()] };
+    return { messages: [note] };
+  }
+
+  /** The customer's last messages before this one include a photo or a file. */
+  private sentFileJustBefore(ctx: FlowContext): boolean {
+    return (ctx.history ?? [])
+      .slice(-4)
+      .some(
+        (m) =>
+          m.role === 'user' &&
+          /^\[El cliente envió (?:una foto|un archivo)/.test(m.content),
+      );
+  }
+
+  /**
+   * An identified client with no policy in force: often one that lapsed over
+   * a missed payment, which nobody had told them about (#226 paid three months
+   * with no cover). The office hears what they asked for and checks it.
+   */
+  private async noPolizas(
+    key: string,
+    ctx: FlowContext,
+    what: string,
+    asked?: string,
+  ): Promise<FlowResult> {
+    const question = questionOf(asked);
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Pidió ${what}${question ? ` ("${clip(question)}")` : ''}, pero no tiene pólizas vigentes en el sistema: puede estar anulada o suspendida por falta de pago, o a nombre de otra persona. Revisarlo con el cliente.`,
+      )
+      .catch(() => undefined);
+    this.setState(
+      key,
+      'CLIENT_MENU',
+      question ? { lastQuestion: question } : {},
+    );
     return {
       messages: [
         {
           kind: 'text',
-          body: 'No encontré pólizas vigentes a tu nombre. Si creés que es un error, escribí *asesor* y te ayudamos.',
+          body:
+            'No encontré pólizas vigentes a tu nombre. Puede que esté vencida o suspendida, o a nombre de otra persona: ya le pasé tu consulta a la oficina para que la revise y te escriba por este chat ' +
+            `(${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
         },
         clientMenu(),
       ],

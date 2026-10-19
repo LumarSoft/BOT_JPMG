@@ -2944,6 +2944,92 @@ describe('FlowService', () => {
     });
   });
 
+  describe('grupo 5: lo que va a la oficina (19/10)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      phoneNumberId: 'P1',
+      client: { firstName: 'Ana', lastName: 'Gómez' } as FlowContext['client'],
+    };
+    const afterPhoto: FlowContext = {
+      ...ctx,
+      history: [
+        { role: 'user', content: '[El cliente envió una foto]' },
+        {
+          role: 'assistant',
+          content: '📎 ¡Recibí tu foto! Contame para qué es y te ayudo.',
+        },
+      ],
+    };
+
+    it('un pago contado después de una foto es un comprobante para la oficina', async () => {
+      await send({ text: 'hola' }, ctx);
+      const res = await send(
+        { text: 'Pago del septiembre de la patente ZZ123ZZ' },
+        afterPhoto,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Envió un comprobante de pago para registrar: "Pago del septiembre de la patente ZZ123ZZ".',
+      );
+      expect(JSON.stringify(res.messages)).toContain('Le pasé el comprobante');
+      expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+    });
+
+    it('preguntar cómo pagar después de una foto no es un comprobante', async () => {
+      await send({ text: 'hola' }, ctx);
+      await send({ text: '¿cómo pago la cuota?' }, afterPhoto);
+
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('comprobante'),
+      );
+    });
+
+    it('sin pólizas vigentes avisa a la oficina con lo que pidió, y el asesor la recibe', async () => {
+      api.getPolizas.mockResolvedValue([]);
+      intents.interpret.mockResolvedValue('documentos');
+      await send({ text: 'hola' }, ctx);
+      const res = await send(
+        { text: 'Quiero que me pasen la póliza de este mes para pagar' },
+        ctx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('no tiene pólizas vigentes en el sistema'),
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'ya le pasé tu consulta a la oficina',
+      );
+
+      await send({ text: '', selectionId: OPT.asesor }, ctx);
+      expect(api.requestHandoff).toHaveBeenLastCalledWith(
+        1,
+        expect.stringContaining(
+          'Su consulta: "Quiero que me pasen la póliza de este mes para pagar"',
+        ),
+      );
+    });
+
+    it('una pregunta sobre un siniestro sin denuncias cargadas va a la oficina', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+      await send({ text: 'hola' }, ctx);
+      // As in #211: "¿cómo va?" reads as following up a claim.
+      const text =
+        'Hola, ¿cómo va? Iba a llamar al seguro por los vidrios rotos pero pagué tarde la cuota, ¿habrá algún problema?';
+      const res = await send({ text }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Consulta sobre un siniestro'),
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'le pasé tu consulta a la oficina',
+      );
+    });
+  });
+
   describe('trámites que solo hace la oficina (19/10)', () => {
     const ctx: FlowContext = {
       ...leadCtx,

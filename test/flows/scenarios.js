@@ -366,7 +366,8 @@ module.exports = [
     id: 'S06', area: 'Siniestros', name: '"¿Cómo va mi denuncia?" no abre una nueva', wa: wa(), regression: 'prueba 13/10',
     steps: [
       { text: 'Hola, ¿cómo va mi denuncia?', expect: { any: [/DNI/] } },
-      { text: '99000002', expect: { any: [/No tenés denuncias/i], none: [/Respondé todo/] } },
+      // Since 19/10 the question also reaches the office (the claim may have been filed by phone).
+      { text: '99000002', expect: { any: [/No tengo denuncias tuyas registradas/i], none: [/Respondé todo/] } },
     ],
   },
   {
@@ -726,6 +727,45 @@ module.exports = [
       ...ident('99000001'),
       { text: 'me podrias enviar la tarjeta de circulación', expect: { any: [/\[documento Tarjeta verde/, /es tu tarjeta de circulación/] } },
     ],
+  },
+
+  // ─── Lo que va a la oficina (revisión 19/10, grupo 5) ─────────────
+  {
+    id: 'K01', area: 'A la oficina (19/10)', name: 'Foto de un comprobante suelta: la reconoce y avisa a la oficina', wa: wa(), regression: '#86 (16/10)',
+    steps: [
+      // Jorge: no claim of his own, which a loose photo would be added to.
+      ...ident('99000008'),
+      { image: true, receipt: true, max: 60000, expect: { any: [/pasé a la oficina/], none: [/Contame para qué/] } },
+    ],
+    db: [handoffs('aviso del comprobante', (r) => r.some(([b]) => /comprobante de pago/i.test(b)))],
+  },
+  {
+    id: 'K02', area: 'A la oficina (19/10)', name: 'Foto y después "Pago de septiembre de la patente…": comprobante a la oficina', wa: wa(), regression: '#86 (16/10)',
+    steps: [
+      ...ident('99000008'),
+      { image: true, max: 60000, expect: { any: [/Contame para qué/] } },
+      { text: 'Pago del septiembre de la patente ZZ901AA', expect: { any: [/Le pasé el comprobante/], none: [/Estado de cuenta/] } },
+    ],
+    db: [handoffs('aviso del comprobante', (r) => r.some(([b]) => /comprobante de pago/i.test(b)))],
+  },
+  {
+    id: 'K03', area: 'A la oficina (19/10)', name: 'Sin pólizas vigentes: avisa con lo que pidió y el asesor recibe la consulta', wa: wa(), regression: '#226 (17/10)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'cliente', title: 'Sí, soy cliente' },
+      { text: '99000008', expect: { any: [/te identifiqué/i] } },
+      { text: 'Quiero que me pasen la póliza de este mes para pagar', expect: { any: [/ya le pasé tu consulta a la oficina/] } },
+      { select: 'm_asesor', title: '👤 Hablar con un asesor', list: true, expect: { reply: true, none: [/contame brevemente el motivo/i] } },
+    ],
+    db: [handoffs('aviso con lo que pidió', (r) => r.some(([b]) => /no tiene pólizas vigentes/.test(b) && /póliza de este mes/.test(b)))],
+  },
+  {
+    id: 'K04', area: 'A la oficina (19/10)', name: 'Pregunta sobre un siniestro sin denuncias cargadas: va a la oficina', wa: wa(), regression: '#211 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Hola, ¿cómo va? Iba a llamar al seguro por los vidrios rotos de la casa pero pagué tarde la cuota, ¿habrá algún problema?', expect: { any: [/oficina|tomé nota/], none: [/No tenés denuncias de siniestro registradas\. Si querés iniciar una/] } },
+    ],
+    db: [handoffs('aviso con la pregunta', (r) => r.some(([b]) => /vidrios/.test(b)))],
   },
 
   // ─── Pendientes conocidos (no implementados todavía) ─────────────

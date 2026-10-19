@@ -43,7 +43,7 @@ function message(wa, step) {
     const kind = step.list ? 'list_reply' : 'button_reply';
     return { ...m, type: 'interactive', interactive: { type: kind, [kind]: { id: step.select, title: step.title || step.select } } };
   }
-  if (step.image) return { ...m, type: 'image', image: { id: `img${mid}`, mime_type: 'image/png', ...(step.caption ? { caption: step.caption } : {}) } };
+  if (step.image) return { ...m, type: 'image', image: { id: `${step.receipt ? 'rec' : 'img'}${mid}`, mime_type: step.receipt ? 'image/jpeg' : 'image/png', ...(step.caption ? { caption: step.caption } : {}) } };
   if (step.pdf) return { ...m, type: 'document', document: { id: `pdf${mid}`, mime_type: 'application/pdf', filename: step.pdf, ...(step.caption ? { caption: step.caption } : {}) } };
   if (step.doc) return { ...m, type: 'document', document: { id: `doc${mid}`, mime_type: 'application/msword', filename: step.doc } };
   if (step.video) return { ...m, type: 'video', video: { id: `vid${mid}`, mime_type: 'video/mp4' } };
