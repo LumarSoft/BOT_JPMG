@@ -2550,6 +2550,22 @@ describe('WebhookService', () => {
       expect(sentTexts()[0]).toContain('se lo pasé a la oficina');
     });
 
+    it('does not take the coupon book a client forwards for a receipt', async () => {
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('%PDF'),
+        mimeType: 'application/pdf',
+      });
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+
+      await service.handleMedia('5491155556666', 'pdf-3', 'P1', 'wp3', 'Ana', {
+        document: { filename: 'ocuponerarecibo_.pdf' },
+      });
+      await settlePhotoReplies();
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(sentTexts()[0]).toContain('Contame para qué es');
+    });
+
     it('looks at a loose photo and passes a payment receipt to the office', async () => {
       api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
       meta.downloadMedia.mockResolvedValue(image);

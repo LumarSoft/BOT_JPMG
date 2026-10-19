@@ -255,9 +255,10 @@ type PhotoReplyKind =
   | 'needClaim'
   | 'proof';
 
-/** A file whose name says it is a receipt ("comprobante.pdf"). */
-const PROOF_FILE_RE =
-  /comprobante|transferencia|transf|recibo|ticket|mercado ?pago|\bpago/i;
+/** A file whose name says it is a receipt ("comprobante.pdf"). Not "recibo":
+ * Triunfo's coupon book is "ocuponerarecibo_.pdf", which clients forward. */
+const PROOF_FILE_RE = /comprobante|transferencia|transf|mercado ?pago|\bpago/i;
+const COUPON_FILE_RE = /cupon/i;
 
 interface PendingPhotoReply {
   kind: PhotoReplyKind;
@@ -2563,8 +2564,11 @@ export class WebhookService {
     key: string,
     llmEnabled: boolean,
   ): Promise<boolean> {
-    if (filename && PROOF_FILE_RE.test(filename)) return true;
+    if (filename && !COUPON_FILE_RE.test(filename))
+      return PROOF_FILE_RE.test(filename);
     if (!media.mimeType.startsWith('image/')) return false;
+    // An album: the first photo was looked at already, the rest are alike.
+    if (this.photoReplies.get(key)?.kind === 'unknown') return false;
     if (!llmEnabled || !this.allowLlmCall(key)) return false;
     try {
       const completion = await this.openai.chat.completions.create(

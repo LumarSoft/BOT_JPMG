@@ -1932,7 +1932,17 @@ export class FlowService {
           clientMenu(),
         ],
       };
-    if (typed && isCloser(input.text)) return this.closerReply(key, input.text);
+    // Only thanks, a goodbye or emojis: "dale" or "ok" may be the answer to
+    // something the bot just offered.
+    if (
+      typed &&
+      isCloser(input.text) &&
+      (!/[\p{L}\p{N}]/u.test(input.text) ||
+        /\b(?:gracias|grax|gcs|chau|adios|saludos|abrazo)\b/.test(
+          fold(input.text),
+        ))
+    )
+      return this.closerReply(key, input.text);
     // A request in the customer's own words is read like a first message:
     // keywords sent "¿mi póliza cubre granizo?" to the papers and "¿por qué
     // aumentó el precio?" to a new quote.

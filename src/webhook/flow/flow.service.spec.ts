@@ -2906,6 +2906,12 @@ describe('FlowService', () => {
       expect(again.messages).toEqual([]);
     });
 
+    it('"dale" en el menú no se toma como un gracias', async () => {
+      await send({ text: 'hola' }, ctx);
+      const res = await send({ text: 'dale' }, ctx);
+      expect(JSON.stringify(res.messages)).not.toContain('¡De nada!');
+    });
+
     it('la tarjeta verde dice que es la de circulación', async () => {
       api.getDocumentos.mockResolvedValue([
         { code: '1050', name: 'Tarjeta verde (Mercosur)', url: 'https://x' },
