@@ -1493,10 +1493,34 @@ describe('FlowService', () => {
         expect(JSON.stringify(res.messages)).not.toContain('Bolso Base');
       });
 
+      // Without the model (over budget): the picker says so and offers a way out.
+      const noModel: FlowContext = { ...leadCtx, llmEnabled: false };
+
+      it('lets the model answer a question about a plan, with the list on screen', async () => {
+        await enterPlanPicker();
+
+        const res = await send({
+          text: 'Me podrás explicar bien el bolso base',
+        });
+
+        expect(res.handoff).toBe('faq');
+        expect(JSON.stringify(res.onScreen)).toContain('plan_1');
+        expect(stored?.step).toBe('COT_PLAN');
+      });
+
+      it('picks the plan named in words', async () => {
+        await enterPlanPicker();
+
+        await send({ text: 'el bolso base' });
+
+        expect(stored?.step).toBe('COT_LEAD_NOMBRE');
+        expect(stored?.data.planName).toBe('Bolso Base');
+      });
+
       it('says it did not understand instead of repeating the picker verbatim', async () => {
         await enterPlanPicker();
 
-        const res = await send({ text: 'no sé, cuál me conviene' });
+        const res = await send({ text: 'no sé, cuál me conviene' }, noModel);
 
         expect(stored?.step).toBe('COT_PLAN');
         expect(JSON.stringify(res.messages)).toContain('No reconocí ese plan');
@@ -1513,12 +1537,12 @@ describe('FlowService', () => {
       it('offers the escape buttons on the second miss instead of insisting', async () => {
         await enterPlanPicker();
 
-        const first = await send({ text: 'no sé, cuál me conviene' });
+        const first = await send({ text: 'no sé, cuál me conviene' }, noModel);
         expect(JSON.stringify(first.messages)).toContain(
           'No reconocí ese plan',
         );
 
-        const second = await send({ text: 'no sé, cuál me conviene' });
+        const second = await send({ text: 'no sé, cuál me conviene' }, noModel);
         const body = JSON.stringify(second.messages);
         expect(body).toContain('no te estoy entendiendo');
         expect(body).toContain('Elegir de la lista');
@@ -1548,7 +1572,7 @@ describe('FlowService', () => {
 
       it('clears the retry counter once the user is understood', async () => {
         await enterPlanPicker();
-        await send({ text: 'ni idea' }); // one miss
+        await send({ text: 'ni idea' }, noModel); // one miss
         expect(stored?.data.retries).toBe(1);
 
         // A recognised category moves the flow on; the counter must not follow.
@@ -2839,6 +2863,84 @@ describe('FlowService', () => {
       expect(api.identifyClient).not.toHaveBeenCalled();
       expect(JSON.stringify(res.messages)).not.toContain('DNI');
       expect(stored?.step).not.toBe('IDENTIFY');
+    });
+  });
+
+  describe('grupo 4 y 6 (19/10)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      phoneNumberId: 'P1',
+      client: { firstName: 'Ana', lastName: 'Gómez' } as FlowContext['client'],
+    };
+
+    it('"necesito otra póliza con otro dni" de un cliente es documentación, no cotizar', async () => {
+      await send({ text: 'hola' }, ctx);
+      intents.interpret.mockResolvedValue('cotizar');
+      const res = await send(
+        { text: 'necesito otra poliza con otro dni' },
+        ctx,
+      );
+
+      expect(JSON.stringify(res.messages)).not.toContain('cot_auto');
+      expect(api.getPolizas).toHaveBeenCalled();
+    });
+
+    it('"quiero una póliza nueva" sí es cotizar', async () => {
+      await send({ text: 'hola' }, ctx);
+      intents.interpret.mockResolvedValue('cotizar');
+      const res = await send({ text: 'quiero sacar una póliza nueva' }, ctx);
+
+      expect(JSON.stringify(res.messages)).toContain('cot_auto');
+    });
+
+    it('a "gracias" contesta una vez y a los 👍 no contesta', async () => {
+      await send({ text: 'hola' }, ctx);
+      const first = await send({ text: '👍👍' }, ctx);
+      expect(first.messages).toEqual([]);
+      expect(first.handoff).toBeUndefined();
+
+      await send({ text: '', selectionId: OPT.grua }, ctx);
+      const thanks = await send({ text: 'ok gracias' }, ctx);
+      expect(JSON.stringify(thanks.messages)).toContain('¡De nada!');
+      const again = await send({ text: 'gracias!!' }, ctx);
+      expect(again.messages).toEqual([]);
+    });
+
+    it('la tarjeta verde dice que es la de circulación', async () => {
+      api.getDocumentos.mockResolvedValue([
+        { code: '1050', name: 'Tarjeta verde (Mercosur)', url: 'https://x' },
+      ]);
+      await send({ text: 'hola' }, { ...ctx, llmEnabled: false });
+      const res = await send(
+        { text: 'me mandas la tarjeta de circulacion' },
+        { ...ctx, llmEnabled: false },
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'es tu tarjeta de circulación',
+      );
+    });
+
+    it('una consulta para la oficina en medio de la cotización no la corta', async () => {
+      await send({ text: 'hola' }, ctx);
+      await send({ selectionId: OPT.cotizacion, text: '' }, ctx);
+      await send({ selectionId: OPT.cotAuto, text: '' }, ctx);
+      expect(stored?.step).toBe('LLM_COTIZACION');
+
+      const res = await send(
+        {
+          selectionId: OPT.pedidoOficina,
+          text: 'Pregunta si tiene descuento por su trabajo',
+        },
+        ctx,
+      );
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Pregunta si tiene descuento por su trabajo',
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'seguimos con la cotización',
+      );
+      expect(stored?.step).toBe('LLM_COTIZACION');
     });
   });
 

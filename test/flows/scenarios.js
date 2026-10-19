@@ -657,6 +657,77 @@ module.exports = [
     ],
   },
 
+  // ─── Cotización y pedidos (revisión 19/10, grupos 4 y 6) ──────────
+  {
+    id: 'Q01', area: 'Cotización y pedidos (19/10)', name: '"Necesito otra póliza con otro DNI" no abre Cotización', wa: wa(), regression: '#87 (15/10)',
+    steps: [
+      ...ident('99000002'),
+      { text: 'necesito otra poliza con otro dni', expect: { reply: true, none: [/cot_auto/, /¿Qué querés cotizar/] } },
+    ],
+  },
+  {
+    id: 'Q02', area: 'Cotización y pedidos (19/10)', name: '"Quiero una póliza" de un cliente: documentación, no Cotización', wa: wa(), regression: '#201 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Quiero una póliza', expect: { any: [/doc_\d+|\[documento/], none: [/cot_auto/] } },
+    ],
+  },
+  {
+    id: 'Q03', area: 'Cotización y pedidos (19/10)', name: 'Etios: elige "4 puertas manual" una sola vez; descuento a la oficina; "dale" contrata la recomendada', wa: wa(), regression: '#217, #222 (16/10)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_auto', title: 'Auto', list: true },
+      { text: 'Toyota etios 1.5 xls 2017, Rosario', max: 90000, quiet: 5000 },
+      {
+        drive: {
+          // List → GNC → quote: a version asked again needs a fourth turn.
+          max: 3,
+          until: /por mes/,
+          answer: (prev) => {
+            if (/\|gnc_no\]/.test(prev)) return { select: 'gnc_no', title: 'No tiene GNC' };
+            const line = prev.split('\n').map((l) => l.match(/^\s*\*?(\d+)[.)]\*?\s*(.+)$/)).find((m) => m && /\b4\s*(p|puertas)/i.test(m[2]) && !/aut|\bAT\b|CVT/i.test(m[2]));
+            if (line) return { text: line[1] };
+            return /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' } : { text: '4 puertas manual' };
+          },
+          expect: { any: [/por mes/] },
+        },
+      },
+      { text: 'Por emerger tengo descuento?', expect: { any: [/oficina/i], none: [/Solo puedo ayudarte con la cotización/i] } },
+      { text: 'cual me recomendas?', expect: { reply: true } },
+      { text: 'dale', expect: { any: [/DNI/], none: [/Hablar con un asesor/] } },
+    ],
+    db: [handoffs('aviso de contratación con la cobertura', (r) => r.some(([b]) => /Quiere contratar/.test(b)))],
+  },
+  {
+    id: 'Q04', area: 'Cotización y pedidos (19/10)', name: 'Bolso: pregunta por el Plus y qué hay que presentar, sin "No reconocí ese plan"', wa: wa(), regression: '#202 (15/10)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_bolso', title: 'Bolso protegido', list: true, expect: { any: [/plan_\d+/] } },
+      { text: 'Me podrás explicar bien el bolso plus', expect: { any: [/plan_\d+/], none: [/No reconocí ese plan/, /no te estoy entendiendo/i] } },
+      { text: 'Y que hay que presentar', expect: { reply: true, none: [/No reconocí ese plan/, /no te estoy entendiendo/i] } },
+    ],
+  },
+  {
+    id: 'Q05', area: 'Cotización y pedidos (19/10)', name: 'Después del pedido de cupones, los 👍 no se contestan', wa: wa(), regression: '#224 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'me pasás el cupón de pago?', expect: { any: [/cupones de pago te los manda la oficina/i] } },
+      { text: '👍👍', expect: { silent: true } },
+      { text: '👍', expect: { silent: true } },
+    ],
+  },
+  {
+    id: 'Q06', area: 'Cotización y pedidos (19/10)', name: '"Tarjeta de circulación": manda la tarjeta y aclara que es esa', wa: wa(), regression: '#220 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'me podrias enviar la tarjeta de circulación', expect: { any: [/\[documento Tarjeta verde/, /es tu tarjeta de circulación/] } },
+    ],
+  },
+
   // ─── Pendientes conocidos (no implementados todavía) ─────────────
   {
     id: 'G01', area: 'Pendientes conocidos', name: 'Respuesta automática de otra empresa: no contestar', wa: wa(), regression: '#118', known: 'guard anti-autorespuestas (pendiente)',

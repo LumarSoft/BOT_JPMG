@@ -35,7 +35,7 @@ const schema = {
 export const INTENT_PROMPT = `Clasificás el mensaje con el que una persona le escribe al WhatsApp de John Pellegrini Management Group, una productora de seguros argentina que trabaja con Triunfo Seguros. Puede ser texto o la transcripción de un audio, con errores.
 Devolvé UNA intención:
 - saludo: solo saluda o se presenta, sin pedir nada ("hola", "buen día, soy Juan", "hola john").
-- cotizar: quiere cotizar, contratar o asegurar algo nuevo, o saber cuánto sale un seguro.
+- cotizar: quiere cotizar, contratar o asegurar algo nuevo, o saber cuánto sale un seguro. Pedir "la póliza", "una póliza", "otra póliza" o la póliza de otra patente u otro DNI NO es cotizar: es documentos (quiere el papel de una póliza que ya tiene), salvo que diga que quiere sacar o contratar una nueva.
 - siniestro: tuvo un choque, robo, rotura, granizo u otro daño y quiere denunciarlo, o pregunta por una denuncia que ya hizo.
 - documentos: pide su póliza, tarjeta verde o de circulación, certificado de cobertura, constancia de pago, cupón de pago u otro papel de su seguro.
 - pagos: pregunta por deuda, cuotas, vencimientos, débitos o cómo pagar.

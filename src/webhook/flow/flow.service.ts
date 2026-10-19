@@ -825,6 +825,24 @@ export class FlowService {
     // answer "tocá *Hablar con un asesor*", one more step for the customer.
     if (sel === OPT.pedidoOficina) {
       const current = existing?.state;
+      // Asked mid-quote ("¿por mi trabajo tengo descuento?"): the office hears
+      // it and the quote goes on where it was.
+      if (current && QUOTE_STEPS.has(current.step)) {
+        await this.api
+          .requestHandoff(ctx.conversationId, input.text)
+          .catch(() => undefined);
+        return {
+          messages: [
+            {
+              kind: 'text',
+              body:
+                `Le pasé tu consulta a la oficina ✍️ Un asesor te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+                (await this.closedNote()) +
+                '\n\nMientras, si querés, seguimos con la cotización.',
+            },
+          ],
+        };
+      }
       if (!(current?.step === 'ASESOR_MOTIVO' && current.data.alerted === true))
         this.backToMenuState(key, ctx);
       return this.handleAsesorMotivo({ text: input.text }, ctx, key);
@@ -1475,6 +1493,13 @@ export class FlowService {
       case 'saludo':
         return null;
       case 'cotizar': {
+        // A client asking for "una póliza" / "otra póliza con otro DNI" wants
+        // the paper of one they have, not a new quote (#87, #201).
+        if (this.asksForPolicyPaper(input.text, ctx, key))
+          return this.withOpener(
+            opener,
+            await this.guardAsClient(ctx, key, 'documentos', {}, input.text),
+          );
         const result = await this.enterCotizar(input, ctx, key);
         return result.handoff ? result : this.withOpener(opener, result);
       }
@@ -1563,6 +1588,26 @@ export class FlowService {
           }
         );
     }
+  }
+
+  /**
+   * "Quiero una póliza", "necesito otra póliza con otro DNI" from a client:
+   * the paper of a policy, read as a quote by the model. Someone who never
+   * said they are a client may well want a new one, so only for clients.
+   */
+  private asksForPolicyPaper(
+    text: string,
+    ctx: FlowContext,
+    key: string,
+  ): boolean {
+    const t = fold(text);
+    const client = !!ctx.client || this.load(key)?.state.audience === 'client';
+    return (
+      client &&
+      /\b(?:polizas?|patente|dominio|papeles)\b/.test(t) &&
+      !QUOTE_INTENT_RE.test(t) &&
+      !/\b(?:nueva|contratar|sacar|hacer|cuanto|precio)\b/.test(t)
+    );
   }
 
   /**
@@ -1869,6 +1914,7 @@ export class FlowService {
           clientMenu(),
         ],
       };
+    if (typed && isCloser(input.text)) return this.closerReply(key, input.text);
     // A request in the customer's own words is read like a first message:
     // keywords sent "¿mi póliza cubre granizo?" to the papers and "¿por qué
     // aumentó el precio?" to a new quote.
@@ -1937,6 +1983,26 @@ export class FlowService {
         // (one model call per unmatched message, which keeps cost bounded).
         return { messages: [], handoff: 'faq' };
     }
+  }
+
+  /**
+   * "Gracias", "ok", "👍" at a menu: one short reply, then silence. Each 👍
+   * after a request got its own "¡De nada!" from the model (#224, 16/10), and
+   * a bare emoji needs no answer at all.
+   */
+  private closerReply(key: string, text: string): FlowResult {
+    const state = this.load(key)?.state;
+    if (!state || state.data.thanked === true) return { messages: [] };
+    if (!/[\p{L}\p{N}]/u.test(text)) return { messages: [] };
+    this.setState(key, state.step, { ...state.data, thanked: true });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: '¡De nada! 🙌 Cuando necesites algo, escribime por acá.',
+        },
+      ],
+    };
   }
 
   private async handleLeadMenu(
@@ -3681,6 +3747,12 @@ export class FlowService {
             ? 'Lo podés mostrar desde el celular, no hace falta imprimirlo.'
             : 'Los podés mostrar desde el celular, no hace falta imprimirlos.',
         );
+      // "No la del Mercosur, la de circular por la ciudad": it is the same
+      // paper, and the customer got it twice with no word about it (#220).
+      if (sent.some((d) => d.code === DOC_CODE.tarjeta))
+        lines.push(
+          'La *tarjeta verde (Mercosur)* es tu tarjeta de circulación: es la que mostrás si te paran, en Argentina y en los países del Mercosur.',
+        );
     }
     if (failed.length > 0) {
       await this.api
@@ -3939,8 +4011,32 @@ export class FlowService {
           key,
         );
       }
-      // Couldn't resolve the plan — re-show the picker (never leaking to the
-      // FAQ), but say so and offer the way out so it isn't a silent repeat.
+      if (!input.selectionId && input.text.trim()) {
+        // "La Plus" picks it; "¿me explicás bien el bolso plus?" is a
+        // question, which the model answers with the list still on screen.
+        // Both got "No reconocí ese plan" (#202, 15/10).
+        const t = fold(input.text);
+        const named = plans.filter((p) => t.includes(fold(p.name)));
+        const asking =
+          /\?|\b(?:explic|que (?:incluye|cubre|tiene)|como|requisit|present|diferencia|cubre)/.test(
+            t,
+          );
+        if (named.length === 1 && !asking)
+          return this.handleCotPlan(
+            state,
+            { text: '', selectionId: `${PLAN_PREFIX}${named[0].id}` },
+            ctx,
+            key,
+          );
+        if (ctx.llmEnabled !== false && !ctx.llmRateLimited)
+          return {
+            messages: [],
+            handoff: 'faq',
+            onScreen: planPicker(productLabel, plans),
+          };
+      }
+      // A stale tap, or no model to read it: re-show the picker, saying so,
+      // with the way out.
       return this.retry(key, state, [
         planPicker(
           productLabel,

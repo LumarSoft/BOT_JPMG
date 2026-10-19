@@ -2656,12 +2656,26 @@ describe('WebhookService', () => {
       });
     });
 
+    /** The quote the coverage is chosen from, as the flow state keeps it. */
+    const navi = { codia: 140123, description: 'NAVI 110' };
+    const quotedNavi = {
+      vehicleType: 'moto',
+      candidates: [navi],
+      selected: navi,
+      quoted: {
+        manufactureYear: 2025,
+        postalCode: 2000,
+        outcome: 'cotizada',
+        coverages: ['A', 'B4', 'B1'],
+      },
+    };
+
     it('records the chosen coverage, flags the chat and asks for the DNI', async () => {
       flow.handle.mockResolvedValue({
         messages: [],
         state: {
           step: 'LLM_COTIZACION',
-          data: { vehiculo: 'moto' },
+          data: { vehiculo: 'moto', quoteVehicle: quotedNavi },
           audience: 'lead',
         },
         handoff: 'cotizacion',
@@ -2725,7 +2739,10 @@ describe('WebhookService', () => {
           precio: '$ 62.614',
         },
       });
-      expect(api.requestHandoff).toHaveBeenCalledWith(3);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        3,
+        'Quiere contratar B1 — Todo Total 1 para su HONDA NAVI 110 2025. Solicitud de cotización #42: el bot le pide las fotos.',
+      );
       expect(api.saveFlowState).toHaveBeenCalledWith(
         3,
         JSON.stringify({
@@ -2739,6 +2756,62 @@ describe('WebhookService', () => {
       const body = (meta.sendText.mock.calls as string[][])[0][1];
       expect(body).toContain('Anotamos la B1');
       expect(body).toContain('frente de tu DNI');
+    });
+
+    it('does not record a coverage before there is a quote', async () => {
+      flow.handle.mockResolvedValue({
+        messages: [],
+        state: { step: 'LLM_COTIZACION', data: { vehiculo: 'auto' } },
+        handoff: 'cotizacion',
+      });
+      const create = jest
+        .fn()
+        .mockResolvedValueOnce({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: 't1',
+                    type: 'function',
+                    function: {
+                      name: 'request_coverage',
+                      arguments: JSON.stringify({
+                        vehicleType: 'auto',
+                        coverageCode: 'A',
+                        coverageName: 'Responsabilidad Civil',
+                      }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: '¿Cuál es la versión?' } }],
+        });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+
+      await service.handleMessage(
+        '5493416956364',
+        'Me interesa la A',
+        'P1',
+        'cov-0',
+      );
+
+      expect(api.createLead).not.toHaveBeenCalled();
+      const [request] = create.mock.calls[1] as [
+        { messages: { role: string; content: string }[] },
+      ];
+      expect(request.messages[request.messages.length - 1].content).toContain(
+        'todavía no hay una cotización',
+      );
     });
 
     it('stores a photo sent during the documents on that request', async () => {

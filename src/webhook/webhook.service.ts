@@ -41,6 +41,7 @@ import {
   ACTION_TOOL_NAMES,
   COTIZADOR_TOOLS,
   faqActionTools,
+  OFFICE_REQUEST_TOOL_DEF,
   OPEN_OPTION_TOOL_DEF,
   REQUEST_COVERAGE_TOOL,
 } from './constants/tools';
@@ -126,7 +127,7 @@ const VERSION_FILLER = new Set(
   (
     'la el los las de del con sin es era mi tu una un uno version modelo ' +
     'auto moto opcion esa ese esta este que y o si no por favor quiero ' +
-    'quisiera me interesa elijo comun normal'
+    'quisiera me interesa elijo comun normal base'
   ).split(' '),
 );
 
@@ -143,7 +144,31 @@ const VERSION_SYNONYMS: Record<string, string> = {
   automatico: 'at',
   automatica: 'at',
   aut: 'at',
+  // InfoAuto says nothing for a manual gearbox, or MT: the bot listed
+  // "4 puertas, manual" and the customer's "2" picked nothing (Etios, 16/10).
+  manual: 'mt',
+  mecanico: 'mt',
+  mecanica: 'mt',
 };
+
+/** Words InfoAuto uses for an automatic gearbox: a manual one has none. */
+const AUTOMATIC_WORDS = ['at', 'cvt', 'tiptronic', 'dsg', 'automatic'];
+
+/**
+ * The numbered items of a bot reply, by number: one per line ("1. GL") or
+ * several in a line ("1. 3P base · 2. 3P Highline"), which used to read as a
+ * single item 1 holding the whole line.
+ */
+export function numberedItems(text: string | undefined): Map<number, string> {
+  const items = new Map<number, string>();
+  for (const line of (text ?? '').split('\n'))
+    for (const match of line.matchAll(
+      /(?:^\s*|[·|;•]\s*)\*?(\d{1,2})[.)-]\*?\s+([^·|;•]+)/g,
+    ))
+      if (!items.has(Number(match[1])))
+        items.set(Number(match[1]), match[2].trim());
+  return items;
+}
 
 export const versionWords = (text: string): string[] =>
   fold(text)
@@ -1769,10 +1794,7 @@ export class WebhookService {
       ? this.pickedPosition(text, previousAssistantText)
       : null;
     if (position !== null) {
-      const numberedLine = previousAssistantText
-        ?.split('\n')
-        .map((line) => line.match(/^\s*\*?(\d+)[.)-]\*?\s*(.+)$/))
-        .find((match) => Number(match?.[1]) === position)?.[2];
+      const numberedLine = numberedItems(previousAssistantText).get(position);
       // The bot lists short labels ("GL", "GL GNC") that also fit longer
       // versions ("GL GNC FULL"): the one with the fewest extra words is it.
       // The list it showed may not follow the order kept here, so a line that
@@ -1816,10 +1838,7 @@ export class WebhookService {
   ): number | null {
     // A position only means something against the list the bot just showed:
     // asked "¿motor o puertas?", "la primera" picked the first of 20 versions.
-    const listed = (previousAssistantText ?? '')
-      .split('\n')
-      .map((line) => line.match(/^\s*\*?(\d+)[.)-]/)?.[1])
-      .filter(Boolean);
+    const listed = [...numberedItems(previousAssistantText).keys()];
     if (listed.length === 0) return null;
     const t = fold(text).trim();
     const numbered = t.match(
@@ -1847,7 +1866,11 @@ export class WebhookService {
     if (wanted.length === 0) return strict ? [] : candidates;
     return candidates.filter((candidate) => {
       const words = new Set(versionWords(candidate.description));
-      return wanted.every((w) => words.has(w));
+      return wanted.every(
+        (w) =>
+          words.has(w) ||
+          (w === 'mt' && !AUTOMATIC_WORDS.some((a) => words.has(a))),
+      );
     });
   }
 
@@ -2097,7 +2120,7 @@ export class WebhookService {
     const tools =
       handoff === 'cotizacion'
         ? allowActions
-          ? [...COTIZADOR_TOOLS, OPEN_OPTION_TOOL_DEF]
+          ? [...COTIZADOR_TOOLS, OPEN_OPTION_TOOL_DEF, OFFICE_REQUEST_TOOL_DEF]
           : COTIZADOR_TOOLS
         : allowActions
           ? faqActionTools(pickIds)
@@ -2224,6 +2247,7 @@ export class WebhookService {
               toolCall.function.arguments,
               conversation,
               from,
+              quoteVehicleMemory,
             );
             coverageLeadId = res.leadId;
             if (res.docs) takeOutDocs = res.docs;
@@ -2371,6 +2395,7 @@ export class WebhookService {
     rawArgs: string,
     conversation: BotConversation,
     from: string,
+    memory?: QuoteVehicleMemory,
   ): Promise<{ result: string; leadId?: number; docs?: TakeOutDocs }> {
     let args: Record<string, unknown>;
     try {
@@ -2383,6 +2408,19 @@ export class WebhookService {
     if (!code && !name) {
       return {
         result: JSON.stringify({ error: 'Falta la cobertura elegida' }),
+      };
+    }
+    // "Me interesa la A" before any price: the request reached the office
+    // with no quote behind it while the version was still being asked (14/10
+    // run, C01).
+    const quoted = memory?.quoted?.outcome;
+    if (quoted !== 'cotizada' && quoted !== 'incompleta') {
+      return {
+        result: JSON.stringify({
+          error: 'No se anotó: todavía no hay una cotización de este vehículo.',
+          nextStep:
+            'Terminá de cotizar (versión, año, código postal y GNC si es auto) con quote_vehicle, mostrale los precios y recién ahí, si elige una, llamá request_coverage.',
+        }),
       };
     }
 
@@ -2425,8 +2463,16 @@ export class WebhookService {
         phone: from,
         payload,
       });
+      // What they want reaches the office's notice too: it said only
+      // "Pedido de asesor ·" with nothing after it (15/10).
+      const vehicle = [args.vehicle, args.manufactureYear]
+        .filter((v) => typeof v === 'string' || typeof v === 'number')
+        .join(' ');
       await this.api
-        .requestHandoff(conversation.conversationId)
+        .requestHandoff(
+          conversation.conversationId,
+          `Quiere contratar ${String(payload.cobertura)}${vehicle ? ` para su ${vehicle}` : ''}. Solicitud de cotización #${id}: el bot le pide las fotos.`,
+        )
         .catch(() => undefined);
       this.logger.log(
         `📝 Pedido de contratación #${id}: ${String(payload.cobertura)} (${vehicleType})`,

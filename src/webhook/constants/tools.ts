@@ -356,31 +356,35 @@ export const OPEN_OPTION_TOOL_DEF: OpenAI.Chat.Completions.ChatCompletionTool =
  * Tools of the FAQ model. `pickIds` are the rows of the list the customer had
  * on screen, which it can choose for them.
  */
+/** Passes a request only a person can do to the office, with what was asked. */
+export const OFFICE_REQUEST_TOOL_DEF: OpenAI.Chat.Completions.ChatCompletionTool =
+  {
+    type: 'function',
+    function: {
+      name: OFFICE_REQUEST_TOOL,
+      description:
+        'Le pasa a la oficina un pedido que solo puede hacer una persona y no es una opción del menú. El sistema crea el aviso y le confirma a la persona.',
+      parameters: {
+        type: 'object',
+        properties: {
+          resumen: {
+            type: 'string',
+            description:
+              'Qué pide, en una línea y en tercera persona (ej: "Pide agregar a una persona a la póliza").',
+          },
+        },
+        required: ['resumen'],
+        additionalProperties: false,
+      },
+    },
+  };
+
 export function faqActionTools(
   pickIds: string[] = [],
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
   const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     OPEN_OPTION_TOOL_DEF,
-    {
-      type: 'function',
-      function: {
-        name: OFFICE_REQUEST_TOOL,
-        description:
-          'Le pasa a la oficina un pedido que solo puede hacer una persona y no es una opción del menú. El sistema crea el aviso y le confirma a la persona.',
-        parameters: {
-          type: 'object',
-          properties: {
-            resumen: {
-              type: 'string',
-              description:
-                'Qué pide, en una línea y en tercera persona (ej: "Pide agregar a una persona a la póliza").',
-            },
-          },
-          required: ['resumen'],
-          additionalProperties: false,
-        },
-      },
-    },
+    OFFICE_REQUEST_TOOL_DEF,
   ];
   if (pickIds.length)
     tools.push({
