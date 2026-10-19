@@ -1,4 +1,5 @@
 import type OpenAI from 'openai';
+import { OFFICE_REQUEST_TOOL, OPEN_OPTION_TOOL, PICK_TOOL } from './prompts';
 
 /**
  * Tools the assistant can call. Every data tool maps 1:1 to a john-api
@@ -314,3 +315,94 @@ export const COTIZADOR_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] =
       tool.type === 'function' &&
       COTIZADOR_TOOL_NAMES.includes(tool.function.name),
   );
+
+/** Menu options a model can open for the customer instead of telling them what to tap. */
+export const OPENABLE_OPTIONS = [
+  'documentacion',
+  'cupones',
+  'estado_de_cuenta',
+  'siniestro',
+  'baja',
+  'grua',
+  'cotizar',
+  'cambiar_forma_de_pago',
+  'hablar_con_un_asesor',
+] as const;
+export type OpenableOption = (typeof OPENABLE_OPTIONS)[number];
+
+/**
+ * Opens a menu option for the customer: the deterministic flow runs it (sends
+ * the PDFs, alerts the office for coupons, shows the account status…).
+ */
+export const OPEN_OPTION_TOOL_DEF: OpenAI.Chat.Completions.ChatCompletionTool =
+  {
+    type: 'function',
+    function: {
+      name: OPEN_OPTION_TOOL,
+      description:
+        'Hace lo que la persona pidió abriendo esa opción del menú: el sistema la atiende en ese momento (manda los papeles en PDF, le avisa a la oficina los cupones, muestra la deuda, arranca la denuncia, etc.).',
+      parameters: {
+        type: 'object',
+        properties: {
+          opcion: { type: 'string', enum: [...OPENABLE_OPTIONS] },
+        },
+        required: ['opcion'],
+        additionalProperties: false,
+      },
+    },
+  };
+
+/**
+ * Tools of the FAQ model. `pickIds` are the rows of the list the customer had
+ * on screen, which it can choose for them.
+ */
+export function faqActionTools(
+  pickIds: string[] = [],
+): OpenAI.Chat.Completions.ChatCompletionTool[] {
+  const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+    OPEN_OPTION_TOOL_DEF,
+    {
+      type: 'function',
+      function: {
+        name: OFFICE_REQUEST_TOOL,
+        description:
+          'Le pasa a la oficina un pedido que solo puede hacer una persona y no es una opción del menú. El sistema crea el aviso y le confirma a la persona.',
+        parameters: {
+          type: 'object',
+          properties: {
+            resumen: {
+              type: 'string',
+              description:
+                'Qué pide, en una línea y en tercera persona (ej: "Pide agregar a una persona a la póliza").',
+            },
+          },
+          required: ['resumen'],
+          additionalProperties: false,
+        },
+      },
+    },
+  ];
+  if (pickIds.length)
+    tools.push({
+      type: 'function',
+      function: {
+        name: PICK_TOOL,
+        description:
+          'Elige por la persona una opción de la lista que tiene en pantalla, cuando lo que escribió la indica.',
+        parameters: {
+          type: 'object',
+          properties: { id: { type: 'string', enum: pickIds } },
+          required: ['id'],
+          additionalProperties: false,
+        },
+      },
+    });
+  return tools;
+}
+
+/** Names of the tools that hand the turn back to the flow. */
+export const ACTION_TOOL_NAMES = new Set<string>([
+  OPEN_OPTION_TOOL,
+  OFFICE_REQUEST_TOOL,
+  PICK_TOOL,
+]);

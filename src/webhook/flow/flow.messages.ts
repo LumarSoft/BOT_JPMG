@@ -66,6 +66,9 @@ export const OPT = {
   asesorOtra: 'asesor_otra',
   // "No, es otra cosa" when a request was read as a cancellation
   bajaNo: 'baja_no',
+  // Never shown: the model passes a request only the office can do, with its
+  // summary as the text (see the FAQ's pasar_a_la_oficina tool).
+  pedidoOficina: 'm_pedido_oficina',
 } as const;
 
 /** The client menu's option ids — the taps that still mean something after a

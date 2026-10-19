@@ -25,6 +25,9 @@ const handoffs = (name, test) => ({
   test,
 });
 const noMenuWord = /escrib[ií]\s*\*?men[uú]\*?\s*y\s*eleg/i;
+// What the bot must never say (15–19/10): a phrase to type or a promise of
+// something only text can't do.
+const promise = /escrib[ií](?:me)?\s*\*?[“"'‘]|te (?:lo |la |los |las )?env[ií]o\b|el sistema te va a|se env[ií]a autom[aá]ticamente|la oficina te va a (?:enviar|mandar)/i;
 
 // One number per scenario, all under the 5493419990 prefix the cleanup removes.
 let n = 0;
@@ -525,6 +528,93 @@ module.exports = [
       { text: 'Hola, ya te mandé las fotos que me pediste', expect: { none: [/ya sos cliente/i, /DNI/] } },
     ],
     db: [handoffs('aviso para quien atendía', (r) => r.length >= 1)],
+  },
+
+  // ─── Pedidos escritos en vez de tocar la lista (revisión 19/10) ───
+  // The bot used to answer these with "escribime 'quiero la documentación'"
+  // or promise papers it never sent.
+  {
+    id: 'W01', area: 'Pedidos escritos (19/10)', name: '"Tarjeta verde" en la lista de pólizas: pregunta de cuál y la manda', wa: wa(), regression: '#87 (15/10)',
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/pol_otra/] } },
+      { text: 'tarjeta verde', expect: { any: [/¿De qué póliza querés la tarjeta verde\?/], none: [promise] } },
+      { text: 'la del palio', expect: { any: [/\[documento Tarjeta verde \(Mercosur\) - ZZ902AA\.pdf\]/], none: [promise] } },
+    ],
+  },
+  {
+    id: 'W02', area: 'Pedidos escritos (19/10)', name: '"La espero" / "no me llegó" en la lista: responde sin prometer y vuelve a mostrar la lista', wa: wa(), regression: '#87 (15/10)',
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true },
+      { text: 'la espero', expect: { any: [/pol_otra/], none: [promise] } },
+      { text: 'no me llego', expect: { any: [/pol_otra|\[documento/], none: [promise] } },
+    ],
+  },
+  {
+    id: 'W03', area: 'Pedidos escritos (19/10)', name: '"Cupón" en la lista de papeles: pide los cupones a la oficina', wa: wa(), regression: '#87 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/doc_todos/] } },
+      { text: 'Cupon', expect: { any: [/cupones de pago te los manda la oficina/i], none: [promise] } },
+    ],
+    db: [handoffs('aviso de cupones', (r) => r.some(([b]) => /cupones/i.test(b)))],
+  },
+  {
+    id: 'W04', area: 'Pedidos escritos (19/10)', name: '"Quiero de otra póliza" con los papeles en pantalla: vuelve a la lista sin mandar la Póliza', wa: wa(), regression: '#87 (16/10)',
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true },
+      { text: 'el palio', expect: { any: [/doc_todos/] } },
+      { text: 'Quiero de otra poliza', expect: { any: [/pol_otra/], none: [/\[documento Póliza/] } },
+    ],
+  },
+  {
+    id: 'W05', area: 'Pedidos escritos (19/10)', name: 'En "¿Qué querés cotizar?" pide la póliza ya emitida: se la manda', wa: wa(), regression: '#201 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_cotizacion', title: '💰 Cotización', list: true, expect: { any: [/cot_auto/] } },
+      { text: 'No, que me envíes una póliza que ya está emitida!!', expect: { any: [/doc_1020|\[documento Póliza/], none: [promise, /cot_auto/] } },
+    ],
+  },
+  {
+    id: 'W06', area: 'Pedidos escritos (19/10)', name: '"Cómo tendría que hacer" para pagar: no le dice qué frase escribir', wa: wa(), regression: '#224 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_pagos', title: '💳 Pagos y cobranzas', list: true, expect: { any: [/Estado de cuenta/] } },
+      { text: 'Mañana se me vence, cómo tendría que hacer para pagar?', expect: { reply: true, none: [promise] } },
+    ],
+  },
+  {
+    id: 'W07', area: 'Pedidos escritos (19/10)', name: 'Agregar a una persona a la póliza: va a la oficina con el pedido', wa: wa(), regression: '#198 (15/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Te paso para agregar a la póliza a una persona más', expect: { any: [/tomé nota/i], none: [promise, /tocá \*?Hablar con un asesor/i] } },
+    ],
+    db: [handoffs('aviso con el pedido', (r) => r.some(([b]) => /agregar/i.test(b)))],
+  },
+  {
+    id: 'W08', area: 'Pedidos escritos (19/10)', name: 'Cambio de orden de parabrisas: va a la oficina con el pedido', wa: wa(), regression: '#123 (16/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'perdon que te joda, queria saber si se pudo cambiar la orden de parabrisas que salio para un taller y tenia que ser para otro', expect: { any: [/tomé nota/i], none: [promise, /tocá \*?Hablar con un asesor/i] } },
+    ],
+    db: [handoffs('aviso con el pedido', (r) => r.some(([b]) => /parabrisas/i.test(b)))],
+  },
+  {
+    id: 'W09', area: 'Pedidos escritos (19/10)', name: '"Decime si está vigente": lo responde con sus datos', wa: wa(), regression: '#200 (15/10)',
+    steps: [
+      ...ident('99000001'),
+      { text: 'decime si esta vigente', expect: { any: [/Estado de cuenta|al día|vigente/i], none: [promise, /tocá \*?Pagos/i] } },
+    ],
+  },
+  {
+    id: 'W10', area: 'Pedidos escritos (19/10)', name: '"Quiero cupones" escrito en la lista de papeles avisa de verdad a la oficina', wa: wa(), regression: '#87 (16/10)',
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_documentos', title: '📄 Documentación', list: true },
+      { text: 'Quiero cupones', expect: { any: [/pol_todas|cupones de pago/i], none: [promise] } },
+    ],
   },
 
   // ─── Pendientes conocidos (no implementados todavía) ─────────────

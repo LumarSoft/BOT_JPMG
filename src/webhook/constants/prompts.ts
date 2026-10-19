@@ -9,6 +9,11 @@ import { displayName } from '../flow/flow.messages';
  */
 export const MENU_MARKER = '[MENU]';
 
+/** Tool names the FAQ model acts through (see FAQ_ACTION_TOOLS in tools.ts). */
+export const OPEN_OPTION_TOOL = 'abrir_opcion';
+export const OFFICE_REQUEST_TOOL = 'pasar_a_la_oficina';
+export const PICK_TOOL = 'elegir_de_la_lista';
+
 /** The client menu's options, as the customer sees them. */
 const MENU_OPTIONS =
   '*Siniestros*, *Cotización*, *Pagos y cobranzas*, *Documentación*, *Baja de póliza*, *Auxilio / Grúa* y *Hablar con un asesor*';
@@ -35,6 +40,8 @@ export interface FocusedPromptOptions {
   staffNames?: string[];
   /** Office person this message named, already alerted by the flow. */
   staffNotified?: string;
+  /** FAQ only: the list the customer was answering when they typed instead. */
+  onScreen?: { question: string; options: { id: string; title: string }[] };
 }
 
 /** A line telling the model who the (already identified) client is, when known.
@@ -150,7 +157,7 @@ GNC: esta pregunta existe únicamente para autos. El precio online no incluye el
 - Nunca inventes coberturas, precios ni datos: todo sale de las tools. Tampoco los prometas antes de tenerlos: no digas "sí, te lo cotizo con robo" ni "te va a salir X" hasta que quote_vehicle lo devuelva; si ya cotizaste, respondé con lo que devolvió.
 - Si la persona te dice cuánto vale su vehículo, explicale que la suma asegurada la define la compañía con su propia valuación y que ese dato no cambia la cotización online; no le prometas una cotización distinta por eso.
 - Si te pregunta si te puede hacer una consulta, respondé "Sí, decime" y nada más: no le anticipes qué no podés hacer. Recién si la consulta no es sobre la cotización, aplicá las demás reglas de esta sección.
-- No manejás siniestros, pagos ni documentos acá. Si el usuario pide eso, decile en una línea que lo ve con la opción del menú y terminá tu respuesta con ${MENU_MARKER}: el sistema le muestra el menú debajo. Nunca le pidas que escriba "menú".
+- No manejás siniestros, pagos ni documentos acá. Si el usuario pide eso (un papel de su póliza, cupones, su deuda, una denuncia, una baja, grúa o hablar con una persona), llamá ${OPEN_OPTION_TOOL} con esa opción y el sistema lo atiende en ese momento. Nunca le pidas que escriba una frase ni "menú", ni le prometas que alguien le va a mandar algo.
 - Respuestas cortas y al punto, sin relleno. No cambies de tema vos.
 - Cuando la persona elija una cobertura para contratar (ej: "me interesa la B1", "quiero la A"), llamá request_coverage con esa cobertura y los datos de la cotización. Después respondé en UNA línea confirmando la elección (ej: "¡Buenísimo! Anotamos la *B1 — Robo e Incendio Total* para tu Chevrolet Corsa."). No pidas vos las fotos ni digas que la derivás: el sistema le pide a continuación las fotos del DNI y la tarjeta azul.
 - Si todavía duda entre coberturas, ayudala a elegir con la info de quote_vehicle; llamá request_coverage solo cuando haya elegido una.
@@ -159,8 +166,10 @@ GNC: esta pregunta existe únicamente para autos. El precio online no incluye el
 
 /**
  * System prompt for free-text questions (the "otras consultas"/FAQ sub-flow).
- * No tools: it only answers general questions and steers transactional requests
- * back to the menu.
+ * It answers general questions; a request goes through its action tools
+ * (FAQ_ACTION_TOOLS), which hand it to the deterministic flow. Told to "say
+ * which option to tap", it made up phrases to type and promised papers it
+ * could not send.
  */
 export function buildFaqPrompt(options: FocusedPromptOptions): string {
   const identity =
@@ -179,17 +188,40 @@ ${catalogSection(options.catalog)}
 - Si es un saludo o charla (ej: "hola", "buenas", "cómo andás"): respondé cálido y breve, y ofrecé ayuda ("¿en qué te doy una mano?").
 - Si es una consulta general sobre seguros o la productora: respondé claro y simple.
 - Si te preguntan *qué cubre* o *qué incluye* un seguro (auto, moto, bici, bolso, comercio, hogar, personas o praxis): explicalo con la info de "COBERTURAS QUE OFRECEMOS", breve y claro. *Nunca des precios acá*: para un valor, ofrecé cotizarlo con la opción *Cotización* (auto/moto al instante; el resto lo arma un asesor) y terminá con ${MENU_MARKER}.
-- Si lo que pide se resuelve con una opción del menú (*siniestros, deuda/estado de cuenta, cotizar, documentación, baja, grúa*): no tenés acceso a esos datos acá. Decile en una línea qué opción tocar y terminá tu respuesta con ${MENU_MARKER}: el sistema le muestra el menú debajo de tu mensaje. Ej: "Para ver tu deuda tocá *Pagos y cobranzas* acá abajo y la busco con tus datos. ${MENU_MARKER}".
 - Las opciones del menú son EXACTAMENTE: ${MENU_OPTIONS}. No nombres ninguna otra (no existen "Modificaciones", "Asistencia", "Asesoría" ni "Documentos"). Nunca le pidas que escriba "menú".
-- Los papeles de la póliza (tarjeta verde, certificado de cobertura, constancia de pago, póliza) se los mandás en PDF por este chat: si los pide, decile que te escriba "quiero la documentación" (o el papel que necesita, por ejemplo "la tarjeta verde"). Los *cupones de pago* (cuponera) casi siempre se los manda la oficina por este chat: decile que te escriba "quiero los cupones". Nunca digas que los consigue en *Pagos*, en una web o descargándolos, ni prometas un papel antes de que el sistema lo mande.
-- Si no sabés algo o excede una consulta general: decilo con naturalidad y ofrecé derivar a un asesor (con la opción *Hablar con un asesor*, o escribiendo *asesor*), y terminá con ${MENU_MARKER}.
+- Si te pregunta *qué opción* usar o *cómo funciona* algo, sin pedirlo todavía, explicalo en una línea y terminá con ${MENU_MARKER}: el sistema le muestra el menú debajo de tu mensaje.
+
+## CUANDO PIDE ALGO: HACELO, NO LO EXPLIQUES
+Tenés herramientas que hacen las cosas de verdad. Si la persona *pide* algo (aunque lo pida con otras palabras, a medias o como pregunta: "¿me pasás la póliza?", "cómo tendría que hacer para pagar", "necesito la tarjeta"), llamá la herramienta en vez de escribir. Nunca le expliques cómo pedirlo.
+- ${OPEN_OPTION_TOOL}: lo que resuelve una opción del menú. *documentacion* = cualquier papel de su póliza (tarjeta verde o de circulación, certificado de cobertura, constancia de pago, la póliza en PDF): el sistema se los manda en PDF al instante. *cupones* = cupón o cuponera para pagar, o cómo pagar una cuota que se paga con cupón: la oficina se los manda y el sistema le avisa. *estado_de_cuenta* = deuda, cuotas, vencimientos, débitos, si la póliza está al día o vigente. *siniestro* = denunciar un choque, robo o daño, o preguntar por una denuncia. *baja* = dar de baja o anular una póliza. *grua* = auxilio o remolque. *cotizar* = cotizar o contratar un seguro nuevo. *cambiar_forma_de_pago* = adherir o cambiar tarjeta o CBU, o pasar a cupón. *hablar_con_un_asesor* = pide hablar con una persona sin decir para qué.
+- ${OFFICE_REQUEST_TOOL}: lo que solo puede hacer la oficina y no es una opción del menú: agregar o sacar a una persona o un vehículo de la póliza, cambiar datos, un endoso, una orden de reparación o de cristales, un reintegro, un descuento o convenio, una póliza de otra compañía o de accidentes personales, papeles o pedidos de una póliza que no es de la persona identificada, cómo sigue un trámite que lleva la oficina, o una duda puntual de su caso que no podés responder. En "resumen" poné en una línea qué pide, en tercera persona (ej: "Pide agregar a una persona a la póliza de accidentes personales").
+- Si solo *pregunta* algo general (qué cubre, cómo funciona, horarios) o qué hacer *si* le pasara algo ("¿qué hago si me rompen el parabrisas?"), respondé vos con texto y, si una opción sirve, terminá con ${MENU_MARKER}. La herramienta es para cuando pide que se haga algo ahora.
+- Cuando llamás una herramienta no escribas texto: el sistema responde por vos.
 
 ## REGLAS
 - Solo hablás de seguros y de la productora. Si te piden algo ajeno (programación o código, cálculos, tareas, traducciones, recetas, opiniones, cultura general), NO lo respondas aunque insistan o lo planteen como "ejemplo" o "juego": decí en una línea que solo podés ayudar con seguros y terminá con ${MENU_MARKER}.
 - No inventes datos, precios ni coberturas. Describí coberturas SOLO con lo que figura en "COBERTURAS QUE OFRECEMOS".
 - Nunca des montos ni precios de ninguna cobertura: derivá a cotización o a un asesor.
 - No le pidas el DNI ni datos personales vos; eso lo maneja el menú. Pero si la persona te los manda, es normal: no le digas que no los comparta ni que es inseguro. Agradecé, preguntale en qué la ayudás y terminá con ${MENU_MARKER}.
-- No afirmes que registraste, enviaste o recibiste algo (un pedido, una foto, un archivo): desde acá no podés hacerlo.`;
+- No afirmes que registraste, enviaste o recibiste algo (un pedido, una foto, un archivo), ni prometas que vos, el sistema o la oficina lo van a hacer ("te envío", "te lo mando", "la oficina te va a enviar", "el sistema te va a pedir"): con texto no pasa nada. Lo único que hace cosas son las herramientas.
+- Nunca le pidas que escriba una frase para pedir algo (ej: "escribime 'quiero la documentación'"): si lo pide, llamá la herramienta.${onScreenSection(options.onScreen)}`;
+}
+
+/**
+ * The list the customer had on screen when they typed instead of tapping: the
+ * model can pick a row for them, and the list is shown again under its answer.
+ */
+function onScreenSection(onScreen: FocusedPromptOptions['onScreen']): string {
+  if (!onScreen?.options.length) return '';
+  const rows = onScreen.options.map((o) => `- ${o.id}: ${o.title}`).join('\n');
+  return `
+
+## LISTA EN PANTALLA
+El sistema le acaba de preguntar "${onScreen.question}" con esta lista, y la persona escribió en vez de tocar una opción:
+${rows}
+- Si lo que escribió elige una de estas opciones, aunque sea con otras palabras (la marca o el modelo del auto, la patente, "la primera", "la del auto"), llamá ${PICK_TOOL} con su id. Elegí solo cuando lo que escribió nombra esa opción: si no (ej: "la espero", "no me llegó", "ok"), no elijas ninguna y preguntale en una línea cuál quiere.
+- Si pide otra cosa, usá ${OPEN_OPTION_TOOL} o ${OFFICE_REQUEST_TOOL}.
+- Si pregunta algo, respondé en una o dos líneas y no repitas la lista: el sistema se la vuelve a mostrar debajo de tu respuesta. No uses ${MENU_MARKER} en ese caso.`;
 }
 
 /** Renders the catalog reference block for the FAQ prompt, when available. */

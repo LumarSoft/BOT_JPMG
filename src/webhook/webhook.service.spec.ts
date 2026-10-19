@@ -491,6 +491,265 @@ describe('WebhookService', () => {
     });
   });
 
+  describe('model actions (19/10)', () => {
+    const picker = {
+      kind: 'list' as const,
+      body: '¿De qué póliza querés la documentación?',
+      button: 'Ver pólizas',
+      rows: [
+        { id: 'pol_1', title: 'FORD RANGER' },
+        { id: 'pol_2', title: 'CHEVROLET CRUZE' },
+      ],
+    };
+
+    beforeEach(() => {
+      api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+      api.saveMessage.mockResolvedValue({});
+      api.getConversation.mockResolvedValue({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [],
+      });
+    });
+
+    /** The model calls `name` with `args` on its first round. */
+    function modelCalls(name: string, args: object) {
+      const create = jest.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'a1',
+                  type: 'function',
+                  function: { name, arguments: JSON.stringify(args) },
+                },
+              ],
+            },
+          },
+        ],
+      });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+      return create;
+    }
+
+    it('opens the option the customer asked for instead of telling them what to type', async () => {
+      const create = modelCalls('abrir_opcion', { opcion: 'documentacion' });
+      flow.handle
+        .mockResolvedValueOnce({
+          messages: [],
+          state: { step: 'COTIZAR_TIPO', data: {} },
+          handoff: 'faq',
+        })
+        .mockResolvedValueOnce({
+          messages: [{ kind: 'text', body: 'Ahí te mandé la póliza' }],
+          state: { step: 'CLIENT_MENU', data: {} },
+        });
+
+      await service.handleMessage(
+        '5491155556666',
+        'No, que me envíes una póliza que ya está emitida!!',
+        'P1',
+        'act-1',
+      );
+
+      const [request] = create.mock.calls[0] as [
+        { tools: { function: { name: string } }[] },
+      ];
+      expect(request.tools.map((t) => t.function.name)).toEqual([
+        'abrir_opcion',
+        'pasar_a_la_oficina',
+      ]);
+      expect(flow.handle).toHaveBeenLastCalledWith(
+        'P1:5491155556666',
+        {
+          text: 'No, que me envíes una póliza que ya está emitida!!',
+          selectionId: 'm_documentos',
+        },
+        expect.objectContaining({
+          flowState: { step: 'COTIZAR_TIPO', data: {} },
+        }),
+      );
+      expect(meta.sendText).toHaveBeenCalledTimes(1);
+      expect(meta.sendText).toHaveBeenCalledWith(
+        '5491155556666',
+        'Ahí te mandé la póliza',
+        'P1',
+      );
+      expect(api.saveFlowState).toHaveBeenLastCalledWith(
+        1,
+        JSON.stringify({ step: 'CLIENT_MENU', data: {} }),
+      );
+    });
+
+    it('passes a request only the office can do with its summary and what was written', async () => {
+      modelCalls('pasar_a_la_oficina', {
+        resumen: 'Pide agregar a una persona a la póliza.',
+      });
+      flow.handle
+        .mockResolvedValueOnce({ messages: [], state: null, handoff: 'faq' })
+        .mockResolvedValueOnce({
+          messages: [{ kind: 'text', body: 'Listo, tomé nota' }],
+          state: null,
+        });
+
+      await service.handleMessage(
+        '5491155556666',
+        'Te paso para agregar a la póliza',
+        'P1',
+        'act-2',
+      );
+
+      expect(flow.handle).toHaveBeenLastCalledWith(
+        'P1:5491155556666',
+        {
+          text: 'Pide agregar a una persona a la póliza. Escribió: "Te paso para agregar a la póliza"',
+          selectionId: 'm_pedido_oficina',
+        },
+        expect.anything(),
+      );
+    });
+
+    it('picks a row of the list on screen, and only one that is there', async () => {
+      const create = modelCalls('elegir_de_la_lista', { id: 'pol_2' });
+      flow.handle
+        .mockResolvedValueOnce({
+          messages: [],
+          state: { step: 'DOC_POLIZA', data: {} },
+          handoff: 'faq',
+          onScreen: picker,
+        })
+        .mockResolvedValueOnce({ messages: [], state: null });
+
+      await service.handleMessage(
+        '5491155556666',
+        'la del cruze',
+        'P1',
+        'act-3',
+      );
+
+      const [request] = create.mock.calls[0] as [
+        {
+          messages: { content: string }[];
+          tools: { function: { name: string; parameters: object } }[];
+        },
+      ];
+      expect(request.messages[0].content).toContain('## LISTA EN PANTALLA');
+      expect(request.messages[0].content).toContain('- pol_2: CHEVROLET CRUZE');
+      expect(JSON.stringify(request.tools)).toContain(
+        '"enum":["pol_1","pol_2"]',
+      );
+      expect(flow.handle).toHaveBeenLastCalledWith(
+        'P1:5491155556666',
+        { text: '', selectionId: 'pol_2' },
+        expect.anything(),
+      );
+    });
+
+    it('does not act on an id that is not on the list', async () => {
+      const create = jest
+        .fn()
+        .mockResolvedValueOnce({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'a1',
+                    type: 'function',
+                    function: {
+                      name: 'elegir_de_la_lista',
+                      arguments: '{"id":"pol_9"}',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          choices: [
+            { message: { content: '¿Cuál de las dos?', tool_calls: [] } },
+          ],
+        });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+      flow.handle.mockResolvedValueOnce({
+        messages: [],
+        state: { step: 'DOC_POLIZA', data: {} },
+        handoff: 'faq',
+        onScreen: picker,
+      });
+
+      await service.handleMessage('5491155556666', 'la otra', 'P1', 'act-4');
+
+      expect(flow.handle).toHaveBeenCalledTimes(1);
+      expect(meta.sendText).toHaveBeenCalledWith(
+        '5491155556666',
+        '¿Cuál de las dos?',
+        'P1',
+      );
+    });
+
+    it('shows the list again under an answer in words', async () => {
+      stubOpenAi();
+      flow.handle.mockResolvedValueOnce({
+        messages: [],
+        state: { step: 'DOC_POLIZA', data: {} },
+        handoff: 'faq',
+        onScreen: picker,
+      });
+
+      await service.handleMessage(
+        '5491155556666',
+        '¿y eso qué es?',
+        'P1',
+        'act-5',
+      );
+
+      expect(meta.sendText).toHaveBeenCalledWith(
+        '5491155556666',
+        'reply',
+        'P1',
+      );
+      expect(meta.sendList).toHaveBeenCalledWith(
+        '5491155556666',
+        picker.body,
+        picker.button,
+        picker.rows,
+        'P1',
+      );
+    });
+
+    it('the turn an action led to cannot act again', async () => {
+      const create = modelCalls('abrir_opcion', { opcion: 'cotizar' });
+      flow.handle
+        .mockResolvedValueOnce({ messages: [], state: null, handoff: 'faq' })
+        .mockResolvedValueOnce({ messages: [], state: null, handoff: 'faq' });
+
+      await service.handleMessage(
+        '5491155556666',
+        'quiero asegurar',
+        'P1',
+        'act-6',
+      );
+
+      expect(flow.handle).toHaveBeenCalledTimes(2);
+      const second = create.mock.calls[1] as [{ tools?: unknown }];
+      expect(second[0].tools).toBeUndefined();
+    });
+  });
+
   describe('quote vehicle safety', () => {
     const memory = {
       vehicleType: 'auto' as const,

@@ -101,6 +101,11 @@ export interface FlowResult {
   handoff?: LLMHandoff;
   /** Office person alerted by this message; the model mentions it in its reply. */
   staffNotified?: string;
+  /**
+   * The list the customer was answering when the text went to the model: it can
+   * pick a row of it for them, and it is shown again under its answer.
+   */
+  onScreen?: OutgoingMessage;
 }
 
 /**

@@ -175,6 +175,21 @@ function wantedDocs(text: string | undefined): string[] {
   return codes;
 }
 
+/** How the customer calls each document, to ask "¿De qué póliza querés la tarjeta verde?". */
+const DOC_SPOKEN: Record<string, string> = {
+  [DOC_CODE.tarjeta]: 'la tarjeta verde',
+  [DOC_CODE.certificado]: 'el certificado de cobertura',
+  [DOC_CODE.constancia]: 'la constancia de pago',
+  [DOC_CODE.poliza]: 'la póliza',
+};
+
+/**
+ * "Quiero de otra póliza", "es de otra patente": not the policy on screen.
+ * Folded. "Quiero de otra poliza" used to send the Póliza PDF of the same one.
+ */
+const OTHER_POLICY_RE =
+  /\botr[ao]s? (?:poliza|patente|auto|vehiculo|moto|camioneta|seguro|dominio|riesgo)\b|\bde otr[ao]\b|\bno es (?:esa|ese|esta|este)\b/;
+
 /** ["A", "B", "C"] → "A, B y C". */
 function joinNames(names: string[]): string {
   return names.length > 1
@@ -804,6 +819,15 @@ export class FlowService {
     // status instead: the office has to register the payment.
     if (!sel && PAYMENT_PROOF_RE.test(fold(input.text))) {
       return this.handleAsesorMotivo(input, ctx, key);
+    }
+    // The model read a request only the office can do ("agregar a una persona
+    // a la póliza"): it reaches the office with what was asked. It used to
+    // answer "tocá *Hablar con un asesor*", one more step for the customer.
+    if (sel === OPT.pedidoOficina) {
+      const current = existing?.state;
+      if (!(current?.step === 'ASESOR_MOTIVO' && current.data.alerted === true))
+        this.backToMenuState(key, ctx);
+      return this.handleAsesorMotivo({ text: input.text }, ctx, key);
     }
 
     // First contact (no state): answer what the message asks when it asks
@@ -1506,6 +1530,15 @@ export class FlowService {
         return this.withOpener(
           opener,
           await this.advisorRequest(input, ctx, key),
+        );
+      case 'tramite':
+        // Only the office can do it: it gets the request as written. The
+        // menu used to send "cambiar la orden de parabrisas" to a new claim.
+        if (this.load(key)?.state.step !== 'ASESOR_MOTIVO')
+          this.backToMenuState(key, ctx);
+        return this.withOpener(
+          opener,
+          await this.handleAsesorMotivo(input, ctx, key),
         );
       case 'consulta':
         // The FAQ model answers it and introduces itself on a first message.
@@ -2371,6 +2404,18 @@ export class FlowService {
       this.matchPolizaByText(input.text, polizas);
     if (poliza) return this.requestCupones([poliza], false, withDocs, ctx, key);
 
+    if (!input.selectionId && input.text.trim())
+      return {
+        messages: [],
+        handoff: 'faq',
+        onScreen: polizaPicker(
+          polizas,
+          withDocs
+            ? '¿De qué póliza necesitás los cupones y la documentación?'
+            : '¿De qué póliza necesitás los cupones de pago?',
+          { allRow: true, otherRow: true },
+        ),
+      };
     return this.retry(key, state, [
       polizaPicker(
         polizas,
@@ -3320,8 +3365,21 @@ export class FlowService {
       // "Choferes": the drivers' policy is one we don't have.
       if (!input.selectionId && OFFICE_ONLY_POLICY_RE.test(fold(input.text)))
         return this.officeOnlyRequest(input.text, ctx, key);
-      // Can't resolve policy — LLM asks naturally; state stays DOC_POLIZA.
-      return { messages: [], handoff: 'faq' };
+      if (!input.selectionId) {
+        const typed = await this.docRequestTyped(input, ctx, key, polizas);
+        if (typed) return typed;
+      }
+      // Anything else is read by the model, which can pick the policy, open
+      // what they ask for or answer a question; state stays DOC_POLIZA.
+      return {
+        messages: [],
+        handoff: 'faq',
+        onScreen: polizaPicker(
+          polizas,
+          '¿De qué póliza querés la documentación?',
+          { otherRow: true },
+        ),
+      };
     }
 
     const poliza = polizas.find((p) => p.id === polizaId);
@@ -3379,6 +3437,7 @@ export class FlowService {
       docs,
       polizaId,
       ...(poliza ? { poliza } : {}),
+      ...(polizas.length > 1 ? { polizas } : {}),
     });
     return {
       messages: [
@@ -3401,6 +3460,16 @@ export class FlowService {
     const docs = (state.data.docs as PolizaDocumento[] | undefined) ?? [];
     const polizaId = state.data.polizaId as number | undefined;
     const t = fold(input.text);
+    const poliza = state.data.poliza as PolizaSummary | undefined;
+
+    if (!input.selectionId && input.text.trim()) {
+      // "Cupón": the coupons of this same policy, which the office sends.
+      if (CUPON_RE.test(t))
+        return poliza
+          ? this.requestCupones([poliza], false, false, ctx, key)
+          : this.guard(ctx, key, 'cupones', {}, input.text);
+      if (OTHER_POLICY_RE.test(t)) return this.otherPolicyDocs(state, key);
+    }
 
     let chosen: PolizaDocumento[] = [];
     if (
@@ -3419,8 +3488,9 @@ export class FlowService {
     }
 
     if (chosen.length === 0 || polizaId === undefined) {
-      // Can't identify document — LLM asks naturally; state stays DOC_TYPE.
-      return { messages: [], handoff: 'faq' };
+      // The model reads it: it can pick the document, open what they ask for
+      // or answer a question; state stays DOC_TYPE.
+      return { messages: [], handoff: 'faq', onScreen: docPicker(docs) };
     }
     return this.sendDocs(
       chosen,
@@ -3435,6 +3505,71 @@ export class FlowService {
    * Sends policy documents as PDFs in the chat. A document Triunfo does not
    * hand over goes to the office, as every document did before RESTDocumentosV2.
    */
+  /**
+   * A request typed where the bot asked which policy: the coupons go to the
+   * office and a named paper ("la tarjeta verde") is kept for the policy they
+   * pick next. Null for anything else.
+   */
+  private async docRequestTyped(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+    polizas: PolizaSummary[],
+  ): Promise<FlowResult | null> {
+    const t = fold(input.text);
+    if (CUPON_RE.test(t))
+      return this.guard(
+        ctx,
+        key,
+        'cupones',
+        { withDocs: DOCS_TOO_RE.test(t.replace(CUPON_RE, '')) },
+        input.text,
+      );
+    const named = wantedDocs(input.text);
+    if (named.length === 0) return null;
+    const state = this.load(key)?.state;
+    this.setState(key, 'DOC_POLIZA', {
+      ...(state?.data ?? {}),
+      polizas,
+      wanted: named,
+    });
+    const what = joinNames(
+      named.map((code) => DOC_SPOKEN[code] ?? 'ese papel'),
+    );
+    return {
+      messages: [
+        polizaPicker(polizas, `¿De qué póliza querés ${what}?`, {
+          otherRow: true,
+        }),
+      ],
+    };
+  }
+
+  /**
+   * "Quiero de otra póliza" with the documents of one on screen: back to the
+   * list of their policies, or, when they only have that one, to the office
+   * with what they need.
+   */
+  private otherPolicyDocs(state: FlowState, key: string): FlowResult {
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    if (polizas.length > 1) {
+      this.setState(key, 'DOC_POLIZA', { polizas });
+      return {
+        messages: [
+          polizaPicker(polizas, '¿De qué póliza querés la documentación?', {
+            otherRow: true,
+          }),
+        ],
+      };
+    }
+    this.setState(key, 'DOC_POLIZA', { polizas });
+    return (
+      this.otherPoliza({ text: '', selectionId: OTHER_POLIZA_ID }, key) ?? {
+        messages: [],
+      }
+    );
+  }
+
   private async sendDocs(
     docs: PolizaDocumento[],
     polizaId: number,
@@ -3666,8 +3801,9 @@ export class FlowService {
       if (!input.selectionId && this.namesVehicle(input.text)) {
         return this.startCotizacion(key, undefined, ctx, input);
       }
-      // Category not recognised — LLM helps clarify; state stays COTIZAR_TIPO.
-      return { messages: [], handoff: 'faq' };
+      // Not a category ("no, que me mandes la póliza que ya tengo"): the model
+      // reads it and can pick the category or open what they ask for.
+      return { messages: [], handoff: 'faq', onScreen: cotizarMenu() };
     }
 
     if (COTIZAR_ONLINE.has(opt)) {

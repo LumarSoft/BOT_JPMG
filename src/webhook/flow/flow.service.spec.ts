@@ -2035,6 +2035,155 @@ describe('FlowService', () => {
       expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1000');
     });
 
+    it('un pedido que solo hace la oficina llega con el texto y se confirma', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        {
+          selectionId: OPT.pedidoOficina,
+          text: 'Pide agregar a una persona a la póliza. Escribió: "te paso para agregar"',
+        },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Pide agregar a una persona a la póliza. Escribió: "te paso para agregar"',
+      );
+      expect(res.messages[0].body).toContain('Listo, tomé nota');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('en la lista de qué cotizar, un pedido escrito lo lee el modelo con la lista', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.cotizacion, text: '' }, clientCtx);
+      expect(stored?.step).toBe('COTIZAR_TIPO');
+      const res = await send(
+        { text: 'No, que me envíes una póliza que ya está emitida!!' },
+        clientCtx,
+      );
+
+      expect(res.handoff).toBe('faq');
+      expect(JSON.stringify(res.onScreen)).toContain('cot_auto');
+    });
+
+    describe('texto escrito en vez de elegir de la lista', () => {
+      const cruze = {
+        id: 900,
+        certificateNumber: '2000002',
+        company: 'Triunfo',
+        riskType: 'auto',
+        status: 'vigente',
+        validFrom: null,
+        validTo: null,
+        paymentMethod: null,
+        vehicle: {
+          licensePlate: 'AE111AA',
+          brand: 'CHEVROLET',
+          model: 'CRUZE',
+        },
+      };
+      const twoPolicies = async () =>
+        api.getPolizas.mockResolvedValue([
+          ...((await api.getPolizas()) as unknown[]),
+          cruze,
+        ]);
+
+      it('"Quiero de otra póliza" con los papeles en pantalla vuelve a la lista, sin mandar la Póliza', async () => {
+        await twoPolicies();
+        api.getDocumentos.mockResolvedValue([
+          ...papers,
+          { code: '1020', name: 'Póliza', url: 'https://x' },
+        ]);
+        await send({ text: 'hola' }, clientCtx);
+        await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+        await send({ selectionId: 'pol_900', text: '' }, clientCtx);
+        expect(stored?.step).toBe('DOC_TYPE');
+
+        const res = await send({ text: 'Quiero de otra poliza' }, clientCtx);
+        expect(api.getDocumentoPdf).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('DOC_POLIZA');
+        expect(JSON.stringify(res.messages)).toContain('pol_833');
+      });
+
+      it('"Quiero de otra póliza" con una sola póliza pregunta cuál es para la oficina', async () => {
+        api.getDocumentos.mockResolvedValue(papers);
+        await send({ text: 'hola' }, clientCtx);
+        await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+        const res = await send({ text: 'es de otra patente' }, clientCtx);
+
+        expect(api.getDocumentoPdf).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('ASESOR_MOTIVO');
+        expect(stored?.data.otherPoliza).toBe(
+          'Pide la documentación de otra póliza',
+        );
+        expect(res.handoff).toBeUndefined();
+      });
+
+      it('"Cupón" en la lista de papeles pide los cupones de esa póliza a la oficina', async () => {
+        api.getDocumentos.mockResolvedValue(papers);
+        await send({ text: 'hola' }, clientCtx);
+        await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+        const res = await send({ text: 'Cupon' }, clientCtx);
+
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining(
+            'Pide los cupones de pago de su póliza CHEVROLET CORSA',
+          ),
+        );
+        expect(res.handoff).toBeUndefined();
+        expect(JSON.stringify(res.messages)).toContain(
+          'Los cupones de pago te los manda la oficina',
+        );
+      });
+
+      it('un papel nombrado en la lista de pólizas se guarda y se manda al elegir la póliza', async () => {
+        await twoPolicies();
+        api.getDocumentos.mockResolvedValue(papers);
+        await send({ text: 'hola' }, clientCtx);
+        await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+        const ask = await send({ text: 'tarjeta verde' }, clientCtx);
+        expect(ask.handoff).toBeUndefined();
+        expect(JSON.stringify(ask.messages)).toContain(
+          '¿De qué póliza querés la tarjeta verde?',
+        );
+
+        const res = await send({ selectionId: 'pol_900', text: '' }, clientCtx);
+        expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 900, '1050');
+        expect(res.messages[0].kind).toBe('document');
+      });
+
+      it('"Quiero cupones" en la lista de pólizas abre los cupones', async () => {
+        await twoPolicies();
+        await send({ text: 'hola' }, clientCtx);
+        await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+        const res = await send({ text: 'Quiero cupones' }, clientCtx);
+
+        expect(res.handoff).toBeUndefined();
+        expect(stored?.step).toBe('CUPON_POLIZA');
+      });
+
+      it('lo que no reconoce lo lee el modelo con la lista en pantalla', async () => {
+        await twoPolicies();
+        await send({ text: 'hola' }, clientCtx);
+        await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+        const res = await send({ text: 'la espero' }, clientCtx);
+
+        expect(res.handoff).toBe('faq');
+        expect(res.onScreen?.kind).toBe('list');
+        expect(JSON.stringify(res.onScreen)).toContain('pol_900');
+        expect(stored?.step).toBe('DOC_POLIZA');
+
+        // With the papers on screen it is that list that comes back.
+        api.getDocumentos.mockResolvedValue(papers);
+        await send({ selectionId: 'pol_900', text: '' }, clientCtx);
+        const typed = await send({ text: 'no me llego' }, clientCtx);
+        expect(typed.handoff).toBe('faq');
+        expect(stored?.step).toBe('DOC_TYPE');
+        expect(JSON.stringify(typed.onScreen)).toContain('doc_1050');
+      });
+    });
+
     it('lo que no se puede bajar de Triunfo va a la oficina', async () => {
       api.getDocumentos.mockResolvedValue(papers);
       api.getDocumentoPdf.mockImplementation(
@@ -2137,15 +2286,17 @@ describe('FlowService', () => {
       expect(bodies(res)).toContain('todas tus pólizas');
     });
 
-    it('con varias pólizas deriva la elegida y repregunta si no la reconoce', async () => {
+    it('con varias pólizas deriva la elegida y deja que el modelo lea lo que no reconoce', async () => {
       api.getPolizas.mockResolvedValue([...(await api.getPolizas()), ranger]);
       await send({ text: 'hola' }, clientCtx);
       await send({ text: 'mandame los cupones' }, clientCtx);
 
-      const retry = await send({ text: 'cualquier cosa' }, clientCtx);
+      // The model reads it with the list on screen, which comes back under its answer.
+      const typed = await send({ text: 'cualquier cosa' }, clientCtx);
       expect(api.requestHandoff).not.toHaveBeenCalled();
       expect(stored?.step).toBe('CUPON_POLIZA');
-      expect(bodies(retry)).toContain('No reconocí esa póliza');
+      expect(typed.handoff).toBe('faq');
+      expect(JSON.stringify(typed.onScreen)).toContain('pol_834');
 
       await send({ selectionId: 'pol_834', text: '' }, clientCtx);
       expect(api.requestHandoff).toHaveBeenCalledWith(
@@ -2639,6 +2790,26 @@ describe('FlowService', () => {
       );
 
       expect(res.handoff).toBe('faq');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+  });
+
+  describe('trámites que solo hace la oficina (19/10)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      phoneNumberId: 'P1',
+      client: { firstName: 'Ana', lastName: 'Gómez' } as FlowContext['client'],
+    };
+
+    it('van a la oficina con el pedido escrito, no a una denuncia nueva', async () => {
+      await send({ text: 'hola' }, ctx);
+      intents.interpret.mockResolvedValue('tramite');
+      const text =
+        'quería saber si se pudo cambiar la orden de parabrisas que salió para otro taller';
+      const res = await send({ text }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(1, text);
+      expect(res.messages[0].body).toContain('Listo, tomé nota');
       expect(stored?.step).toBe('CLIENT_MENU');
     });
   });

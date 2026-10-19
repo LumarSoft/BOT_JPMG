@@ -18,7 +18,12 @@ import {
   type TakeOutDocs,
   takeOutDocsState,
 } from './flow/flow.service';
-import type { FlowState, OutgoingMessage } from './flow/flow.types';
+import type {
+  FlowContext,
+  FlowHandleResult,
+  FlowState,
+  OutgoingMessage,
+} from './flow/flow.types';
 import {
   clientMenu,
   gncAnswer,
@@ -32,7 +37,19 @@ import {
   buildFaqPrompt,
   MENU_MARKER,
 } from './constants/prompts';
-import { COTIZADOR_TOOLS, REQUEST_COVERAGE_TOOL } from './constants/tools';
+import {
+  ACTION_TOOL_NAMES,
+  COTIZADOR_TOOLS,
+  faqActionTools,
+  OPEN_OPTION_TOOL_DEF,
+  REQUEST_COVERAGE_TOOL,
+} from './constants/tools';
+import {
+  describeOnScreen,
+  flowActionOf,
+  optionIds,
+  type FlowAction,
+} from './flow-action';
 import { compactMessages } from './compact-messages';
 import { findVehicle } from './vehicle-finder';
 import {
@@ -221,6 +238,21 @@ interface PendingPhotoReply {
 }
 
 const text = (body: string): OutgoingMessage[] => [{ kind: 'text', body }];
+
+/** Everything `deliverTurn` needs to send a turn's reply. */
+interface DeliverTurn {
+  context: BotContext;
+  conversation: BotConversation;
+  result: FlowHandleResult;
+  /** What the customer wrote (the model reads it). */
+  text: string;
+  phoneNumberId: string;
+  from: string;
+  /** `from`, normalized for Meta's send API. */
+  to: string;
+  flowKey: string;
+  flowCtx: FlowContext;
+}
 
 /** "tu foto", "tus 3 fotos", "tus 2 archivos" — a PDF in the batch makes them files. */
 function received(n: number, files: boolean): string {
@@ -703,39 +735,41 @@ export class WebhookService {
 
     // Deterministic state machine drives the conversation. The LLM is only
     // reached when the flow explicitly hands off (cotización / free-text FAQ).
+    const flowKey = `${phoneNumberId}:${from}`;
+    const flowCtx: FlowContext = {
+      conversationId: conversation.conversationId,
+      client: conversation.client,
+      newSession: conversation.newSession ?? false,
+      botName: context.botName,
+      attentionHours: context.attentionHours,
+      flowState: this.parseFlowState(conversation.flowState),
+      phoneNumberId,
+      llmEnabled: context.llmEnabled,
+      history: conversation.messages.map(({ role, content }) => ({
+        // An inbox reply ("agent") is the business speaking, like the bot.
+        role: role === 'agent' ? 'assistant' : role,
+        content,
+      })),
+      inboundAt,
+      lastHumanReply: conversation.lastHumanReply ?? null,
+      previousActivityAt: conversation.previousActivityAt ?? null,
+      answeringPerson: answeringAPerson(
+        conversation.messages,
+        conversation.lastHumanReply,
+      ),
+      // Reading the message is optional: past the hourly cap the flow
+      // falls back to its menus instead of spending another call.
+      llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
+      staffNames: context.staffNames ?? [],
+      phoneMatch: conversation.phoneMatch ?? null,
+      botSpoke: conversation.messages.some(
+        (m) => m.role === 'assistant' && m.source !== 'app_echo',
+      ),
+    };
     const result = await this.flow.handle(
-      `${phoneNumberId}:${from}`,
+      flowKey,
       { text: text.trim(), selectionId },
-      {
-        conversationId: conversation.conversationId,
-        client: conversation.client,
-        newSession: conversation.newSession ?? false,
-        botName: context.botName,
-        attentionHours: context.attentionHours,
-        flowState: this.parseFlowState(conversation.flowState),
-        phoneNumberId,
-        llmEnabled: context.llmEnabled,
-        history: conversation.messages.map(({ role, content }) => ({
-          // An inbox reply ("agent") is the business speaking, like the bot.
-          role: role === 'agent' ? 'assistant' : role,
-          content,
-        })),
-        inboundAt,
-        lastHumanReply: conversation.lastHumanReply ?? null,
-        previousActivityAt: conversation.previousActivityAt ?? null,
-        answeringPerson: answeringAPerson(
-          conversation.messages,
-          conversation.lastHumanReply,
-        ),
-        // Reading the message is optional: past the hourly cap the flow
-        // falls back to its menus instead of spending another call.
-        llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
-        staffNames: context.staffNames ?? [],
-        phoneMatch: conversation.phoneMatch ?? null,
-        botSpoke: conversation.messages.some(
-          (m) => m.role === 'assistant' && m.source !== 'app_echo',
-        ),
-      },
+      flowCtx,
     );
 
     // Re-read the organization switch immediately before any automated output.
@@ -743,6 +777,43 @@ export class WebhookService {
     // while this message is already being processed.
     if (!(await this.automaticRepliesStillEnabled(phoneNumberId))) return;
 
+    await this.deliverTurn({
+      context,
+      conversation,
+      result,
+      text,
+      phoneNumberId,
+      from,
+      to,
+      flowKey,
+      flowCtx,
+    });
+
+    if (result.messages.length > 0 || result.handoff) {
+      this.logger.log(`Mensaje(s) enviado(s) a ${to} ✓`);
+    } else {
+      this.logger.log(`Sin mensaje saliente para ${to} (evento ignorado)`);
+    }
+  }
+
+  /**
+   * Sends what the flow decided for this message — its own messages and, when
+   * it hands off, the model's reply. A model that acts (opens an option, picks
+   * from the list, passes a request to the office) goes back through the flow
+   * once, and that result is delivered instead.
+   */
+  private async deliverTurn(turn: DeliverTurn, depth = 0): Promise<void> {
+    const {
+      context,
+      conversation,
+      result,
+      text,
+      phoneNumberId,
+      from,
+      to,
+      flowKey,
+      flowCtx,
+    } = turn;
     // Persist the new flow snapshot so a restart resumes the exact step. The LLM
     // handoff below never changes flow state, so it's safe to save it now.
     await this.api
@@ -813,6 +884,7 @@ export class WebhookService {
         coverageLeadId,
         takeOutDocs,
         quoteVehicleMemory,
+        action,
       } = await this.generateReply(
         context,
         this.quoteHistory(conversation, result.state),
@@ -823,10 +895,25 @@ export class WebhookService {
         vehicleType,
         this.readQuoteVehicleMemory(result.state),
         result.staffNotified,
+        { onScreen: result.onScreen, allowActions: depth === 0 },
       );
       // LLM/tool turns can take several seconds. Check again so an in-flight
       // response cannot escape after the global stop button was pressed.
       if (!(await this.automaticRepliesStillEnabled(phoneNumberId))) return;
+      // The model asked the flow to do it (send the papers, alert the office,
+      // pick the policy): the flow's reply is this turn's answer.
+      if (action) {
+        this.logger.log(
+          `[5/5] El modelo eligió "${action.selectionId}" — lo resuelve el flujo`,
+        );
+        const next = await this.flow.handle(
+          flowKey,
+          { text: action.text, selectionId: action.selectionId },
+          { ...flowCtx, flowState: result.state, botSpoke: true },
+        );
+        await this.deliverTurn({ ...turn, result: next }, depth + 1);
+        return;
+      }
       let effectiveState = result.state;
       if (effectiveState?.step === 'LLM_COTIZACION' && quoteVehicleMemory) {
         effectiveState = {
@@ -858,8 +945,12 @@ export class WebhookService {
       let outgoing: OutgoingMessage[] = [
         gnc ?? ({ kind: 'text', body: reply } as const),
       ];
-      // The option the answer points to, ready to tap (any step takes it).
-      if (marked.menu && !gnc && !coverageLeadId) outgoing.push(clientMenu());
+      // The list they were answering comes back under the answer; otherwise
+      // the option the answer points to, ready to tap (any step takes it).
+      if (result.onScreen && !gnc && !coverageLeadId)
+        outgoing.push(result.onScreen);
+      else if (marked.menu && !gnc && !coverageLeadId)
+        outgoing.push(clientMenu());
 
       // A coverage was chosen: the request is recorded, now collect the
       // documents the office asks for to take it out, step by step.
@@ -896,12 +987,6 @@ export class WebhookService {
           );
         await this.dispatch(to, message, phoneNumberId);
       }
-    }
-
-    if (result.messages.length > 0 || result.handoff) {
-      this.logger.log(`Mensaje(s) enviado(s) a ${to} ✓`);
-    } else {
-      this.logger.log(`Sin mensaje saliente para ${to} (evento ignorado)`);
     }
   }
 
@@ -1933,12 +2018,20 @@ export class WebhookService {
     vehicleType?: 'auto' | 'moto',
     rememberedVehicle?: QuoteVehicleMemory,
     staffNotified?: string,
+    options: {
+      /** The list the customer was answering (FAQ): the model can pick from it. */
+      onScreen?: OutgoingMessage;
+      /** False on the turn an action already led to: no second action. */
+      allowActions?: boolean;
+    } = {},
   ): Promise<{
     text: string;
     coverageLeadId?: number;
     /** What the chosen coverage's vehicle needs to be taken out. */
     takeOutDocs?: TakeOutDocs;
     quoteVehicleMemory?: QuoteVehicleMemory;
+    /** The model acted instead of answering: the flow runs this option. */
+    action?: FlowAction;
   }> {
     const today = new Date().toLocaleDateString('es-AR', {
       weekday: 'long',
@@ -1991,13 +2084,23 @@ export class WebhookService {
             catalog,
             staffNames: context.staffNames,
             staffNotified,
+            onScreen: describeOnScreen(options.onScreen),
           });
     const system =
       handoff === 'cotizacion'
         ? baseSystem +
           this.renderRememberedVehicle(quoteVehicleMemory, knownGnc)
         : baseSystem;
-    const tools = handoff === 'cotizacion' ? COTIZADOR_TOOLS : undefined;
+    const allowActions = options.allowActions !== false;
+    const pickIds = optionIds(options.onScreen);
+    const tools =
+      handoff === 'cotizacion'
+        ? allowActions
+          ? [...COTIZADOR_TOOLS, OPEN_OPTION_TOOL_DEF]
+          : COTIZADOR_TOOLS
+        : allowActions
+          ? faqActionTools(pickIds)
+          : undefined;
 
     const messages: ChatMessageParam[] = [
       { role: 'system', content: system },
@@ -2069,10 +2172,42 @@ export class WebhookService {
         this.logger.log(
           `[4/5] Ronda ${round + 1}: ${toolCalls.length} tool call(s): ${toolCalls.map((tc) => tc.function.name).join(', ')}`,
         );
+        // An action ends the model's turn: the flow does it and answers.
+        const action = toolCalls
+          .filter(
+            (tc) => allowActions && ACTION_TOOL_NAMES.has(tc.function.name),
+          )
+          .map((tc) =>
+            flowActionOf(
+              tc.function.name,
+              tc.function.arguments,
+              text,
+              pickIds,
+            ),
+          )
+          .find((a): a is FlowAction => a !== null);
+        if (action) {
+          this.logger.log(
+            `   🔧 Acción del modelo → ${action.selectionId} (${JSON.stringify(action.text).slice(0, 120)})`,
+          );
+          return {
+            text: '',
+            coverageLeadId,
+            takeOutDocs,
+            quoteVehicleMemory,
+            action,
+          };
+        }
         messages.push(message);
         // Independent lookups run in parallel; results keep the call order.
         const results = await Promise.all(
           toolCalls.map(async (toolCall) => {
+            // An action call with arguments that make no sense (an id not on
+            // the list): the model is told so and answers in words.
+            if (ACTION_TOOL_NAMES.has(toolCall.function.name))
+              return JSON.stringify({
+                error: 'Opción inválida: respondé con texto sin prometer nada.',
+              });
             if (toolCall.function.name !== REQUEST_COVERAGE_TOOL) {
               return this.executeTool(
                 toolCall.function.name,

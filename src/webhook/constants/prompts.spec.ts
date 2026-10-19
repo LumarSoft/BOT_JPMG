@@ -1,4 +1,4 @@
-import { buildCotizacionPrompt } from './prompts';
+import { buildCotizacionPrompt, buildFaqPrompt } from './prompts';
 
 describe('buildCotizacionPrompt', () => {
   const base = {
@@ -65,5 +65,35 @@ describe('buildCotizacionPrompt', () => {
     );
     expect(prompt).toContain('no la vuelvas a llamar');
     expect(prompt).toContain('Una pregunta sobre una cobertura NO es elegirla');
+  });
+});
+
+describe('buildFaqPrompt', () => {
+  const base = { today: '19 de octubre de 2026' };
+
+  it('acts through its tools instead of handing out phrases to type or promising', () => {
+    const prompt = buildFaqPrompt(base);
+
+    // 15–19/10: "escribime 'quiero la documentación'" and "te envío la tarjeta" with nothing sent.
+    expect(prompt).not.toContain('decile que te escriba');
+    expect(prompt).toContain('llamá la herramienta en vez de escribir');
+    expect(prompt).toContain('abrir_opcion');
+    expect(prompt).toContain('pasar_a_la_oficina');
+    expect(prompt).toContain('ni prometas que vos, el sistema o la oficina');
+    expect(prompt).not.toContain('## LISTA EN PANTALLA');
+  });
+
+  it('shows the list on screen so the model can pick from it', () => {
+    const prompt = buildFaqPrompt({
+      ...base,
+      onScreen: {
+        question: '¿De qué póliza querés la documentación?',
+        options: [{ id: 'pol_1', title: 'FORD RANGER' }],
+      },
+    });
+
+    expect(prompt).toContain('## LISTA EN PANTALLA');
+    expect(prompt).toContain('- pol_1: FORD RANGER');
+    expect(prompt).toContain('elegir_de_la_lista');
   });
 });

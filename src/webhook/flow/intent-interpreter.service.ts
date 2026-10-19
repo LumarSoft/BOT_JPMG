@@ -17,6 +17,7 @@ export const OPENING_INTENTS = [
   'baja',
   'grua',
   'asesor',
+  'tramite',
   'consulta',
   'seguimiento',
 ] as const;
@@ -41,6 +42,7 @@ Devolvé UNA intención:
 - baja: quiere dar de baja o cancelar un seguro.
 - grua: necesita grúa, auxilio mecánico o remolque.
 - asesor: pide hablar con una persona, un asesor o alguien del equipo.
+- tramite: pide algo que solo hace la oficina, o pregunta cómo va: agregar o sacar a una persona o un vehículo de la póliza, cambiar datos o la cobertura, un endoso, una orden de reparación o de cristales/parabrisas (o cambiarla de taller), un reintegro, un descuento o convenio. No es siniestro aunque nombre un parabrisas o un choque, si lo que pide es ese trámite.
 - consulta: hace una pregunta que se responde conversando: qué cubre un seguro o su póliza, requisitos, cómo funciona algo, horarios.
 - seguimiento: sigue una charla anterior con alguien de la oficina o responde a algo que no está en este mensaje ("ya te mandé las fotos", "estoy en el sanatorio", "no entiendo lo que me mandaste", "romano se va a comunicar"), sin pedir nada de lo anterior.
 Si viene "ultimaRespuestaDeLaOficina", es lo último que le escribió una persona del equipo: usala para reconocer un seguimiento.
