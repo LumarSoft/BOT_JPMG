@@ -170,3 +170,62 @@ export function identificationFromText(
   const dni = candidates.length ? singleDocument(candidates) : null;
   return dni ? { dni } : null;
 }
+
+/** Argentine plate shapes: L = letter, D = digit. */
+const PLATE_SHAPES = ['LLDDDLL', 'LDDDLLL', 'LLLDDD'];
+
+/**
+ * A plate typed with a letter where a digit goes, or the other way round
+ * ("ZOO9ZZZ" for Z009ZZZ): O/I/L read as 0/1 in the digit slots and 0/1 as
+ * O/I in the letter slots. Only a token with at least one real digit counts,
+ * so a word is never taken for a plate. Null when no shape fits.
+ */
+export function plateWithTypos(token: string): string | null {
+  const t = token.toLowerCase().replace(/[ -]/g, '');
+  if (!/^[a-z0-9]{6,7}$/.test(t) || !/\d/.test(t) || !/[a-z]/.test(t))
+    return null;
+  for (const shape of PLATE_SHAPES) {
+    if (shape.length !== t.length) continue;
+    let plate = '';
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (shape[i] === 'D')
+        plate += /\d/.test(c) ? c : c === 'o' ? '0' : /[il]/.test(c) ? '1' : '';
+      else
+        plate += /[a-z]/.test(c) ? c : c === '0' ? 'o' : c === '1' ? 'i' : '';
+      if (plate.length !== i + 1) break;
+    }
+    if (plate.length === t.length) return plate.toUpperCase();
+  }
+  return null;
+}
+
+/**
+ * A message that is only a DNI, CUIT or plate ("ZZX987", "dni 30.123.456",
+ * "patente zoo9zzz"), so it can identify the customer wherever it arrives.
+ * Null for anything with more to it ("mi DNI es…", "el de mi papá es…"),
+ * which the model reads with more care.
+ */
+export function bareIdentification(
+  text: string,
+): { dni: string } | { plate: string } | null {
+  const rest = text
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:dni|d\.n\.i\.?|cuit|cuil|patente|dominio)\s*:?\s*/, '')
+    .replace(/[.!]+$/, '');
+  if (!/^[a-z0-9][a-z0-9 .-]{4,16}$/.test(rest)) return null;
+  const read = identificationFromText(rest);
+  if (read) {
+    // A plate must be the whole message, not part of a longer word run.
+    if (
+      'plate' in read &&
+      read.plate.toLowerCase() !== rest.replace(/[ -]/g, '')
+    )
+      return null;
+    if ('dni' in read && !/^[\d .-]+$/.test(rest)) return null;
+    return read;
+  }
+  const plate = plateWithTypos(rest);
+  return plate ? { plate } : null;
+}

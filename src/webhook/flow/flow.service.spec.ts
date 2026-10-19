@@ -2794,6 +2794,54 @@ describe('FlowService', () => {
     });
   });
 
+  describe('patente o DNI escritos solos (19/10)', () => {
+    it('identifica con la patente que manda como primer mensaje, aunque tenga O por 0', async () => {
+      const res = await send({ text: 'ZOO9ZZZ' });
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { plate: 'Z009ZZZ' });
+      expect(JSON.stringify(res.messages)).toContain('te identifiqué');
+    });
+
+    it('identifica con la patente que manda en vez de contestar "¿ya sos cliente?"', async () => {
+      await send({ text: 'Hola buenos dias' });
+      expect(stored?.step).toBe('ROOT');
+      const res = await send({ text: 'ZZX987' });
+      expect(api.identifyClient).toHaveBeenCalledWith(1, { plate: 'ZZX987' });
+      expect(JSON.stringify(res.messages)).toContain('m_pagos');
+    });
+
+    it('dice que no la encontró, y a la segunda ofrece un asesor sin "no te entiendo"', async () => {
+      const notFound = Object.assign(new Error('Not found'), {
+        isAxiosError: true,
+        response: { status: 404 },
+      });
+      api.identifyClient.mockRejectedValue(notFound);
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const first = await send({ text: '30111222' });
+      expect(JSON.stringify(first.messages)).toContain('No encontré');
+
+      const second = await send({ text: 'AB123CD' });
+      expect(api.identifyClient).toHaveBeenLastCalledWith(1, {
+        plate: 'AB123CD',
+      });
+      const out = JSON.stringify(second.messages);
+      expect(out).toContain('Tampoco encontré');
+      expect(out).toContain(OPT.stuckAsesor);
+      expect(out).not.toContain('no te estoy entendiendo');
+      expect(stored?.step).toBe('IDENTIFY');
+    });
+
+    it('"Necesito asegurar otro auto" donde pide el DNI va a cotizar', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'Necesito asegurar otro auto' });
+
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.messages)).not.toContain('DNI');
+      expect(stored?.step).not.toBe('IDENTIFY');
+    });
+  });
+
   describe('trámites que solo hace la oficina (19/10)', () => {
     const ctx: FlowContext = {
       ...leadCtx,
@@ -3088,6 +3136,45 @@ describe('FlowService', () => {
       );
       expect(api.identifyByPhone).not.toHaveBeenCalled();
       expect(JSON.stringify(res.messages)).toContain('ya sos cliente');
+    });
+
+    it('does not ask "¿Hablo con…?" again after "No, soy otra persona" (19/10)', async () => {
+      const ctx = { ...withModel, phoneMatch: { firstName: 'JORGE' } };
+      await send({ text: 'hola' }, ctx);
+      await send(
+        { text: 'No, soy otra persona', selectionId: OPT.phoneNo },
+        ctx,
+      );
+      expect(stored?.phoneDeclined).toBe(true);
+
+      const res = await send(
+        { text: 'Sí, soy cliente', selectionId: OPT.cliente },
+        ctx,
+      );
+      expect(JSON.stringify(res.messages)).not.toContain('¿Hablo con');
+      expect(JSON.stringify(res.messages)).toContain('DNI');
+    });
+
+    it('nor when a request needs identification later in the chat', async () => {
+      const ctx = { ...withModel, phoneMatch: { firstName: 'MARIA' } };
+      await send({ text: 'hola' }, ctx);
+      await send(
+        { text: 'No, soy otra persona', selectionId: OPT.phoneNo },
+        ctx,
+      );
+      const res = await send({ text: '', selectionId: OPT.pagos }, ctx);
+      expect(JSON.stringify(res.messages)).not.toContain('¿Hablo con');
+      expect(stored?.step).toBe('IDENTIFY');
+    });
+
+    it('calls them by the given name the WhatsApp profile shows', async () => {
+      const ctx = {
+        ...withModel,
+        phoneMatch: { firstName: 'PAZ SOFIA' },
+        contactName: 'Sofía Ruiz Paz',
+      };
+      const res = await send({ text: 'Hola' }, ctx);
+      expect(JSON.stringify(res.messages)).toContain('¿Hablo con *Sofia*?');
     });
 
     it('passes policies it does not have (a nómina in SanCor) to the office', async () => {

@@ -2,7 +2,7 @@ import {
   IdentificationInterpreter,
   type IdentificationAction,
 } from './identification-interpreter.service';
-import { identificationFromText } from './identification';
+import { bareIdentification, identificationFromText } from './identification';
 import {
   IntentInterpreter,
   type OpeningIntent,
@@ -1023,7 +1023,7 @@ export class FlowService {
     // The customer is answering a person from the office: no introduction.
     const personRecently = ctx.answeringPerson === true;
     if (ctx.client) {
-      const hello = returningGreeting(ctx.client.firstName);
+      const hello = returningGreeting(ctx.client.firstName, ctx.contactName);
       this.setState(key, 'CLIENT_MENU', {}, 'client');
       // The message that reopened the chat must not be lost. The old menu is
       // still on the user's screen after a session expires, so a returning
@@ -1072,6 +1072,13 @@ export class FlowService {
       personRecently || this.repliedMomentsAgo(ctx)
         ? null
         : openingLine(intro, ctx.botName);
+    // Only a plate or a DNI ("ZZX987"): who they are, so identify them.
+    const typedId = sel ? null : bareIdentification(input.text);
+    if (typedId)
+      return this.withOpener(
+        opener,
+        await this.identifyTyped(typedId, ctx, key),
+      );
     // The very first message already asks for a quote ("hola, quiero cotizar
     // mi auto"): a quote doesn't need "¿ya sos cliente?", and every extra
     // round-trip is one more billed message and one more wait. Introduce
@@ -1260,6 +1267,11 @@ export class FlowService {
   ): Promise<FlowResult> {
     const t = input.text.toLowerCase();
     const sel = input.selectionId;
+
+    // A plate or DNI typed as the answer to "¿ya sos cliente?" says yes and
+    // who: it got the menu, and "¿Hablo con…?" again on the next request.
+    const typedId = sel ? null : bareIdentification(input.text);
+    if (typedId && !ctx.client) return this.identifyTyped(typedId, ctx, key);
 
     // ── 1. Client / non-client identification ────────────────
     const isClient =
@@ -2092,14 +2104,28 @@ export class FlowService {
       );
     }
 
+    // "Necesito asegurar otro auto" where the DNI was asked: a quote needs
+    // no identification. It got "pasame el DNI" again.
+    if (
+      !input.selectionId &&
+      QUOTE_INTENT_RE.test(fold(raw)) &&
+      !MAYBE_IDENTIFICATION_RE.test(raw)
+    )
+      return this.enterCotizar(input, ctx, key);
+
     let action = (state.data.pendingAction as IdentificationAction) ?? 'pagos';
-    let params: { dni: string } | { plate: string } | null = null;
+    let params: { dni: string } | { plate: string } | null =
+      bareIdentification(raw);
     // Bare identifiers need no interpretation; natural speech goes to the model.
     const bare =
+      !!params ||
       /^(?:[\d .-]+|[a-z]{3}[ -]*\d{3}|[a-z]{2}[ -]*\d{3}[ -]*[a-z]{2}|[a-z][ -]*\d{3}[ -]*[a-z]{3})$/i.test(
         raw,
       );
-    if (bare || ctx.llmEnabled === false) params = identificationFromText(raw);
+    if (params) {
+      // Read already, without the model.
+    } else if (bare || ctx.llmEnabled === false)
+      params = identificationFromText(raw);
     else {
       try {
         const meaning = await this.identification.interpret({
@@ -2154,9 +2180,51 @@ export class FlowService {
         ? { docs: state.data.pendingDocs as string[] }
         : {}),
     });
-    return (
-      result ?? this.retry(key, state, [{ kind: 'text', body: NOT_FOUND_TEXT }])
-    );
+    return result ?? this.notFound(key, state.data);
+  }
+
+  /**
+   * Nobody has that DNI, CUIT or plate. Said as such every time: counted as
+   * a misunderstanding, the second one answered "no te estoy entendiendo" to
+   * a customer who had sent a perfectly clear plate. From the second one on,
+   * a person is offered too.
+   */
+  private notFound(key: string, data: Record<string, unknown>): FlowResult {
+    const misses = ((data.notFound as number | undefined) ?? 0) + 1;
+    this.setState(key, 'IDENTIFY', {
+      ...withoutPhoneQuestion(data),
+      notFound: misses,
+    });
+    if (misses < 2)
+      return { messages: [{ kind: 'text', body: NOT_FOUND_TEXT }] };
+    return {
+      messages: [
+        {
+          kind: 'buttons',
+          body: 'Tampoco encontré ese dato 😕. Puede que la póliza esté a nombre de otra persona o con otro documento. Mandame otro DNI, CUIT o patente, o pedí que te ayude un asesor.',
+          buttons: [{ id: OPT.stuckAsesor, title: 'Hablar con un asesor' }],
+        },
+      ],
+    };
+  }
+
+  /**
+   * A DNI, CUIT or plate sent on its own, outside the identification step:
+   * identifies them and shows the menu, or says it wasn't found and waits for
+   * another one in the identification step.
+   */
+  private async identifyTyped(
+    params: { dni: string } | { plate: string },
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const found = await this.identifyAndRun(params, 'menu', ctx, key, {});
+    if (found) return found;
+    const prior = this.load(key)?.state;
+    return this.notFound(key, {
+      pendingAction: 'menu',
+      ...(prior?.step === 'IDENTIFY' ? prior.data : {}),
+    });
   }
 
   /**
@@ -4618,8 +4686,8 @@ export class FlowService {
     data: Record<string, unknown> = {},
     opener?: string | null,
   ): FlowResult | null {
-    if (ctx.client) return null;
-    const name = displayName(ctx.phoneMatch?.firstName);
+    if (ctx.client || this.load(key)?.state.phoneDeclined) return null;
+    const name = displayName(ctx.phoneMatch?.firstName, ctx.contactName);
     if (!name) return null;
     this.setState(key, 'IDENTIFY', {
       ...data,
@@ -4636,7 +4704,9 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult | null> {
     const raw = input.text.trim();
-    const name = displayName(ctx.phoneMatch?.firstName);
+    const name = state.phoneDeclined
+      ? null
+      : displayName(ctx.phoneMatch?.firstName, ctx.contactName);
     if (input.selectionId || !name || MAYBE_IDENTIFICATION_RE.test(raw))
       return null;
     const intent = await this.readIntent(input, ctx);
@@ -4701,12 +4771,16 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): FlowResult {
+    let result: FlowResult;
     // Answered to a greeting: they never said whether they are a client.
     if (state.data.fromGreeting) {
       this.setState(key, 'ROOT');
-      return { messages: [welcomeMenu(undefined, ctx.botName, 'none')] };
-    }
-    return this.askDniInstead(state, key, 'Dale.');
+      result = { messages: [welcomeMenu(undefined, ctx.botName, 'none')] };
+    } else result = this.askDniInstead(state, key, 'Dale.');
+    // Asked again after "Sí, soy cliente", two people said "No" twice.
+    const entry = this.states.get(key);
+    if (entry) entry.state = { ...entry.state, phoneDeclined: true };
+    return result;
   }
 
   private askDniInstead(
@@ -5136,7 +5210,12 @@ export class FlowService {
     const next = { ...data };
     if (prev?.step !== step) delete next[RETRIES];
     this.states.set(key, {
-      state: { step, data: next, audience: audience ?? prev?.audience },
+      state: {
+        step,
+        data: next,
+        audience: audience ?? prev?.audience,
+        ...(prev?.phoneDeclined ? { phoneDeclined: true } : {}),
+      },
     });
   }
 

@@ -2,7 +2,8 @@
 // DNI 99000001 Ana (1 auto, al día, phone → waId 5493419990001), 99000002 Lucas
 // (auto plan de pago + moto con débito en proceso, waId 5493419990002), CUIT
 // 30712345671 empresa (2 camiones), 99000004 Marta (débito rechazado), 99000006
-// Gustavo (1 auto, waId 5493419990006), and a chat the office answered by hand
+// Gustavo (1 auto, waId 5493419990006), 99000008 Jorge (no policies, waId
+// 5493419990008, says he is someone else), and a chat the office answered by hand
 // (waId 5493419990120).
 //
 // Each scenario: `steps` are what the customer (or the office, `echo`) sends;
@@ -614,6 +615,45 @@ module.exports = [
       ...ident('99000002'),
       { select: 'm_documentos', title: '📄 Documentación', list: true },
       { text: 'Quiero cupones', expect: { any: [/pol_todas|cupones de pago/i], none: [promise] } },
+    ],
+  },
+
+  // ─── Identificación (revisión 19/10) ──────────────────────────────
+  {
+    id: 'D01', area: 'Identificación (19/10)', name: '"No, soy otra persona": no vuelve a preguntar "¿Hablo con…?"', wa: '5493419990008', regression: '#87, #200 (15–16/10)',
+    steps: [
+      { text: 'Hola', expect: { any: [/Hablo con \*Jorge\*/] } },
+      { select: 'id_phone_no', title: 'No, soy otra persona', expect: { any: [/ya sos cliente/i] } },
+      { select: 'cliente', title: 'Sí, soy cliente', expect: { any: [/DNI/], none: [/Hablo con/] } },
+      { text: '99000001', expect: { any: [/te identifiqué/i] } },
+    ],
+  },
+  {
+    id: 'D02', area: 'Identificación (19/10)', name: 'Patente en vez de contestar "¿ya sos cliente?": identifica', wa: wa(), regression: '#200 (15/10)',
+    steps: [
+      { text: 'Hola buenos dias', expect: { any: [/ya sos cliente/i] } },
+      { text: 'ZZ901AA', expect: { any: [/te identifiqué/i, /m_pagos/] } },
+    ],
+  },
+  {
+    id: 'D03', area: 'Identificación (19/10)', name: 'Patente con letra O en vez de cero como primer mensaje: identifica', wa: wa(), regression: '#143 (16/10)',
+    steps: [{ text: 'ZZ9O1AA', expect: { any: [/te identifiqué/i] } }],
+  },
+  {
+    id: 'D04', area: 'Identificación (19/10)', name: 'Dos datos que no existen: "no encontré" y ofrece asesor, sin "no te entiendo"', wa: wa(), regression: '#223 (16/10)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'cliente', title: 'Sí, soy cliente' },
+      { text: '30111222', expect: { any: [/No encontré/] } },
+      { text: 'ZZ999ZZ', expect: { any: [/Tampoco encontré/, /stuck_asesor/], none: [/no te estoy entendiendo/i] } },
+    ],
+  },
+  {
+    id: 'D05', area: 'Identificación (19/10)', name: '"Necesito asegurar otro auto" donde pide el DNI: va a cotizar', wa: wa(), regression: '#225 (16/10)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'cliente', title: 'Sí, soy cliente' },
+      { text: 'Necesito asegurar otro auto', expect: { reply: true, none: [/DNI/] } },
     ],
   },
 

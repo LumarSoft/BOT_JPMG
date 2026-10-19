@@ -5,7 +5,8 @@ INSERT INTO Client (dni, firstName, lastName, password, phone, producerId, produ
  ('99000002','LUCAS EZEQUIEL','PRUEBA','x','341159990002',1,2,NOW(3)),
  ('30712345671','TRANSPORTES PRUEBA SRL','','x',NULL,1,2,NOW(3)),
  ('99000004','MARTA','PRUEBA','x',NULL,1,2,NOW(3)),
- ('99000006','GUSTAVO','PRUEBA','x','341159990006',1,2,NOW(3));
+ ('99000006','GUSTAVO','PRUEBA','x','341159990006',1,2,NOW(3)),
+ ('99000008','JORGE','PRUEBA','x','341159990008',1,2,NOW(3));
 SET @a=(SELECT id FROM Client WHERE dni='99000001'); SET @b=(SELECT id FROM Client WHERE dni='99000002');
 SET @c=(SELECT id FROM Client WHERE dni='30712345671'); SET @d=(SELECT id FROM Client WHERE dni='99000004'); SET @g=(SELECT id FROM Client WHERE dni='99000006');
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES

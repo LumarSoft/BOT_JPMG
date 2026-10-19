@@ -65,6 +65,9 @@ export interface FlowState {
    * OFFICE_THREAD_MS): kept for the session, since the API stops reporting
    * that person's reply once the bot answers. */
   officeThread?: boolean;
+  /** Said "No, soy otra persona" to "¿Hablo con Juan?": not asked again this
+   * session. It came back on the next step that needed identification. */
+  phoneDeclined?: boolean;
 }
 
 export interface UserInput {
@@ -150,6 +153,8 @@ export interface FlowContext {
   llmRateLimited?: boolean;
   /** Office people customers write to by name ("Mili"): those messages go to the office. */
   staffNames?: string[];
+  /** The sender's WhatsApp profile name, when Meta sends it. */
+  contactName?: string | null;
   /** Unidentified, but this number is one client's phone: "¿hablo con Juan?". */
   phoneMatch?: PhoneMatch | null;
   /** A person from the office handled this chat in the last days. Set by the

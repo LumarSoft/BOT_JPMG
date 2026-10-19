@@ -1,4 +1,9 @@
-import { identificationFromText, isCuit } from './identification';
+import {
+  bareIdentification,
+  identificationFromText,
+  isCuit,
+  plateWithTypos,
+} from './identification';
 
 describe('identificationFromText', () => {
   it.each([
@@ -46,4 +51,33 @@ describe('isCuit', () => {
     'rejects %s',
     (d) => expect(isCuit(d)).toBe(false),
   );
+});
+
+describe('bareIdentification (19/10)', () => {
+  it.each([
+    ['ZZX987', { plate: 'ZZX987' }],
+    ['ZOO9ZZZ', { plate: 'Z009ZZZ' }],
+    ['zz 120 zz', { plate: 'ZZ120ZZ' }],
+    ['patente zoo9zzz', { plate: 'Z009ZZZ' }],
+    ['dni 30.123.456', { dni: '30123456' }],
+    ['30123456', { dni: '30123456' }],
+  ])('reads %s', (text, expected) =>
+    expect(bareIdentification(text)).toEqual(expected),
+  );
+
+  it.each([
+    'gracias',
+    'Hola',
+    'Buen dia',
+    '2017',
+    'Mi DNI es 30123456',
+    'hola1234',
+  ])('leaves %s to the model', (text) =>
+    expect(bareIdentification(text)).toBeNull(),
+  );
+
+  it('never reads a plain word as a plate', () => {
+    expect(plateWithTypos('gracias')).toBeNull();
+    expect(plateWithTypos('abcdef')).toBeNull();
+  });
 });

@@ -224,11 +224,29 @@ const COMPANY_RE =
  * the bot were yelling. Returns null when there is no usable name (empty, or a
  * company), so callers greet without one instead of interpolating a blank.
  */
-export function displayName(firstName?: string | null): string | null {
+export function displayName(
+  firstName?: string | null,
+  /** The WhatsApp profile name, to tell the given name among several words. */
+  profileName?: string | null,
+): string | null {
   const raw = firstName?.trim();
   if (!raw || COMPANY_RE.test(raw)) return null;
 
-  const first = raw.split(/\s+/)[0];
+  // Triunfo sends "APELLIDO NOMBRES" in one string, so a compound surname
+  // ("RUIZ PAZ SOFIA") leaves part of it in firstName: "¿Hablo con Paz?".
+  // The word the WhatsApp profile starts with is the given name.
+  const words = raw.split(/\s+/);
+  const fold = (w: string) =>
+    w
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  const profileFirst = profileName
+    ? fold(profileName.trim().split(/\s+/)[0])
+    : '';
+  const first =
+    (words.length > 1 && words.find((w) => fold(w) === profileFirst)) ||
+    words[0];
   return first
     .toLowerCase()
     .replace(
@@ -238,8 +256,11 @@ export function displayName(firstName?: string | null): string | null {
 }
 
 /** "¡Hola de nuevo, Evelyn!" — or without the name when there isn't a usable one. */
-export function returningGreeting(firstName?: string | null): string {
-  const name = displayName(firstName);
+export function returningGreeting(
+  firstName?: string | null,
+  profileName?: string | null,
+): string {
+  const name = displayName(firstName, profileName);
   return name ? `¡Hola de nuevo, ${name}!` : '¡Hola de nuevo!';
 }
 
