@@ -171,8 +171,20 @@ export class ApiService {
     await this.http.post('/bot/coexistence/contacts', input);
   }
 
-  async markWabaDisconnected(wabaId: string, reason?: string): Promise<void> {
-    await this.http.post(`/bot/waba/${wabaId}/disconnected`, { reason });
+  /**
+   * Forwards an account_update that may mean the number left Cloud API. The API
+   * checks it against Graph, marks the WABA and alerts the office.
+   */
+  async reportWabaAccountUpdate(
+    wabaId: string,
+    notice: { event: string; reason?: string; initiatedBy?: string },
+  ): Promise<{ known: boolean; checked: number; disconnected: number }> {
+    const { data } = await this.http.post<{
+      known: boolean;
+      checked: number;
+      disconnected: number;
+    }>(`/bot/waba/${wabaId}/disconnected`, notice);
+    return data;
   }
 
   async getConversation(

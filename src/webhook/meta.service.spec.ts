@@ -1,7 +1,12 @@
 import axios from 'axios';
 import type { ConfigService } from '@nestjs/config';
 import type { ApiService } from '../api/api.service';
-import { MetaService, outboundContentForLog } from './meta.service';
+import {
+  MetaService,
+  MissingTokenError,
+  describeSendFailure,
+  outboundContentForLog,
+} from './meta.service';
 import type { SentMessageRegistry } from './sent-message-registry.service';
 
 describe('outboundContentForLog', () => {
@@ -119,5 +124,102 @@ describe('MetaService.sendMedia', () => {
         filename: 'foto.jpg',
       }),
     ).rejects.toThrow('Meta rejected the upload');
+  });
+});
+
+describe('MetaService.deliverText', () => {
+  function setup(token: string | null = 'TOKEN') {
+    const service = new MetaService(
+      { get: () => undefined } as unknown as ConfigService,
+      { remember: jest.fn() } as unknown as SentMessageRegistry,
+      {
+        getWhatsappAccessToken: jest.fn().mockResolvedValue(token),
+      } as unknown as ApiService,
+    );
+    const post = jest.spyOn(axios, 'post');
+    return { service, post };
+  }
+
+  function metaRejects(code: number, subcode?: number) {
+    return new axios.AxiosError(
+      'Request failed',
+      'ERR_BAD_REQUEST',
+      undefined,
+      undefined,
+      {
+        status: 400,
+        data: {
+          error: { code, error_subcode: subcode, message: 'Meta says no' },
+        },
+      } as never,
+    );
+  }
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('throws when Meta rejects a reply sent from the panel', async () => {
+    const { service, post } = setup();
+    post.mockRejectedValueOnce(metaRejects(100, 33));
+
+    await expect(
+      service.deliverText('543415555555', 'Hola', 'P1'),
+    ).rejects.toThrow('Request failed');
+  });
+
+  it("keeps swallowing the error for the bot's own replies", async () => {
+    const { service, post } = setup();
+    post.mockRejectedValueOnce(metaRejects(100, 33));
+
+    await expect(
+      service.sendText('543415555555', 'Hola', 'P1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('fails with a missing-token error when the API has no token for the number', async () => {
+    const { service } = setup(null);
+
+    await expect(
+      service.deliverText('543415555555', 'Hola', 'P1'),
+    ).rejects.toBeInstanceOf(MissingTokenError);
+  });
+});
+
+describe('describeSendFailure', () => {
+  function metaRejects(code: number, subcode?: number) {
+    return new axios.AxiosError(
+      'Request failed',
+      'ERR_BAD_REQUEST',
+      undefined,
+      undefined,
+      {
+        status: 400,
+        data: {
+          error: { code, error_subcode: subcode, message: 'Meta says no' },
+        },
+      } as never,
+    );
+  }
+
+  it('reads the 19/10 rejection and a missing token as a disconnected number', () => {
+    expect(describeSendFailure(metaRejects(100, 33))).toContain(
+      'desconectado de Meta',
+    );
+    expect(describeSendFailure(metaRejects(190))).toContain(
+      'desconectado de Meta',
+    );
+    expect(describeSendFailure(new MissingTokenError('sin token'))).toContain(
+      'desconectado de Meta',
+    );
+  });
+
+  it('explains the closed 24-hour window', () => {
+    expect(describeSendFailure(metaRejects(131047))).toContain('más de 24 h');
+  });
+
+  it('says the message was not sent for anything else', () => {
+    expect(describeSendFailure(metaRejects(131000))).toBe(
+      'WhatsApp rechazó el mensaje (131000: Meta says no). El mensaje no se envió.',
+    );
+    expect(describeSendFailure(new TypeError('boom'))).toContain('no se envió');
   });
 });

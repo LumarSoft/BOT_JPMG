@@ -21,6 +21,45 @@ export function outboundContentForLog(
   return JSON.stringify(content);
 }
 
+/** The API has no usable business token for the number (removed or disconnected). */
+export class MissingTokenError extends Error {}
+
+/** Graph codes that mean the number can no longer be used through our app. */
+const DISCONNECTED_CODES = new Set([10, 190, 200, 133010]);
+
+/**
+ * Why a message an advisor sent from the panel did not go out, in the agent's
+ * words. The panel shows it as is, so it says what happened and that the
+ * message was NOT delivered — before this, Meta's rejection was only a log line
+ * and the panel showed the reply as sent.
+ */
+export function describeSendFailure(error: unknown): string {
+  if (error instanceof MissingTokenError) {
+    return 'El número de WhatsApp está desconectado de Meta: hay que reconectarlo desde Números. El mensaje no se envió.';
+  }
+  if (!axios.isAxiosError(error)) {
+    return 'No se pudo enviar el mensaje por WhatsApp. Probá de nuevo; el mensaje no se envió.';
+  }
+  const meta = (
+    error.response?.data as
+      | { error?: { code?: number; error_subcode?: number; message?: string } }
+      | undefined
+  )?.error;
+  if (!meta?.code) {
+    return 'No se pudo conectar con WhatsApp. Probá de nuevo en unos minutos; el mensaje no se envió.';
+  }
+  if (
+    DISCONNECTED_CODES.has(meta.code) ||
+    (meta.code === 100 && meta.error_subcode === 33)
+  ) {
+    return 'El número de WhatsApp está desconectado de Meta: hay que reconectarlo desde Números. El mensaje no se envió.';
+  }
+  if (meta.code === 131047) {
+    return 'Pasaron más de 24 h desde el último mensaje del cliente: WhatsApp no deja responderle con un mensaje libre. El mensaje no se envió.';
+  }
+  return `WhatsApp rechazó el mensaje (${meta.code}${meta.message ? `: ${meta.message}` : ''}). El mensaje no se envió.`;
+}
+
 /**
  * Thin wrapper over the Meta Cloud API send endpoint, shared by the webhook
  * (replies) and the inactivity job (warnings).
@@ -41,6 +80,22 @@ export class MetaService {
     phoneNumberId: string,
   ): Promise<void> {
     await this.send(phoneNumberId, {
+      to,
+      type: 'text',
+      text: { body: text },
+    });
+  }
+
+  /**
+   * A text an advisor sends from the panel. Unlike the bot's own replies this
+   * throws when Meta rejects it, so the panel never shows it as sent.
+   */
+  async deliverText(
+    to: string,
+    text: string,
+    phoneNumberId: string,
+  ): Promise<void> {
+    await this.deliver(phoneNumberId, {
       to,
       type: 'text',
       text: { body: text },
@@ -114,6 +169,7 @@ export class MetaService {
    * Sends an approved template message (HSM). Required for first contact outside
    * the 24-hour window — e.g. following up a web quote with a client who never
    * messaged the bot. `params` fill the body variables ({{1}}, {{2}}, …) in order.
+   * Throws when Meta rejects it.
    */
   async sendTemplate(
     to: string,
@@ -130,7 +186,8 @@ export class MetaService {
           },
         ]
       : undefined;
-    await this.send(phoneNumberId, {
+    // Called only from the API (follow-ups, alerts), which needs to know it failed.
+    await this.deliver(phoneNumberId, {
       to,
       type: 'template',
       template: {
@@ -229,12 +286,21 @@ export class MetaService {
     phoneNumberId: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
+    await this.deliver(phoneNumberId, payload).catch(() => undefined);
+  }
+
+  /** Posts a message payload to the Meta Cloud API; logs and rethrows a rejection. */
+  private async deliver(
+    phoneNumberId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     try {
       await this.post(phoneNumberId, payload);
     } catch (error) {
       this.logger.error(
-        `❌ Error Meta: ${JSON.stringify(axios.isAxiosError(error) ? error.response?.data : error)}`,
+        `❌ Error Meta: ${JSON.stringify(axios.isAxiosError(error) ? error.response?.data : String(error))}`,
       );
+      throw error;
     }
   }
 
@@ -315,7 +381,8 @@ export class MetaService {
         return null;
       });
     const token = customerToken ?? this.config.get<string>('WHATSAPP_TOKEN');
-    if (!token) throw new Error(`No hay token de Meta para ${phoneNumberId}`);
+    if (!token)
+      throw new MissingTokenError(`No hay token de Meta para ${phoneNumberId}`);
     return token;
   }
 

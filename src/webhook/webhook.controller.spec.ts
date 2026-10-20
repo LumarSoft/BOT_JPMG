@@ -18,7 +18,7 @@ describe('WebhookController', () => {
     persistCoexistenceHistory: jest.Mock;
     persistCoexistenceContacts: jest.Mock;
     reportMetaUsage: jest.Mock;
-    markWabaDisconnected: jest.Mock;
+    reportWabaAccountUpdate: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -33,7 +33,9 @@ describe('WebhookController', () => {
       persistCoexistenceHistory: jest.fn().mockResolvedValue(undefined),
       persistCoexistenceContacts: jest.fn().mockResolvedValue(undefined),
       reportMetaUsage: jest.fn().mockResolvedValue(undefined),
-      markWabaDisconnected: jest.fn().mockResolvedValue(undefined),
+      reportWabaAccountUpdate: jest
+        .fn()
+        .mockResolvedValue({ known: true, checked: 1, disconnected: 1 }),
     };
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WebhookController],
@@ -389,7 +391,57 @@ describe('WebhookController', () => {
       ],
     } as any);
 
-    expect(api.markWabaDisconnected).toHaveBeenCalledWith('W1', 'INACTIVE');
+    expect(api.reportWabaAccountUpdate).toHaveBeenCalledWith('W1', {
+      event: 'PARTNER_REMOVED',
+      reason: 'INACTIVE',
+      initiatedBy: 'META',
+    });
+  });
+
+  function accountUpdate(
+    event: string,
+    info?: Record<string, string>,
+  ): Parameters<WebhookController['receiveMessage']>[0] {
+    return {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: '101875549673776',
+          changes: [
+            {
+              field: 'account_update',
+              value: { event, disconnection_info: info },
+            },
+          ],
+        },
+      ],
+    } as unknown as Parameters<WebhookController['receiveMessage']>[0];
+  }
+
+  it('forwards an offboarding or an uninstalled app so the API can check the number', () => {
+    controller.receiveMessage(accountUpdate('ACCOUNT_OFFBOARDED'));
+    controller.receiveMessage(accountUpdate('PARTNER_APP_UNINSTALLED'));
+
+    expect(api.reportWabaAccountUpdate).toHaveBeenCalledWith(
+      '101875549673776',
+      expect.objectContaining({ event: 'ACCOUNT_OFFBOARDED' }),
+    );
+    expect(api.reportWabaAccountUpdate).toHaveBeenCalledWith(
+      '101875549673776',
+      expect.objectContaining({ event: 'PARTNER_APP_UNINSTALLED' }),
+    );
+  });
+
+  it('only logs, with the WABA id, the notices that do not affect the connection', () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    controller.receiveMessage(accountUpdate('MM_LITE_TERMS_SIGNED'));
+
+    expect(api.reportWabaAccountUpdate).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('WABA 101875549673776'),
+    );
+    log.mockRestore();
   });
 
   it('forwards historical chunks to the API for durable persistence', async () => {

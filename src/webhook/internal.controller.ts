@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   Body,
   Controller,
@@ -9,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InternalAuthGuard } from './internal-auth.guard';
-import { MetaService } from './meta.service';
+import { MetaService, describeSendFailure } from './meta.service';
 import { FlowService } from './flow/flow.service';
 
 /** The parts of a multer upload this controller reads (memory storage). */
@@ -27,15 +28,20 @@ export class InternalController {
     private readonly flow: FlowService,
   ) {}
 
-  /** Called by john-api when an admin agent sends a message from the inbox. */
+  /**
+   * Called by john-api when an admin agent sends a message from the inbox.
+   * A rejection comes back as 502 with the reason in the agent's words.
+   */
   @Post('send')
   async send(
     @Body() body: { to: string; text: string; phoneNumberId: string },
   ) {
-    await this.meta.sendText(
-      this.meta.normalizePhone(body.to),
-      body.text,
-      body.phoneNumberId,
+    await reportFailure(() =>
+      this.meta.deliverText(
+        this.meta.normalizePhone(body.to),
+        body.text,
+        body.phoneNumberId,
+      ),
     );
     return { ok: true };
   }
@@ -61,16 +67,18 @@ export class InternalController {
     },
   ) {
     if (!file) throw new BadRequestException('file is required');
-    await this.meta.sendMedia(
-      this.meta.normalizePhone(body.to),
-      body.phoneNumberId,
-      {
-        buffer: file.buffer,
-        mimeType: file.mimetype,
-        // The text field keeps accents; the multipart filename arrives as latin1.
-        filename: body.filename || file.originalname,
-      },
-      body.caption,
+    await reportFailure(() =>
+      this.meta.sendMedia(
+        this.meta.normalizePhone(body.to),
+        body.phoneNumberId,
+        {
+          buffer: file.buffer,
+          mimeType: file.mimetype,
+          // The text field keeps accents; the multipart filename arrives as latin1.
+          filename: body.filename || file.originalname,
+        },
+        body.caption,
+      ),
     );
     return { ok: true };
   }
@@ -91,12 +99,14 @@ export class InternalController {
       params?: string[];
     },
   ) {
-    await this.meta.sendTemplate(
-      this.meta.normalizePhone(body.to),
-      body.phoneNumberId,
-      body.template,
-      body.lang ?? 'es_AR',
-      body.params ?? [],
+    await reportFailure(() =>
+      this.meta.sendTemplate(
+        this.meta.normalizePhone(body.to),
+        body.phoneNumberId,
+        body.template,
+        body.lang ?? 'es_AR',
+        body.params ?? [],
+      ),
     );
     return { ok: true };
   }
@@ -106,5 +116,14 @@ export class InternalController {
   resetFlow(@Body() body: { phoneNumberId: string; waId: string }) {
     this.flow.reset(`${body.phoneNumberId}:${body.waId}`);
     return { ok: true };
+  }
+}
+
+/** Turns a Meta rejection into a 502 the API passes on to the panel. */
+async function reportFailure(send: () => Promise<void>): Promise<void> {
+  try {
+    await send();
+  } catch (error) {
+    throw new BadGatewayException(describeSendFailure(error));
   }
 }

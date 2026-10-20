@@ -25,6 +25,17 @@ import type {
   WhatsAppMessageEcho,
 } from './types/coexistence.types';
 
+/**
+ * account_update events that may mean the number left Cloud API: the business
+ * disconnected (PARTNER_REMOVED), re-registered or offboarded the Business-app
+ * number (ACCOUNT_OFFBOARDED), or our app lost its access (PARTNER_APP_UNINSTALLED).
+ */
+const CONNECTION_EVENTS = new Set([
+  'PARTNER_REMOVED',
+  'ACCOUNT_OFFBOARDED',
+  'PARTNER_APP_UNINSTALLED',
+]);
+
 @Controller('webhook')
 export class WebhookController {
   constructor(
@@ -335,10 +346,13 @@ export class WebhookController {
   }
 
   /**
-   * Lifecycle notices for the WABA. PARTNER_REMOVED means the number stopped
-   * delivering webhooks — most often because nobody opened the WhatsApp
-   * Business app for 13 days. Loud on purpose: the failure mode otherwise is a
-   * number that goes quiet with nothing in the logs.
+   * Lifecycle notices for the WABA. Every one is logged with the WABA id and the
+   * raw disconnection_info: on 19/10/2026 a PARTNER_REMOVED matched no stored
+   * WABA and the log could not say which one Meta meant.
+   *
+   * The ones that may mean the number left Cloud API go to the API, which checks
+   * them against Graph, marks the number and emails the office. The failure mode
+   * otherwise is a number that goes quiet until the client calls.
    */
   private handleAccountUpdate(
     wabaId: string,
@@ -348,18 +362,33 @@ export class WebhookController {
       | undefined,
     phoneNumberId: string | undefined,
   ): void {
-    if (event !== 'PARTNER_REMOVED') {
-      console.log(
-        `ℹ️ account_update "${event ?? 'sin evento'}" en ${phoneNumberId ?? 'sin número'}`,
-      );
+    const details =
+      `WABA ${wabaId} · número ${phoneNumberId ?? '—'} · ` +
+      `disconnection_info ${JSON.stringify(info ?? null)}`;
+    if (!event || !CONNECTION_EVENTS.has(event)) {
+      console.log(`ℹ️ account_update "${event ?? 'sin evento'}" · ${details}`);
       return;
     }
+
     const reason = info?.reason ?? info?.disconnect_reason;
     console.error(
-      `🚨 DESCONEXIÓN de ${phoneNumberId ?? 'sin número'} · motivo: ${reason ?? 'desconocido'} ` +
-        `· iniciada por: ${info?.initiated_by ?? 'desconocido'}. El número dejó de recibir mensajes.`,
+      `🚨 account_update ${event} · motivo: ${reason ?? 'desconocido'} ` +
+        `· iniciado por: ${info?.initiated_by ?? 'desconocido'} · ${details}. ` +
+        'El número puede haber dejado de recibir mensajes.',
     );
-    void this.api.markWabaDisconnected(wabaId, reason).catch(console.error);
+    void this.api
+      .reportWabaAccountUpdate(wabaId, {
+        event,
+        reason,
+        initiatedBy: info?.initiated_by,
+      })
+      .then((result) =>
+        console.error(
+          `🚨 ${event}: la API revisó ${result.checked} WABA(s) ` +
+            `(${result.known ? 'conocida' : 'NO registrada'}) y marcó ${result.disconnected} como desconectada(s)`,
+        ),
+      )
+      .catch(console.error);
   }
 
   /** Count message ids, never conversation ids; API handles callback retries. */
