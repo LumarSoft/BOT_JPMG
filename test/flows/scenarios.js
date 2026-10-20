@@ -3,8 +3,9 @@
 // (auto plan de pago + moto con débito en proceso, waId 5493419990002), CUIT
 // 30712345671 empresa (2 camiones), 99000004 Marta (débito rechazado), 99000006
 // Gustavo (1 auto, waId 5493419990006), 99000008 Jorge (no policies, waId
-// 5493419990008, says he is someone else), and a chat the office answered by hand
-// (waId 5493419990120).
+// 5493419990008, says he is someone else), 99000009 Carla (hogar + comercio, sin
+// vehículo, waId 5493419990009), and a chat the office answered by hand (waId
+// 5493419990120).
 //
 // Each scenario: `steps` are what the customer (or the office, `echo`) sends;
 // `expect` checks what the bot answered to that step (`any`/`none` regexes,
@@ -382,6 +383,38 @@ module.exports = [
       { text: 'no la tengo', expect: { any: [/fotos del siniestro/] } },
       { image: true, burst: 4, expect: { count: 1 } },
     ],
+  },
+  {
+    id: 'S08', area: 'Siniestros', name: 'Hogar: tipo de siniestro y qué se dañó, sin preguntas de auto', wa: wa(), regression: '#242 Valderramo (20/10)',
+    steps: [
+      ...ident('99000009'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva', expect: { any: [/\[Hogar\|pol_\d+\]/, /\[Comercio\|pol_\d+\]/] } },
+      { drive: { max: 1, until: /bt_danios/, answer: (prev) => ({ select: (prev.match(/\[Hogar\|(pol_\d+)\]/) || [])[1], title: 'Hogar', list: true }), expect: { any: [/bt_robo/, /bt_danios/, /bt_responsabilidad_civil/], none: [/circulabas/, /vehículo/] } } },
+      { select: 'bt_danios', title: 'Daños', list: true, expect: { any: [/Qué se dañó/, /bd_cristales/, /bd_electrodomesticos/] } },
+      { select: 'bd_cristales', title: 'Cristales', expect: { any: [/Daños a cristales/, /Respondé todo en un solo mensaje/, /Domicilio donde ocurrió/], none: [/circulabas/, /vehículo/] } },
+      { text: 'Fue el 03/10 a las 20 hs en Eva Perón 8615 piso 1 depto 10, Rosario. Se rajó el vidrio de la ventana que da al sur.', max: 60000, expect: { any: [/Tipo de siniestro: Daños a cristales/, /Domicilio: Eva Per/, /\|confirmar\]/], none: [/Sentido de circulación/, /me faltan/] } },
+      { select: 'confirmar', title: 'Confirmar', expect: { any: [/Registré tu denuncia/, /fotos/], none: [/tarjeta verde/, /carnet/] } },
+      { image: true, expect: { count: 1 } },
+      { text: 'listo', expect: { any: [/Sumé todo a tu denuncia/] } },
+    ],
+    db: [
+      { name: 'denuncia de hogar creada', sql: "SELECT cl.type FROM Claim cl JOIN Client c ON c.id=cl.clientId WHERE c.dni='99000009' AND cl.description LIKE '%Daños a cristales%' AND cl.description LIKE '%Eva Per%'", test: (r) => r.length === 1 && r[0][0] === 'hogar' },
+      { name: 'aviso de siniestro a la oficina', sql: "SELECT COUNT(*) FROM Notification n JOIN Claim cl ON cl.id=n.refId JOIN Client c ON c.id=cl.clientId WHERE c.dni='99000009' AND n.type='siniestro' AND n.deletedAt IS NULL", test: (r) => Number(r[0][0]) >= 1 },
+    ],
+  },
+  {
+    id: 'S09', area: 'Siniestros', name: 'Comercio: robo escrito en texto, un solo mensaje, cancelar', wa: wa(),
+    steps: [
+      ...ident('99000009'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva', expect: { any: [/\[Comercio\|pol_\d+\]/] } },
+      { drive: { max: 1, until: /bt_robo/, answer: (prev) => ({ select: (prev.match(/\[Comercio\|(pol_\d+)\]/) || [])[1], title: 'Comercio', list: true }), expect: { any: [/bt_robo/, /bt_incendio/] } } },
+      { text: 'Me robaron en el local, entraron de noche', expect: { any: [/Anoté: \*Robo\*/, /Respondé todo en un solo mensaje/], none: [/Qué se dañó/] } },
+      { text: 'Anoche a las 3 de la mañana, en Córdoba 1200, Rosario. Forzaron la persiana y se llevaron la caja registradora y mercadería.', max: 60000, expect: { any: [/Tipo de siniestro: Robo/, /Domicilio: /, /\|confirmar\]/], none: [/Sentido de circulación/] } },
+      { select: 'cancelar', title: 'Cancelar', expect: { any: [/Cancelé la denuncia/] } },
+    ],
+    db: [{ name: 'sin denuncia', sql: "SELECT COUNT(*) FROM Claim cl JOIN Client c ON c.id=cl.clientId WHERE c.dni='99000009' AND cl.description LIKE '%Robo%'", test: (r) => Number(r[0][0]) === 0 }],
   },
 
   // ─── Cotización ──────────────────────────────────────────────────

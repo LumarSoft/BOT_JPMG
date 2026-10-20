@@ -1,9 +1,17 @@
 import {
+  BIEN_DATOS_VACIOS,
   SINIESTRO_DATOS_VACIOS,
+  bienDescripcion,
+  bienTipoLabel,
+  matchBienDanio,
+  matchBienTipo,
+  mergeBienDatos,
   mergeDatos,
   pendientes,
+  pendientesBien,
   siniestroDescripcion,
 } from './siniestro-datos';
+import { fold } from '../text';
 
 describe('siniestro datos', () => {
   const completo = {
@@ -90,5 +98,78 @@ describe('siniestro datos', () => {
         'Otro vehículo: Sí — patente: AB123CD; conductor: no informado; compañía: no informada',
       ].join('\n'),
     );
+  });
+});
+
+describe('siniestro de hogar / comercio (bien)', () => {
+  const completo = {
+    fecha: '2026-10-03',
+    hora: '20:00',
+    domicilio: 'Eva Perón 8615 P1 D10, Rosario',
+    relato: 'Se quemó el LCD del televisor y se rajó el vidrio de la ventana',
+  };
+
+  it('asks only date, time, address and what happened', () => {
+    expect(pendientesBien(BIEN_DATOS_VACIOS).map((p) => p.campo)).toEqual([
+      'fecha',
+      'hora',
+      'domicilio',
+      'relato',
+    ]);
+    expect(pendientesBien(completo)).toEqual([]);
+  });
+
+  it('reads the kind of event from what the customer typed', () => {
+    expect(matchBienTipo(fold('me robaron en casa'))).toBe('robo');
+    expect(matchBienTipo(fold('hubo un incendio en la cocina'))).toBe(
+      'incendio',
+    );
+    expect(matchBienTipo(fold('se rajó el vidrio de la ventana'))).toBe(
+      'danios',
+    );
+    expect(matchBienTipo(fold('se me quemó el LCD'))).toBe('danios');
+    expect(matchBienTipo(fold('daños a un tercero'))).toBe(
+      'responsabilidad_civil',
+    );
+    expect(matchBienTipo(fold('hola'))).toBeNull();
+  });
+
+  it('reads what got damaged', () => {
+    expect(matchBienDanio(fold('se rajó el vidrio de la ventana'))).toBe(
+      'cristales',
+    );
+    expect(matchBienDanio(fold('se me quemó el lcd del tv'))).toBe(
+      'electrodomesticos',
+    );
+    expect(matchBienDanio(fold('se cayó parte del techo'))).toBe('propiedad');
+    expect(matchBienDanio(fold('no sé'))).toBeNull();
+  });
+
+  it('labels the kind the office sees', () => {
+    expect(bienTipoLabel('danios', 'cristales')).toBe('Daños a cristales');
+    expect(bienTipoLabel('danios', null)).toBe('Daños');
+    expect(bienTipoLabel('robo', null)).toBe('Robo');
+    expect(bienTipoLabel(null, null)).toBeNull();
+  });
+
+  it('never erases a known value and trims the rest', () => {
+    const merged = mergeBienDatos(completo, {
+      hora: null,
+      domicilio: '  ',
+      relato: ' otro relato ',
+    });
+    expect(merged.hora).toBe('20:00');
+    expect(merged.domicilio).toBe(completo.domicilio);
+    expect(merged.relato).toBe('otro relato');
+  });
+
+  it('writes the description the office receives', () => {
+    expect(bienDescripcion('Daños a cristales', completo)).toBe(
+      'Tipo de siniestro: Daños a cristales\n' +
+        'Se quemó el LCD del televisor y se rajó el vidrio de la ventana\n' +
+        'Hora: 20:00\n' +
+        'Domicilio: Eva Perón 8615 P1 D10, Rosario',
+    );
+    expect(bienDescripcion(null, completo).startsWith('Se quemó')).toBe(true);
   });
 });

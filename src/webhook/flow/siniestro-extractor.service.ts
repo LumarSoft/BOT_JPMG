@@ -5,6 +5,8 @@ import { ApiService } from '../../api/api.service';
 import { DEFAULT_OPENAI_MODEL } from '../constants/business';
 import {
   SENTIDOS,
+  type BienCampo,
+  type BienDatos,
   type SiniestroCampo,
   type SiniestroDatos,
 } from './siniestro-datos';
@@ -51,6 +53,32 @@ const DATOS_SCHEMA = {
     terceroCompania: nullable('string'),
   },
 } as const;
+
+const BIEN_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['fecha', 'hora', 'domicilio', 'relato'],
+  properties: {
+    fecha: nullable('string'),
+    hora: nullable('string'),
+    domicilio: nullable('string'),
+    relato: nullable('string'),
+  },
+} as const;
+
+function bienSystemPrompt(today: string): string {
+  return [
+    'Extraés los datos de una denuncia de siniestro de un seguro de hogar, comercio u otro bien (no un vehículo) que un cliente escribe por WhatsApp, muchas veces desordenado o con errores.',
+    `Hoy es ${today} (Argentina).`,
+    'Devolvé solo lo que el cliente dijo. Si un dato no está, va null. No inventes ni completes con suposiciones.',
+    'Reglas:',
+    '- fecha: YYYY-MM-DD. Resolvé "hoy", "ayer", "hace dos semanas", "el sábado", etc. contra la fecha de hoy.',
+    '- hora: HH:MM en 24 h si la dio; si fue aproximada, tal como la dijo ("a la tarde", "20 hs" → "20:00").',
+    '- domicilio: dónde ocurrió, tal como lo escribió (calle, número, piso/depto, localidad). Si solo dijo la localidad, va la localidad.',
+    '- relato: qué pasó, con sus palabras, corregido mínimamente para que se entienda (qué se rompió, se quemó o robaron).',
+    'Si el mensaje responde a datos que se le pidieron (por ejemplo "Rosario", "a la noche"), asignalo al dato pedido.',
+  ].join('\n');
+}
 
 function systemPrompt(today: string): string {
   return [
@@ -139,6 +167,47 @@ export class SiniestroExtractor {
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Respuesta vacía del modelo');
     return JSON.parse(content) as Partial<SiniestroDatos>;
+  }
+
+  /** Same as `extract`, for a home / shop / other non-vehicle claim. */
+  async extractBien(input: {
+    text: string;
+    known: BienDatos;
+    asked: BienCampo[];
+    phoneNumberId: string;
+  }): Promise<Partial<BienDatos>> {
+    const completion = await this.openai.chat.completions.create({
+      model: this.model,
+      reasoning_effort: 'low',
+      max_completion_tokens: 600,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'siniestro_bien_datos',
+          strict: true,
+          schema: BIEN_SCHEMA,
+        },
+      },
+      messages: [
+        {
+          role: 'system',
+          content: bienSystemPrompt(argentinaToday(new Date())),
+        },
+        {
+          role: 'user',
+          content:
+            `Datos ya recolectados: ${JSON.stringify(input.known)}\n` +
+            `Datos que se le pidieron en el último mensaje: ${input.asked.length ? input.asked.join(', ') : 'toda la lista'}\n\n` +
+            `Mensaje del cliente:\n${input.text}`,
+        },
+      ],
+    });
+
+    void this.reportUsage(completion, input.phoneNumberId);
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('Respuesta vacía del modelo');
+    return JSON.parse(content) as Partial<BienDatos>;
   }
 
   private async reportUsage(

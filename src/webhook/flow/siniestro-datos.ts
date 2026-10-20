@@ -177,3 +177,169 @@ export function siniestroDescripcion(d: SiniestroDatos): string {
     `Otro vehículo: ${tercero}`,
   ].join('\n');
 }
+
+// ─── Pólizas que no son un vehículo (hogar, comercio, vida, otro) ────────────
+//
+// What the office asks for a home or shop claim (John, 20/10): the kind of
+// event (robo, incendio, daños, responsabilidad civil), for damage what got
+// damaged (cristales, electrodomésticos, la propiedad), then date, time, the
+// address where it happened (even if it is on the policy) and what happened.
+// The coverages are optional per policy, so the office checks them by hand.
+
+export const BIEN_TIPOS = [
+  'robo',
+  'incendio',
+  'danios',
+  'responsabilidad_civil',
+] as const;
+export type BienTipo = (typeof BIEN_TIPOS)[number];
+
+export const BIEN_DANIOS = [
+  'cristales',
+  'electrodomesticos',
+  'propiedad',
+] as const;
+export type BienDanio = (typeof BIEN_DANIOS)[number];
+
+export const BIEN_TIPO_LABEL: Record<BienTipo, string> = {
+  robo: 'Robo',
+  incendio: 'Incendio',
+  danios: 'Daños',
+  responsabilidad_civil: 'Responsabilidad civil',
+};
+
+export const BIEN_DANIO_LABEL: Record<BienDanio, string> = {
+  cristales: 'Daños a cristales',
+  electrodomesticos: 'Daños a electrodomésticos',
+  propiedad: 'Daños a la propiedad',
+};
+
+/** The kind of event, read from what the customer typed instead of tapping. */
+export function matchBienTipo(folded: string): BienTipo | null {
+  const t = folded.trim();
+  if (!t) return null;
+  if (/\brobo|\brobar|\brobaron|\bhurto|\bme entraron|\bsustra/.test(t))
+    return 'robo';
+  // A burnt TV is damage; fire is "incendio", "fuego", "llamas", "se prendió".
+  if (/\bincendi|\bfuego\b|\bse (?:me )?prendio|\bllamas\b/.test(t))
+    return 'incendio';
+  if (/responsabilidad civil|\brc\b|\btercero/.test(t))
+    return 'responsabilidad_civil';
+  if (
+    /\bdan(?:o|io|os|ios)\b|\brompi|\broto|\brajo|\brajad|\bcristal|\bvidrio|\belectro|\bse (?:me )?quemo|\bquemad|\binund|\bgoter|\bfiltrac/.test(
+      t,
+    )
+  )
+    return 'danios';
+  return null;
+}
+
+/** What got damaged, read from text ("se rajó el vidrio", "el lavarropas"). */
+export function matchBienDanio(folded: string): BienDanio | null {
+  const t = folded.trim();
+  if (!t) return null;
+  if (/\bcristal|\bvidrio|\bventana|\bespejo|\bmampara|\bvitr/.test(t))
+    return 'cristales';
+  if (
+    /\belectro|\bheladera|\blavarropa|\btelevis|\btv\b|\blcd\b|\bmicroondas|\bhorno\b|\baire\b|\bcomputador|\bnotebook|\bequipo|\bartefacto/.test(
+      t,
+    )
+  )
+    return 'electrodomesticos';
+  if (
+    /\bpropiedad|\bcasa\b|\bdepartamento|\bdepto|\blocal\b|\bpared|\btecho|\bpiso\b|\bpuerta|\bedificio|\binmueble|\bestructura/.test(
+      t,
+    )
+  )
+    return 'propiedad';
+  return null;
+}
+
+export interface BienDatos {
+  /** YYYY-MM-DD. Validated by the flow (real date, not in the future). */
+  fecha: string | null;
+  /** HH:MM, or an approximation as the customer said it. */
+  hora: string | null;
+  /** Where it happened: street and number, city if given. */
+  domicilio: string | null;
+  /** What happened, in the customer's words. */
+  relato: string | null;
+}
+
+export type BienCampo = keyof BienDatos;
+
+export const BIEN_DATOS_VACIOS: BienDatos = {
+  fecha: null,
+  hora: null,
+  domicilio: null,
+  relato: null,
+};
+
+/** Overlays what the latest message added; a null never erases a known value. */
+export function mergeBienDatos(
+  prev: BienDatos,
+  next: Partial<BienDatos>,
+): BienDatos {
+  const merged = { ...prev };
+  for (const key of Object.keys(BIEN_DATOS_VACIOS) as BienCampo[]) {
+    const value = next[key];
+    if (value === null || value === undefined) continue;
+    if (!value.trim()) continue;
+    merged[key] = value.trim();
+  }
+  return merged;
+}
+
+export function pendientesBien(
+  d: BienDatos,
+): Array<{ campo: BienCampo; pregunta: string }> {
+  const out: Array<{ campo: BienCampo; pregunta: string }> = [];
+  if (!d.fecha)
+    out.push({
+      campo: 'fecha',
+      pregunta: '📅 Fecha del hecho (DD/MM/AAAA, *hoy* o *ayer*)',
+    });
+  if (!d.hora) out.push({ campo: 'hora', pregunta: '🕐 Hora aproximada' });
+  if (!d.domicilio)
+    out.push({
+      campo: 'domicilio',
+      pregunta: '📍 Domicilio donde ocurrió (calle y número, localidad)',
+    });
+  if (!d.relato)
+    out.push({ campo: 'relato', pregunta: '📝 Qué pasó, con tus palabras' });
+  return out;
+}
+
+/** The one-message checklist for a home / shop / other non-vehicle claim. */
+export function bienChecklist(tipo: string | null): OutgoingMessage {
+  return {
+    kind: 'text',
+    body:
+      (tipo ? `Anoté: *${tipo}*.\n\n` : '') +
+      '📝 Para cargar la denuncia necesito estos datos. *Respondé todo en un solo mensaje*:\n\n' +
+      '1️⃣ Fecha y hora del hecho\n' +
+      '2️⃣ Domicilio donde ocurrió (calle y número, localidad), aunque sea el de la póliza\n' +
+      '3️⃣ Qué pasó, con tus palabras\n\n' +
+      '_Si no sabés algún dato, decilo y seguimos. Escribí *menú* para volver._',
+  };
+}
+
+/** The claim description the office receives for a non-vehicle policy. */
+export function bienDescripcion(tipo: string | null, d: BienDatos): string {
+  return [
+    ...(tipo ? [`Tipo de siniestro: ${tipo}`] : []),
+    d.relato ?? '',
+    `Hora: ${d.hora ?? ''}`,
+    `Domicilio: ${d.domicilio ?? ''}`,
+  ].join('\n');
+}
+
+/** "Daños a cristales" / "Robo" / null: what the office sees as the kind. */
+export function bienTipoLabel(
+  tipo: BienTipo | null | undefined,
+  danio: BienDanio | null | undefined,
+): string | null {
+  if (!tipo) return null;
+  if (tipo === 'danios' && danio) return BIEN_DANIO_LABEL[danio];
+  return BIEN_TIPO_LABEL[tipo];
+}

@@ -6,9 +6,10 @@ INSERT INTO Client (dni, firstName, lastName, password, phone, producerId, produ
  ('30712345671','TRANSPORTES PRUEBA SRL','','x',NULL,1,2,NOW(3)),
  ('99000004','MARTA','PRUEBA','x',NULL,1,2,NOW(3)),
  ('99000006','GUSTAVO','PRUEBA','x','341159990006',1,2,NOW(3)),
- ('99000008','JORGE','PRUEBA','x','341159990008',1,2,NOW(3));
+ ('99000008','JORGE','PRUEBA','x','341159990008',1,2,NOW(3)),
+ ('99000009','CARLA','PRUEBA','x','341159990009',1,2,NOW(3));
 SET @a=(SELECT id FROM Client WHERE dni='99000001'); SET @b=(SELECT id FROM Client WHERE dni='99000002');
-SET @c=(SELECT id FROM Client WHERE dni='30712345671'); SET @d=(SELECT id FROM Client WHERE dni='99000004'); SET @g=(SELECT id FROM Client WHERE dni='99000006');
+SET @c=(SELECT id FROM Client WHERE dni='30712345671'); SET @d=(SELECT id FROM Client WHERE dni='99000004'); SET @g=(SELECT id FROM Client WHERE dni='99000006'); SET @h=(SELECT id FROM Client WHERE dni='99000009');
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
  ('9900001','triunfo','auto','ENDOSOS VARIOS','2026-07-27','2027-07-27','Convenio','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@a,1,2,NOW(3));
 SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ901AA','CHEVROLET','ONIX 1.4',@p);
@@ -34,6 +35,13 @@ INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFro
  ('9900007','triunfo','auto','POLIZA NUEVA','2026-09-01','2027-09-01','Convenio','{}',@g,1,2,NOW(3));
 SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ907AA','FORD','FOCUS',@p);
 INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,90000,'2026-09-01','paid',@p),(2,90000,'2026-10-01','paid',@p);
+-- Carla: a home and a shop policy (no vehicle), both paid up.
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900009','triunfo','home','RENOVACION','2026-07-13','2027-07-13','Débito Caja de Ahorro','{}',@h,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,43051,'2026-09-13','paid',@p),(2,43051,'2026-10-13','paid',@p);
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900010','triunfo','commercial','POLIZA NUEVA','2026-08-01','2027-08-01','Convenio','{}',@h,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,60000,'2026-09-01','paid',@p),(2,60000,'2026-10-01','paid',@p);
 -- A chat the office answered by hand three hours ago (follow-up scenario).
 INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
  ('5493419990120',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 4 HOUR, UTC_TIMESTAMP(3) - INTERVAL 3 HOUR, NOW(3));

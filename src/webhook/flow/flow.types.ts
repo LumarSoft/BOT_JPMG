@@ -17,6 +17,10 @@ export type FlowStep =
   | 'SINIESTRO_TYPE' // denuncia nueva vs consultar
   | 'SINIESTRO_POLIZA' // pick the affected policy
   | 'SINIESTRO_DATOS' // checklist answered in one message, read by the model
+  | 'SINIESTRO_BIEN_TIPO' // home/shop: robo, incendio, daños, responsabilidad civil
+  | 'SINIESTRO_BIEN_DANIO' // home/shop damage: cristales, electrodomésticos, propiedad
+  | 'SINIESTRO_BIEN_DATOS' // home/shop checklist answered in one message
+  | 'SINIESTRO_DOMICILIO' // step-by-step fallback: where it happened (non-vehicle)
   | 'SINIESTRO_FECHA' // waiting for the incident date
   | 'SINIESTRO_DESC' // waiting for the description
   | 'SINIESTRO_HORA'

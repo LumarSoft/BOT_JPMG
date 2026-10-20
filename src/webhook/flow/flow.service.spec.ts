@@ -40,7 +40,7 @@ describe('FlowService', () => {
     identifyByPhone: jest.Mock;
     getSiniestros: jest.Mock;
   };
-  let extractor: { extract: jest.Mock };
+  let extractor: { extract: jest.Mock; extractBien: jest.Mock };
   let interpreter: { interpret: jest.Mock };
   // Reading of free text with content. Unavailable by default, which is the
   // pre-existing behaviour every other test relies on.
@@ -117,7 +117,7 @@ describe('FlowService', () => {
       }),
       getSiniestros: jest.fn().mockResolvedValue([]),
     };
-    extractor = { extract: jest.fn() };
+    extractor = { extract: jest.fn(), extractBien: jest.fn() };
     interpreter = {
       interpret: jest.fn().mockImplementation(({ text }: { text: string }) => {
         const params = identificationFromText(text);
@@ -639,6 +639,191 @@ describe('FlowService', () => {
       );
 
       expect(stored?.step).toBe('SINIESTRO_FECHA');
+    });
+  });
+
+  describe('siniestro de hogar (sin preguntas de auto)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Hector',
+        lastName: 'Perez',
+        dni: '20000001',
+      } as FlowContext['client'],
+      phoneNumberId: 'P1',
+      llmEnabled: true,
+    };
+    const hogar = {
+      id: 6437,
+      certificateNumber: '1044644',
+      company: 'Triunfo',
+      riskType: 'home',
+      status: 'vigente',
+      validFrom: null,
+      validTo: null,
+      paymentMethod: null,
+      vehicle: null,
+    };
+    const completo = {
+      fecha: '2026-10-03',
+      hora: '20:00',
+      domicilio: 'Eva Perón 8615 P1 D10, Rosario',
+      relato: 'Se quemó el LCD del televisor',
+    };
+
+    async function openClaim(poliza = hogar) {
+      api.getPolizas.mockResolvedValueOnce([poliza]);
+      await send({ text: 'hola' }, ctx);
+      await send({ selectionId: OPT.siniestros, text: '' }, ctx);
+      return send({ selectionId: OPT.sinNueva, text: '' }, ctx);
+    }
+
+    it('asks the kind of event instead of the road questions', async () => {
+      const result = await openClaim();
+
+      expect(stored?.step).toBe('SINIESTRO_BIEN_TIPO');
+      expect(result.messages[0].body).toBe(
+        'La denuncia es sobre tu Hogar (Póliza 1044644).',
+      );
+      const picker = result.messages[1] as { rows: Array<{ id: string }> };
+      expect(picker.rows.map((r) => r.id)).toEqual([
+        'bt_robo',
+        'bt_incendio',
+        'bt_danios',
+        'bt_responsabilidad_civil',
+      ]);
+      expect(JSON.stringify(result.messages)).not.toContain('circulabas');
+    });
+
+    it('for damage asks what got damaged, then date, time, address and what happened', async () => {
+      await openClaim();
+
+      const danio = await send(
+        { selectionId: 'bt_danios', text: 'Daños' },
+        ctx,
+      );
+      expect(stored?.step).toBe('SINIESTRO_BIEN_DANIO');
+      expect(danio.messages[0].body).toBe('¿Qué se dañó?');
+
+      const checklist = await send(
+        { selectionId: 'bd_electrodomesticos', text: 'Electrodomésticos' },
+        ctx,
+      );
+      expect(stored?.step).toBe('SINIESTRO_BIEN_DATOS');
+      expect(checklist.messages[0].body).toContain(
+        '*Daños a electrodomésticos*',
+      );
+      expect(checklist.messages[0].body).toContain('Domicilio donde ocurrió');
+      expect(checklist.messages[0].body).not.toContain('vehículo');
+
+      extractor.extractBien.mockResolvedValueOnce({
+        ...completo,
+        domicilio: null,
+      });
+      const followUp = await send(
+        { text: '03/10 20 hs, se quemó el LCD' },
+        ctx,
+      );
+      expect(stored?.step).toBe('SINIESTRO_BIEN_DATOS');
+      expect(followUp.messages[0].body).toContain('Domicilio donde ocurrió');
+      expect(followUp.messages[0].body).not.toContain('circulabas');
+
+      extractor.extractBien.mockResolvedValueOnce({
+        fecha: null,
+        hora: null,
+        domicilio: 'Eva Perón 8615 P1 D10, Rosario',
+        relato: null,
+      });
+      const summary = await send(
+        { text: 'Eva Perón 8615 P1 D10, Rosario' },
+        ctx,
+      );
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(summary.messages[0].body).toContain(
+        'Tipo de siniestro: Daños a electrodomésticos',
+      );
+      expect(summary.messages[0].body).toContain('Domicilio: Eva Perón 8615');
+
+      const filed = await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+      expect(api.createSiniestro).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          policyId: 6437,
+          type: 'hogar',
+          occurredAt: '2026-10-03',
+          description: expect.stringContaining('Daños a electrodomésticos'),
+        }),
+      );
+      // No green card or licence for a house: straight to the damage photos.
+      expect(stored?.step).toBe('SINIESTRO_FOTO_DANIO');
+      expect(filed.messages[1].body).toContain('fotos');
+      expect(filed.messages[1].body).not.toContain('tarjeta verde');
+    });
+
+    it('reads the kind and the damaged thing from free text', async () => {
+      await openClaim();
+
+      const checklist = await send(
+        { text: 'Se rajó el vidrio de la ventana que da al sur' },
+        ctx,
+      );
+
+      expect(stored?.step).toBe('SINIESTRO_BIEN_DATOS');
+      expect(checklist.messages[0].body).toContain('*Daños a cristales*');
+    });
+
+    it('re-shows the kinds when the text says nothing useful', async () => {
+      await openClaim();
+
+      const again = await send({ text: 'no sé qué poner' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_BIEN_TIPO');
+      expect(again.messages[0].body).toContain(
+        'No reconocí el tipo de siniestro',
+      );
+    });
+
+    it('goes straight to the data for a life policy', async () => {
+      const result = await openClaim({
+        ...hogar,
+        id: 11083,
+        certificateNumber: '1205970',
+        riskType: 'life',
+      });
+
+      expect(stored?.step).toBe('SINIESTRO_BIEN_DATOS');
+      expect(result.messages[1].body).toContain(
+        'Respondé todo en un solo mensaje',
+      );
+      expect(result.messages[1].body).not.toContain('Anoté');
+    });
+
+    it('asks one thing at a time without the model, ending with the address', async () => {
+      api.getPolizas.mockResolvedValueOnce([hogar]);
+      const noModel = { ...ctx, llmEnabled: false };
+      await send({ text: 'hola' }, noModel);
+      await send({ selectionId: OPT.siniestros, text: '' }, noModel);
+      await send({ selectionId: OPT.sinNueva, text: '' }, noModel);
+      await send({ selectionId: 'bt_robo', text: 'Robo' }, noModel);
+      expect(stored?.step).toBe('SINIESTRO_FECHA');
+
+      const desc = await send({ text: '03/10/2026' }, noModel);
+      expect(desc.messages[0].body).toBe('Contame qué pasó, con tus palabras.');
+      await send(
+        { text: 'Entraron por la ventana y se llevaron la tele' },
+        noModel,
+      );
+      const dom = await send({ text: '20:00' }, noModel);
+      expect(stored?.step).toBe('SINIESTRO_DOMICILIO');
+      expect(dom.messages[0].body).toContain('domicilio');
+
+      const summary = await send({ text: 'Eva Perón 8615, Rosario' }, noModel);
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(summary.messages[0].body).toContain('Tipo de siniestro: Robo');
+      expect(summary.messages[0].body).toContain(
+        'Domicilio: Eva Perón 8615, Rosario',
+      );
+      expect(summary.messages[0].body).not.toContain('Sentido');
     });
   });
 

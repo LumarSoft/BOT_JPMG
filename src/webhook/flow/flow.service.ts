@@ -80,12 +80,25 @@ import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 import {
+  BIEN_DATOS_VACIOS,
+  BIEN_TIPO_LABEL,
   SINIESTRO_DATOS_VACIOS,
+  bienChecklist,
+  bienDescripcion,
+  bienTipoLabel,
+  matchBienDanio,
+  matchBienTipo,
+  mergeBienDatos,
   mergeDatos,
   pendientes,
+  pendientesBien,
   siniestroChecklist,
   siniestroDescripcion,
   siniestroFaltantes,
+  type BienCampo,
+  type BienDanio,
+  type BienDatos,
+  type BienTipo,
   type SiniestroCampo,
   type SiniestroDatos,
 } from './siniestro-datos';
@@ -334,12 +347,66 @@ const OTHER_POLIZA_REQUEST: Partial<Record<FlowStep, string>> = {
   CUPON_POLIZA: 'Pide los cupones de pago de otra póliza',
 };
 
+/** Selection ids of the home / shop claim pickers. */
+const BIEN_TIPO_PREFIX = 'bt_';
+const BIEN_DANIO_PREFIX = 'bd_';
+
+/** Auto and moto claims ask about the road; everything else is a "bien". */
+function isVehiclePolicy(p: PolizaSummary): boolean {
+  return p.riskType === 'auto' || p.riskType === 'moto';
+}
+
+function bienTipoPicker(
+  poliza: PolizaSummary | undefined,
+  body?: string,
+): OutgoingMessage {
+  return {
+    kind: 'list',
+    body:
+      body ??
+      `¿Qué pasó${poliza ? ` en tu ${polizaLabel(poliza).toLowerCase()}` : ''}? Elegí el tipo de siniestro:`,
+    button: 'Elegir tipo',
+    rows: [
+      { id: `${BIEN_TIPO_PREFIX}robo`, title: BIEN_TIPO_LABEL.robo },
+      { id: `${BIEN_TIPO_PREFIX}incendio`, title: BIEN_TIPO_LABEL.incendio },
+      {
+        id: `${BIEN_TIPO_PREFIX}danios`,
+        title: BIEN_TIPO_LABEL.danios,
+        description: 'Cristales, electrodomésticos o la propiedad',
+      },
+      {
+        id: `${BIEN_TIPO_PREFIX}responsabilidad_civil`,
+        title: BIEN_TIPO_LABEL.responsabilidad_civil,
+        description: 'Daños a un tercero',
+      },
+    ],
+  };
+}
+
+function bienDanioButtons(body = '¿Qué se dañó?'): OutgoingMessage {
+  return {
+    kind: 'buttons',
+    body,
+    buttons: [
+      { id: `${BIEN_DANIO_PREFIX}cristales`, title: 'Cristales' },
+      {
+        id: `${BIEN_DANIO_PREFIX}electrodomesticos`,
+        title: 'Electrodomésticos',
+      },
+      { id: `${BIEN_DANIO_PREFIX}propiedad`, title: 'La propiedad' },
+    ],
+  };
+}
+
 /**
  * Steps with something filled in that a bare greeting must not throw away. The
  * pickers that start a flow are left out: nothing is lost going back there.
  */
 const IN_PROGRESS_STEPS = new Set<FlowStep>([
   'SINIESTRO_DATOS',
+  'SINIESTRO_BIEN_DANIO',
+  'SINIESTRO_BIEN_DATOS',
+  'SINIESTRO_DOMICILIO',
   'SINIESTRO_FECHA',
   'SINIESTRO_DESC',
   'SINIESTRO_HORA',
@@ -1208,6 +1275,12 @@ export class FlowService {
         return this.handleSiniestroPoliza(state, input, ctx, key);
       case 'SINIESTRO_DATOS':
         return this.handleSiniestroDatos(state, input, ctx, key);
+      case 'SINIESTRO_BIEN_TIPO':
+        return this.handleSiniestroBienTipo(state, input, ctx, key);
+      case 'SINIESTRO_BIEN_DANIO':
+        return this.handleSiniestroBienDanio(state, input, ctx, key);
+      case 'SINIESTRO_BIEN_DATOS':
+        return this.handleSiniestroBienDatos(state, input, ctx, key);
       case 'SINIESTRO_FECHA':
         return this.handleSiniestroFecha(state, input, key);
       case 'SINIESTRO_DESC':
@@ -1216,6 +1289,7 @@ export class FlowService {
       case 'SINIESTRO_LOCALIDAD':
       case 'SINIESTRO_CALLE':
       case 'SINIESTRO_ALTURA':
+      case 'SINIESTRO_DOMICILIO':
         return this.handleSiniestroDetalle(state, input, key);
       case 'SINIESTRO_CONFIRM':
         return this.handleSiniestroConfirm(state, input, ctx, key);
@@ -2991,6 +3065,13 @@ export class FlowService {
       );
     }
 
+    // Home, shop, life and other policies: there is no street, direction or
+    // passengers to ask about. The office wants the kind of event, then date,
+    // time, the address and what happened (#242: a burnt TV got asked "hacia
+    // dónde circulabas" twice and the customer gave up).
+    if (!isVehiclePolicy(poliza))
+      return this.startSiniestroBien(key, state.data, poliza, ctx);
+
     // Without the model (number over its monthly budget) the claim is asked
     // one question at a time, as before.
     if (ctx.llmEnabled === false)
@@ -3003,6 +3084,186 @@ export class FlowService {
       pedidos: [],
     });
     return { messages: [siniestroChecklist()] };
+  }
+
+  // ─── Siniestro: pólizas que no son un vehículo (hogar, comercio…) ───
+
+  /**
+   * A home or shop claim starts by its kind (robo, incendio, daños,
+   * responsabilidad civil); life and other policies go straight to the data.
+   */
+  private startSiniestroBien(
+    key: string,
+    data: Record<string, unknown>,
+    poliza: PolizaSummary,
+    ctx: FlowContext,
+  ): FlowResult {
+    const base = { ...data, polizaId: poliza.id, bien: true };
+    if (poliza.riskType !== 'home' && poliza.riskType !== 'commercial')
+      return this.askSiniestroBienDatos(key, base, null, null, ctx);
+    this.setState(key, 'SINIESTRO_BIEN_TIPO', base);
+    return { messages: [bienTipoPicker(poliza)] };
+  }
+
+  private handleSiniestroBienTipo(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    const poliza = polizas.find((p) => p.id === state.data.polizaId);
+    const folded = fold(input.text);
+    const tipo =
+      this.parsePrefixed<BienTipo>(input.selectionId, BIEN_TIPO_PREFIX) ??
+      matchBienTipo(folded);
+    if (!tipo)
+      return this.retry(key, state, [
+        bienTipoPicker(
+          poliza,
+          'No reconocí el tipo de siniestro. Elegí una opción de la lista, o escribí *menú* para volver.',
+        ),
+      ]);
+    if (tipo !== 'danios')
+      return this.askSiniestroBienDatos(key, state.data, tipo, null, ctx);
+    // "se rajó el vidrio" already says what got damaged: no need to ask.
+    const danio = input.selectionId ? null : matchBienDanio(folded);
+    if (danio)
+      return this.askSiniestroBienDatos(key, state.data, tipo, danio, ctx);
+    this.setState(key, 'SINIESTRO_BIEN_DANIO', {
+      ...state.data,
+      bienTipo: tipo,
+    });
+    return { messages: [bienDanioButtons()] };
+  }
+
+  private handleSiniestroBienDanio(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
+    const danio =
+      this.parsePrefixed<BienDanio>(input.selectionId, BIEN_DANIO_PREFIX) ??
+      matchBienDanio(fold(input.text));
+    if (!danio)
+      return this.retry(key, state, [
+        bienDanioButtons('Decime qué se dañó: elegí una opción.'),
+      ]);
+    return this.askSiniestroBienDatos(key, state.data, 'danios', danio, ctx);
+  }
+
+  /** The one-message checklist, or one question at a time without the model. */
+  private askSiniestroBienDatos(
+    key: string,
+    data: Record<string, unknown>,
+    tipo: BienTipo | null,
+    danio: BienDanio | null,
+    ctx: FlowContext,
+  ): FlowResult {
+    const label = bienTipoLabel(tipo, danio);
+    const base = {
+      ...data,
+      bien: true,
+      bienTipo: tipo,
+      bienDanio: danio,
+      bienLabel: label,
+    };
+    if (ctx.llmEnabled === false)
+      return this.askSiniestroFecha(key, base, data.polizaId as number);
+    this.setState(key, 'SINIESTRO_BIEN_DATOS', {
+      ...base,
+      bienDatos: BIEN_DATOS_VACIOS,
+      pedidos: [],
+      [RETRIES]: 0,
+    });
+    return { messages: [bienChecklist(label)] };
+  }
+
+  private async handleSiniestroBienDatos(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const known =
+      (state.data.bienDatos as BienDatos | undefined) ?? BIEN_DATOS_VACIOS;
+    const asked = (state.data.pedidos as BienCampo[] | undefined) ?? [];
+    const label = (state.data.bienLabel as string | null | undefined) ?? null;
+    const text = input.text.trim();
+    if (!text) {
+      const faltan = pendientesBien(known);
+      return this.retry(key, state, [
+        asked.length ? siniestroFaltantes(faltan) : bienChecklist(label),
+      ]);
+    }
+
+    let extracted: Partial<BienDatos>;
+    try {
+      extracted = await this.extractor.extractBien({
+        text,
+        known,
+        asked,
+        phoneNumberId: ctx.phoneNumberId ?? '',
+      });
+    } catch (error) {
+      this.logger.warn(
+        `No se pudieron leer los datos del siniestro con el modelo: ${(error as Error).message} — sigo paso a paso`,
+      );
+      return this.prepend(
+        'Vamos a cargarlo de a un dato por vez.',
+        this.askSiniestroFecha(key, state.data, state.data.polizaId as number),
+      );
+    }
+
+    if (extracted.fecha && !parseFecha(extracted.fecha)) extracted.fecha = null;
+    const datos = mergeBienDatos(known, extracted);
+    const faltan = pendientesBien(datos);
+    const progressed = faltan.length < pendientesBien(known).length;
+
+    if (faltan.length) {
+      const data = {
+        ...state.data,
+        bienDatos: datos,
+        pedidos: faltan.map((f) => f.campo),
+      };
+      if (!progressed)
+        return this.retry(key, { ...state, data }, [
+          siniestroFaltantes(faltan),
+        ]);
+      this.setState(key, 'SINIESTRO_BIEN_DATOS', { ...data, [RETRIES]: 0 });
+      return { messages: [siniestroFaltantes(faltan)] };
+    }
+
+    const fecha = parseFecha(datos.fecha!)!;
+    const descripcion = bienDescripcion(label, datos);
+    this.setState(key, 'SINIESTRO_CONFIRM', {
+      ...state.data,
+      bienDatos: datos,
+      pedidos: [],
+      fechaIso: fecha.iso,
+      fechaDisplay: fecha.display,
+      descripcion,
+    });
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    return {
+      messages: [
+        siniestroConfirm(
+          polizas.find((p) => p.id === state.data.polizaId),
+          fecha.display,
+          descripcion,
+        ),
+      ],
+    };
+  }
+
+  /** `prefix_value` selection ids → value, or null. */
+  private parsePrefixed<T extends string>(
+    selectionId: string | undefined,
+    prefix: string,
+  ): T | null {
+    if (!selectionId || !selectionId.startsWith(prefix)) return null;
+    return selectionId.slice(prefix.length) as T;
   }
 
   private askSiniestroFecha(
@@ -3133,7 +3394,9 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: 'Contame cómo ocurrió el hecho. Si fue un choque, ¿cómo fue el choque?',
+          body: state.data.bien
+            ? 'Contame qué pasó, con tus palabras.'
+            : 'Contame cómo ocurrió el hecho. Si fue un choque, ¿cómo fue el choque?',
         },
       ],
     };
@@ -3151,7 +3414,9 @@ export class FlowService {
       return this.retry(key, state, [
         {
           kind: 'text',
-          body: 'Contame un poco más de cómo ocurrió el hecho o cómo fue el choque.',
+          body: state.data.bien
+            ? 'Contame un poco más de qué pasó.'
+            : 'Contame un poco más de cómo ocurrió el hecho o cómo fue el choque.',
         },
       ]);
     }
@@ -3172,11 +3437,24 @@ export class FlowService {
     input: UserInput,
     key: string,
   ): FlowResult {
+    const bien = state.data.bien === true;
     const fields = {
-      SINIESTRO_HORA: {
-        field: 'hora',
-        next: 'SINIESTRO_LOCALIDAD',
-        question: '¿En qué localidad ocurrió el hecho?',
+      SINIESTRO_HORA: bien
+        ? {
+            field: 'hora',
+            next: 'SINIESTRO_DOMICILIO' as FlowStep,
+            question:
+              '¿En qué domicilio ocurrió? Calle y número, y localidad (aunque sea el de la póliza).',
+          }
+        : {
+            field: 'hora',
+            next: 'SINIESTRO_LOCALIDAD' as FlowStep,
+            question: '¿En qué localidad ocurrió el hecho?',
+          },
+      SINIESTRO_DOMICILIO: {
+        field: 'domicilio',
+        next: 'SINIESTRO_CONFIRM',
+        question: '',
       },
       SINIESTRO_LOCALIDAD: {
         field: 'localidad',
@@ -3212,7 +3490,14 @@ export class FlowService {
     }
     // Preserve the existing claim contract: details reach the panel and advisor
     // in the description, together with the account of what happened.
-    const descripcion = `${String(data.descripcion)}\nHora: ${String(data.hora)}\nLocalidad: ${String(data.localidad)}\nCalle: ${String(data.calle)}\nAltura / referencia: ${value}`;
+    const descripcion = bien
+      ? bienDescripcion((data.bienLabel as string | null | undefined) ?? null, {
+          fecha: data.fechaIso as string,
+          hora: String(data.hora),
+          domicilio: String(data.domicilio),
+          relato: String(data.descripcion),
+        })
+      : `${String(data.descripcion)}\nHora: ${String(data.hora)}\nLocalidad: ${String(data.localidad)}\nCalle: ${String(data.calle)}\nAltura / referencia: ${value}`;
     this.setState(key, 'SINIESTRO_CONFIRM', { ...data, descripcion });
     const polizas = (data.polizas as PolizaSummary[] | undefined) ?? [];
     return {
@@ -3267,6 +3552,36 @@ export class FlowService {
       description: state.data.descripcion as string,
     });
 
+    // The coverages of a home or shop policy are optional: the office checks
+    // whether this one covers the event before filing it.
+    const registered = {
+      kind: 'text' as const,
+      body:
+        `✅ Registré tu denuncia (N° interno *${siniestro.id}*).\n` +
+        (state.data.bien === true
+          ? 'La oficina revisa la cobertura de tu póliza, la carga en Triunfo Seguros y te informa el número de siniestro oficial.'
+          : 'La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.'),
+    };
+    // A home or shop claim has no green card or licence: only photos of the
+    // damage, if there are any.
+    if (state.data.bien === true) {
+      this.setState(key, 'SINIESTRO_FOTO_DANIO', {
+        siniestroId: siniestro.id,
+        bien: true,
+      });
+      return {
+        messages: [
+          registered,
+          {
+            kind: 'text',
+            body:
+              'Si tenés *fotos* de lo dañado o de lo que pasó 📸, mandámelas ahora: podés enviar varias. ' +
+              'Cuando termines, escribí *listo*. Si no tenés, escribí *no tengo*.',
+          },
+        ],
+      };
+    }
+
     // Start the guided photo capture. Each photo the client sends from here is
     // attached to THIS claim and labeled by type (tarjeta verde / carnet / tercero).
     // Whether another vehicle was involved is already in the checklist:
@@ -3279,12 +3594,7 @@ export class FlowService {
     });
     return {
       messages: [
-        {
-          kind: 'text',
-          body:
-            `✅ Registré tu denuncia (N° interno *${siniestro.id}*).\n` +
-            `La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.`,
-        },
+        registered,
         {
           kind: 'text',
           body:
@@ -3450,7 +3760,7 @@ export class FlowService {
       messages: [
         {
           kind: 'text',
-          body: 'Mandame las *fotos del siniestro* (los daños, el lugar), o escribí *listo* cuando termines.',
+          body: 'Mandame las *fotos* de lo que pasó (los daños, el lugar), o escribí *listo* cuando termines.',
         },
       ],
     };
