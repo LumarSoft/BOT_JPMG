@@ -548,7 +548,7 @@ module.exports = [
   },
 
   {
-    id: 'M16', area: 'Menú de clientes', name: '"No se pudo realizar el pago": avisa a la oficina y no dice "en proceso"', wa: wa(), regression: '#242 y #172 (20/10)',
+    id: 'M17', area: 'Menú de clientes', name: '"No se pudo realizar el pago": avisa a la oficina y no dice "en proceso"', wa: wa(), regression: '#242 y #172 (20/10)',
     steps: [
       ...ident('99000002'),
       { text: 'Hola, me llegó una notificación de que no se pudo realizar el pago. ¿Te puedo transferir a este alias?', expect: { any: [/sin debitar/, /Ya le avisé a la oficina/], none: [/en proceso de débito/, /dejá el dinero disponible/] } },
