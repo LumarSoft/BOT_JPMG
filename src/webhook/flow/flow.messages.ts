@@ -866,10 +866,12 @@ export function siniestroConfirm(
 
 /**
  * "¿Por qué no se debitó?", "no me descontaron la cuota", "rechazaron el
- * débito", "le di stop debit". Folded text.
+ * débito", "le di stop debit", "no se realizó por débito automático", "me
+ * llegó una notificación de que no se pudo realizar el pago", "pago fallido".
+ * Folded text.
  */
 export const DEBIT_FAILED_RE =
-  /\bno (?:se )?(?:me |le |nos )?(?:(?:pudo|pudieron|pueden) )?(?:debit|descont|cobr)|\brechaz|\bstop debit|\bno (?:paso|entro|impacto) el (?:debito|pago)/;
+  /\bno (?:se )?(?:me |le |nos )?(?:(?:pudo|pudieron|pueden) )?(?:debit|descont|cobr)|\brechaz|\bstop debit|\bno (?:paso|entro|impacto) el (?:debito|pago)|\bno se (?:realizo|hizo|efectuo|proceso|concreto|acredito)\b.*\b(?:debito|pago|cobro)|\bno (?:se )?pud(?:o|ieron) (?:realizar|hacer|efectuar|procesar|concretar)(?: el| la)? (?:pago|debito|cobro)|\b(?:pago|debito) (?:fallido|fallo|rechazado|no realizado)|\bfallo el (?:pago|debito)/;
 
 /**
  * "No me aparece la factura para pagar", "ya debería pagar la cuota 4 y no me
@@ -916,7 +918,30 @@ function inDebitProcess(p: EstadoCuentaPoliza, c: CuotaImpaga): boolean {
 const DEBIT_IN_PROCESS_NOTE =
   '\n_Se debita en estos días: dejá el dinero disponible. Si el banco la rechaza, te avisamos para pagarla con cupón._';
 
-export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
+const DEBIT_NOT_DONE_NOTE =
+  '\n⚠️ Me contás que el débito no se hizo. Ya le avisé a la oficina para regularizarlo: te escriben por este chat (se puede pagar con cupón o transferencia).';
+
+/**
+ * The policies whose debit the customer says did not go through and that we
+ * still show as being collected: the office has to hear it, because the bot
+ * has no rejection on record (#242: the office had sent the coupon for a
+ * rejected debit and the bot answered "en proceso de débito").
+ */
+export function debitNotDone(
+  polizas: EstadoCuentaPoliza[],
+): EstadoCuentaPoliza[] {
+  return polizas.filter(
+    (p) =>
+      !p.hasRejectedInstallments &&
+      p.unpaidInstallments.some((c) => inDebitProcess(p, c)),
+  );
+}
+
+export function formatEstadoCuenta(
+  polizas: EstadoCuentaPoliza[],
+  /** The customer says the debit did not go through: nothing is "in process". */
+  opts: { debitFailed?: boolean } = {},
+): string {
   if (polizas.length === 0) {
     return 'No encontré pólizas asociadas a tu cuenta. Si creés que es un error, escribí *asesor* y lo revisa la oficina.';
   }
@@ -938,7 +963,9 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
           c.status === 'rejected'
             ? '⛔ rechazo de débito'
             : inDebitProcess(p, c)
-              ? '⏳ en proceso de débito'
+              ? opts.debitFailed
+                ? '⚠️ sin debitar'
+                : '⏳ en proceso de débito'
               : c.status === 'overdue'
                 ? '⚠️ vencida'
                 : 'pendiente';
@@ -956,7 +983,9 @@ export function formatEstadoCuenta(polizas: EstadoCuentaPoliza[]): string {
       ? '\n⚠️ Hay un rechazo de débito. Ya le avisé a la oficina para regularizarlo: te escriben por este chat.'
       : '';
     const enProceso = p.unpaidInstallments.some((c) => inDebitProcess(p, c))
-      ? DEBIT_IN_PROCESS_NOTE
+      ? opts.debitFailed && !p.hasRejectedInstallments
+        ? DEBIT_NOT_DONE_NOTE
+        : DEBIT_IN_PROCESS_NOTE
       : '';
     return `${head}\n${cuotas}${total}${paymentLine(p)}${enProceso}${aviso}`;
   });
@@ -998,7 +1027,7 @@ function debitAnswer(polizas: EstadoCuentaPoliza[]): string {
     if (p.hasRejectedInstallments)
       return `• ${label}: el banco *rechazó el débito*. Se puede pagar con cupón o volver a adherir la tarjeta o la cuenta.`;
     if (p.unpaidInstallments.length)
-      return `• ${label}: tiene débito automático. Si en tu banco figura *en proceso*, dejá el dinero disponible: se debita en estos días. Si llega el rechazo, la oficina te avisa para que la pagues con cupón.`;
+      return `• ${label}: tiene débito automático y la cuota ${p.unpaidInstallments[0].number} figura sin debitar. Ya le avisé a la oficina para que lo revise con vos y te diga cómo pagarla (cupón o transferencia).`;
     return `• ${label}: tiene débito automático y figura al día.`;
   });
   const coupon = polizas.some(

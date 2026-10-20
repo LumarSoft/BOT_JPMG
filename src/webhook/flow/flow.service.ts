@@ -32,6 +32,7 @@ import {
   CLIENT_MENU_OPTS,
   cotizarMenu,
   DEBIT_FAILED_RE,
+  debitNotDone,
   displayName,
   INSTALLMENT_MISSING_RE,
   OTHER_POLIZA_ID,
@@ -1569,6 +1570,27 @@ export class FlowService {
     known?: OpeningIntent | null,
   ): Promise<FlowResult | null> {
     if (isGreetingOnly(input.text)) return null;
+    // Written right after a person from the office wrote here (nothing from
+    // the bot since): it goes on with that, to that person, instead of
+    // opening a flow of its own. "¿Este no se realizó por débito?" about the
+    // coupon the office had just sent got the account status (#242). The tow
+    // truck is the one thing that can't wait for the office.
+    if (
+      this.answeringOffice(ctx) &&
+      !/\bgrua\b|\bauxilio\b|\bremolque\b/.test(fold(input.text))
+    ) {
+      // In the last hours the person is still at it: the chat is flagged and
+      // the bot keeps quiet while the office is open. Days later, the
+      // customer hears that it was passed on.
+      if (ctx.answeringPerson) {
+        const followed = await this.personFollowUp(input, ctx, key);
+        if (followed) return followed;
+      }
+      return this.withOpener(
+        opener,
+        await this.officeFollowUp(input.text, ctx, key),
+      );
+    }
     const intent =
       known !== undefined ? known : await this.readIntent(input, ctx);
     if (
@@ -2525,13 +2547,27 @@ export class FlowService {
               `Rechazo de débito en ${rejected.map(polizaMention).join('; ')}: regularizar el pago con el cliente.`,
             )
             .catch(() => undefined);
+        // The customer says the debit did not go through and we have no
+        // rejection on record: the office hears it with their words instead
+        // of the bot promising "se debita en estos días" (#242, #172).
+        const debitFailed = !!question && DEBIT_FAILED_RE.test(fold(question));
+        const notDone = debitFailed ? debitNotDone(estado) : [];
+        if (notDone.length)
+          await this.api
+            .requestHandoff(
+              ctx.conversationId,
+              `Dice que el débito no se realizó en ${notDone.map(polizaMention).join('; ')}: "${clip(question!)}". Regularizar el pago con el cliente (cupón o transferencia).`,
+            )
+            .catch(() => undefined);
         return {
           messages: [
             {
               kind: 'text',
               body:
-                formatEstadoCuenta(estado) +
-                (rejected.length ? await this.closedNote() : '') +
+                formatEstadoCuenta(estado, { debitFailed }) +
+                (rejected.length || notDone.length
+                  ? await this.closedNote()
+                  : '') +
                 (answer ? `\n\n${answer}` : ''),
             },
             estado.length ? pagosMenu() : clientMenu(),

@@ -547,6 +547,15 @@ module.exports = [
     ],
   },
 
+  {
+    id: 'M16', area: 'Menú de clientes', name: '"No se pudo realizar el pago": avisa a la oficina y no dice "en proceso"', wa: wa(), regression: '#242 y #172 (20/10)',
+    steps: [
+      ...ident('99000002'),
+      { text: 'Hola, me llegó una notificación de que no se pudo realizar el pago. ¿Te puedo transferir a este alias?', expect: { any: [/sin debitar/, /Ya le avisé a la oficina/], none: [/en proceso de débito/, /dejá el dinero disponible/] } },
+    ],
+    db: [handoffs('aviso con las palabras del cliente', (r) => r.some(([b]) => /Dice que el débito no se realizó/.test(b) && /no se pudo realizar el pago/.test(b)))],
+  },
+
   // ─── Oficina ─────────────────────────────────────────────────────
   {
     id: 'O01', area: 'Oficina', name: 'La oficina escribe desde el celular: el bot se calla', wa: wa(),

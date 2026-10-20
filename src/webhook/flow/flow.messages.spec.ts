@@ -1,4 +1,5 @@
 import type { EstadoCuentaPoliza, PolizaSummary } from '../../api/api.types';
+import { fold } from '../text';
 import {
   displayName,
   formatEstadoCuenta,
@@ -9,6 +10,8 @@ import {
   polizaPicker,
   returningGreeting,
   toWhatsAppMarkdown,
+  DEBIT_FAILED_RE,
+  debitNotDone,
 } from './flow.messages';
 
 describe('leadMenu', () => {
@@ -318,6 +321,49 @@ describe('account status answers', () => {
         { ...debit(daysAgo(4)), paymentMethod: 'Convenio' },
       ]);
       expect(text).toContain('⚠️ vencida');
+    });
+
+    it('shows nothing in process once the customer says it was not debited', () => {
+      const text = formatEstadoCuenta([debit(daysAgo(4))], {
+        debitFailed: true,
+      });
+      expect(text).toContain('⚠️ sin debitar');
+      expect(text).not.toContain('en proceso');
+      expect(text).not.toContain('dejá el dinero disponible');
+      expect(text).toContain('Ya le avisé a la oficina');
+      expect(debitNotDone([debit(daysAgo(4))])).toHaveLength(1);
+      // A rejection on record is already its own notice.
+      expect(
+        debitNotDone([
+          { ...debit(daysAgo(4), 'rejected'), hasRejectedInstallments: true },
+        ]),
+      ).toHaveLength(0);
+      expect(debitNotDone([base])).toHaveLength(0);
+    });
+
+    it('tells a customer whose debit did not go through that the office was told', () => {
+      const text = paymentAnswer([debit(daysAgo(4))], 'no se debitó');
+      expect(text).toContain('sin debitar');
+      expect(text).toContain('Ya le avisé a la oficina');
+      expect(text).not.toContain('dejá el dinero disponible');
+    });
+
+    it('reads the ways people say a payment failed', () => {
+      for (const said of [
+        'este no se realizó por débito automático?',
+        'me llegó una notificación de que no se pudo realizar el pago',
+        'no me debitaron la cuota',
+        'rechazaron el débito',
+        'pago fallido',
+        'falló el pago de octubre',
+      ])
+        expect(DEBIT_FAILED_RE.test(fold(said))).toBe(true);
+      for (const said of [
+        'cuánto debo',
+        'ya pagué la cuota',
+        'quiero el cupón',
+      ])
+        expect(DEBIT_FAILED_RE.test(fold(said))).toBe(false);
     });
 
     it('answers "no me aparece" with the debit in process', () => {

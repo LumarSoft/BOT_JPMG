@@ -3254,22 +3254,17 @@ describe('FlowService', () => {
     };
 
     it('stays quiet and flags the chat while the office is open', async () => {
-      intents.interpret.mockResolvedValue('seguimiento');
-
       const res = await send({ text: 'Ya te las mandé por mail' }, ctx);
 
       expect(res.messages).toEqual([]);
       expect(res.handoff).toBeUndefined();
       // No reason: the API keeps one pending matter however many follow.
       expect(api.requestHandoff).toHaveBeenCalledWith(1);
-      const [call] = intents.interpret.mock.calls[0] as [
-        { lastHumanReply: { content: string } | null },
-      ];
-      expect(call.lastHumanReply?.content).toBe('Pasame las fotos que tenés');
+      // A reply to the office is not read by the model: it goes on with her.
+      expect(intents.interpret).not.toHaveBeenCalled();
     });
 
     it('tells the customer their message was passed on when the office is closed', async () => {
-      intents.interpret.mockResolvedValue('seguimiento');
       api.getHours.mockResolvedValue({
         formatted: 'Lunes a viernes de 8 a 16 hs',
         isOpenNow: false,
@@ -3303,13 +3298,51 @@ describe('FlowService', () => {
       expect(call.lastHumanReply).toBeNull();
     });
 
-    it('serves a clear request without introducing the bot', async () => {
-      intents.interpret.mockResolvedValue('documentos');
-
+    it('leaves a request to the person they are talking to, not to a flow', async () => {
+      // "Mandame el cupón" to Mili used to open the coupon flow and the DNI.
       const res = await send({ text: 'Mandame el cupón de pago' }, ctx);
 
-      expect(stored?.step).toBe('IDENTIFY');
-      expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
+      expect(stored?.step).not.toBe('IDENTIFY');
+      expect(res.messages).toEqual([]);
+      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+    });
+
+    it('still gives the tow truck number right away', async () => {
+      intents.interpret.mockResolvedValue('grua');
+
+      const res = await send({ text: 'Necesito una grúa urgente' }, ctx);
+
+      expect(JSON.stringify(res.messages)).toContain('Auxilio / Grúa');
+    });
+
+    it('a day later, passes the reply on to the office instead of the account status', async () => {
+      // #242: the office sent the coupon for a rejected debit; the next day
+      // the customer asked "¿este no se realizó por débito automático?" and
+      // the bot, reading "pagos", showed the installment as "en proceso".
+      intents.interpret.mockResolvedValue('pagos');
+      const dayAgo = {
+        ...ctx,
+        answeringPerson: false,
+        botSpoke: false,
+        lastHumanReply: {
+          content: 'Te envío el cupón de la póliza que no pudieron debitarte',
+          createdAt: new Date(Date.now() - 27 * 3_600_000).toISOString(),
+        },
+      };
+
+      const res = await send(
+        { text: 'Buenas tardes, ¿este no se realizó por débito automático?' },
+        dayAgo,
+      );
+
+      const text = JSON.stringify(res.messages);
+      expect(text).toContain('persona de la oficina que te venía atendiendo');
+      expect(text).not.toContain('DNI');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('no se realizó por débito automático'),
+      );
+      expect(intents.interpret).not.toHaveBeenCalled();
     });
   });
 
@@ -3479,8 +3512,54 @@ describe('FlowService', () => {
 
       const body = JSON.stringify(res.messages);
       expect(body).toContain('no tiene débito automático');
-      expect(body).toContain('en proceso');
+      // The customer says it was not debited: nothing is "en proceso", and
+      // the office hears it with their words.
+      expect(body).not.toContain('en proceso');
+      expect(body).toContain('sin debitar');
+      expect(body).toContain('Ya le avisé a la oficina');
       expect(body).toContain('06/10/2026');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringMatching(
+          /Dice que el débito no se realizó en .*HONDA STORM.*: "quería saber porque no se débito el seguro"/,
+        ),
+      );
+    });
+
+    it('passes on "no se pudo realizar el pago" with the customer offering to transfer', async () => {
+      // #172: the customer got a payment-failed notice and asked to transfer;
+      // the bot showed four installments "en proceso de débito" and told nobody.
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([
+        {
+          ...onixAlDia,
+          paymentMethod: 'Débito Tarjeta',
+          unpaidInstallments: [
+            {
+              number: 2,
+              amount: '12833.00',
+              dueDate: new Date(Date.now() - 20 * 86_400_000).toISOString(),
+              status: 'overdue',
+            },
+          ],
+        },
+      ]);
+
+      const res = await send(
+        {
+          text: 'Hola buenas, me llegó una notificación de que no se pudo realizar el pago.. te puedo transferir a este alias?',
+        },
+        { ...withModel, client },
+      );
+
+      const body = JSON.stringify(res.messages);
+      expect(body).not.toContain('en proceso');
+      expect(body).not.toContain('dejá el dinero disponible');
+      expect(body).toContain('sin debitar');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('te puedo transferir a este alias'),
+      );
     });
 
     it('asks "¿hablo con…?" for a number that is a client phone instead of the DNI', async () => {
