@@ -12,6 +12,12 @@ import {
   toWhatsAppMarkdown,
   DEBIT_FAILED_RE,
   debitNotDone,
+  CLAIM_COPY_RE,
+  CLAIMS_PHONE_RE,
+  coverageSummary,
+  docPicker,
+  formatSiniestros,
+  polizaTitles,
 } from './flow.messages';
 
 describe('leadMenu', () => {
@@ -382,5 +388,254 @@ describe('account status answers', () => {
     );
     expect(paymentAnswer([base], 'cuánto debo')).toBeNull();
     expect(paymentAnswer([], 'no se debitó')).toBeNull();
+  });
+});
+
+describe('readable policy lists (#216, #238)', () => {
+  const poliza = (over: Partial<PolizaSummary>): PolizaSummary => ({
+    id: 1,
+    certificateNumber: '1000001',
+    company: 'triunfo',
+    riskType: 'auto',
+    lastMovement: 'REFACTURACION',
+    validFrom: null,
+    validTo: null,
+    paymentMethod: null,
+    vehicle: null,
+    ...over,
+  });
+
+  it('names a non-vehicle policy by its product and shows where it is', () => {
+    const list = polizaPicker(
+      [
+        poliza({ id: 1, riskType: 'other', product: 'Bicicleta' }),
+        poliza({
+          id: 2,
+          riskType: 'home',
+          product: 'Hogar',
+          place: 'San Martin 4060',
+          certificateNumber: '1044644',
+        }),
+      ],
+      '¿Cuál?',
+    );
+    if (list.kind !== 'list') throw new Error('expected a list');
+    expect(list.rows.map((r) => r.title)).toEqual(['Bicicleta', 'Hogar']);
+    expect(list.rows[1].description).toBe('Póliza 1044644 · San Martin 4060');
+  });
+
+  it('starts a repeated title with what tells them apart, within 24 characters', () => {
+    const titles = polizaTitles([
+      poliza({
+        vehicle: {
+          licensePlate: 'AC690RN',
+          brand: 'RENAULT',
+          model: 'LOGAN II 1.6',
+        },
+      }),
+      poliza({
+        vehicle: {
+          licensePlate: 'AD973AV',
+          brand: 'RENAULT',
+          model: 'LOGAN II 1.6',
+        },
+      }),
+      poliza({
+        riskType: 'life',
+        product: 'Acc. personales',
+        certificateNumber: '1205970',
+      }),
+      poliza({
+        riskType: 'life',
+        product: 'Acc. personales',
+        certificateNumber: '1205971',
+      }),
+      poliza({ riskType: 'life', product: 'Sepelio' }),
+    ]);
+    expect(titles[0]).toBe('AC690RN · RENAULT LOGAN…');
+    expect(titles[1].startsWith('AD973AV · ')).toBe(true);
+    expect(titles[2]).toBe('Acc. personales 1205970');
+    expect(titles.every((t) => t.length <= 24)).toBe(true);
+    expect(titles[4]).toBe('Sepelio');
+  });
+});
+
+describe('coverage summary', () => {
+  const base: PolizaSummary = {
+    id: 1,
+    certificateNumber: '3519342',
+    company: 'triunfo',
+    riskType: 'auto',
+    lastMovement: 'REFACTURACION',
+    validFrom: null,
+    validTo: null,
+    paymentMethod: null,
+    vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'CRONOS' },
+  };
+
+  it('writes out what a vehicle code includes and leaves out', () => {
+    const text = coverageSummary({
+      ...base,
+      coverage: {
+        code: 'C2',
+        name: 'Terceros Completo 2',
+        benefits: ['Rotura de cristales hasta $500.000'],
+        exclusions: ['Daños parciales por accidente'],
+        deductible: null,
+      },
+    });
+    expect(text).toContain('*Terceros Completo 2* (C2)');
+    expect(text).toContain('• Rotura de cristales hasta $500.000');
+    expect(text).toContain('_No incluye:_');
+    expect(text).toContain('Hablar con un asesor');
+  });
+
+  it('lists what Triunfo covers on a home, with its sums', () => {
+    const text = coverageSummary({
+      ...base,
+      riskType: 'home',
+      vehicle: null,
+      product: 'Hogar',
+      riesgos: [
+        { riesgo: 'CRISTALES', cobertura: 'CRISTALES', sumaAsegurada: 300000 },
+        { riesgo: 'ROBO', cobertura: 'CONTENIDO GENERAL', sumaAsegurada: null },
+      ],
+    });
+    expect(text).toContain('Tu *Hogar*');
+    expect(text).toMatch(/• Cristales — hasta \$\s?300\.000/);
+    expect(text).toContain('• Robo · Contenido general');
+  });
+});
+
+describe('payment rules the office repeats', () => {
+  const debit = (
+    over: Partial<EstadoCuentaPoliza> = {},
+  ): EstadoCuentaPoliza => ({
+    id: 1,
+    certificateNumber: '1000001',
+    riskType: 'auto',
+    lastMovement: 'REFACTURACION',
+    paymentMethod: 'Convenio',
+    vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'PALIO' },
+    paidInstallments: 1,
+    unpaidInstallments: [],
+    hasRejectedInstallments: false,
+    ...over,
+  });
+
+  beforeAll(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-20T15:00:00Z'));
+  });
+  afterAll(() => jest.useRealTimers());
+
+  it('says until when each installment can be paid', () => {
+    const text = paymentAnswer(
+      [
+        debit({
+          unpaidInstallments: [
+            {
+              number: 3,
+              amount: '1000',
+              dueDate: '2026-10-16T00:00:00.000Z',
+              status: 'pending',
+            },
+            {
+              number: 2,
+              amount: '1000',
+              dueDate: '2026-09-02T00:00:00.000Z',
+              status: 'overdue',
+            },
+          ],
+        }),
+      ],
+      '¿hasta cuándo puedo pagar la cuota?',
+    );
+    expect(text).toContain('hasta antes del día 10 del mes siguiente');
+    expect(text).toContain(
+      'la cuota 3 (vence 16/10/2026) la podés pagar hasta antes del 10/11',
+    );
+    expect(text).toContain('era hasta antes del 10/10. Ese plazo ya pasó');
+  });
+
+  it('lists the ways to pay and the card discount', () => {
+    expect(
+      paymentAnswer([debit()], '¿Puedo pagar con Mercado Pago?'),
+    ).toContain('Rapipago, Pago Fácil o Santa Fe Servicios');
+    expect(
+      paymentAnswer(
+        [debit()],
+        '¿Es el mismo precio con cupón que con tarjeta?',
+      ),
+    ).toContain('5 % menos');
+  });
+
+  it('answers the stolen vehicle and "sin forma de pago"', () => {
+    expect(
+      paymentAnswer(
+        [debit()],
+        'me robaron la moto, ¿tengo que seguir pagando?',
+      ),
+    ).toContain('convenio');
+    expect(
+      paymentAnswer(
+        [debit()],
+        'me dijeron que quedé sin forma de pago, ¿qué es?',
+      ),
+    ).toContain('tarjeta de crédito o débito, o un CBU');
+  });
+
+  it('explains the first installment of a renewal and marks it', () => {
+    const renewed = debit({
+      lastMovement: 'RENOVACION',
+      paymentMethod: 'Débito Tarjeta',
+      unpaidInstallments: [
+        {
+          number: 1,
+          amount: '1000',
+          dueDate: '2026-10-10T00:00:00.000Z',
+          status: 'pending',
+        },
+      ],
+    });
+    expect(
+      paymentAnswer([renewed], 'pero si ya me debitaron este mes'),
+    ).toContain('la cuota 1 es la primera de la póliza nueva');
+    expect(formatEstadoCuenta([renewed])).toContain(
+      '1ª cuota de la renovación',
+    );
+    expect(paymentAnswer([debit()], 'pero si ya me debitaron')).toBeNull();
+  });
+});
+
+describe('claims', () => {
+  it('tells the claim copy and the claims phone from the claim number', () => {
+    expect(CLAIM_COPY_RE.test(fold('me pasás la copia de la denuncia?'))).toBe(
+      true,
+    );
+    expect(
+      CLAIM_COPY_RE.test(fold('necesito la denuncia administrativa')),
+    ).toBe(true);
+    expect(CLAIMS_PHONE_RE.test(fold('cuál es el 0800 para denunciar?'))).toBe(
+      true,
+    );
+    expect(
+      CLAIMS_PHONE_RE.test(fold('a qué número llamo para hacer la denuncia')),
+    ).toBe(true);
+    expect(CLAIMS_PHONE_RE.test(fold('cuál es el número de siniestro?'))).toBe(
+      false,
+    );
+    expect(CLAIMS_PHONE_RE.test(fold('quiero hacer una denuncia'))).toBe(false);
+  });
+
+  it('offers a copy of a claim among the documents', () => {
+    const list = docPicker([
+      { code: '1050', name: 'Tarjeta verde (Mercosur)', url: '' },
+    ]);
+    if (list.kind !== 'list') throw new Error('expected a list');
+    expect(list.rows.map((r) => r.id)).toContain('doc_denuncia');
+  });
+
+  it('does not say a claim made with the office was lost', () => {
+    expect(formatSiniestros([])).toContain('Si la hiciste con la oficina');
   });
 });

@@ -327,6 +327,7 @@ export const OPENABLE_OPTIONS = [
   'cotizar',
   'cambiar_forma_de_pago',
   'hablar_con_un_asesor',
+  'cobertura',
 ] as const;
 export type OpenableOption = (typeof OPENABLE_OPTIONS)[number];
 

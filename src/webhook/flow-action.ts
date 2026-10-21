@@ -27,6 +27,7 @@ const OPTION_IDS: Record<OpenableOption, string> = {
   cotizar: OPT.cotizacion,
   cambiar_forma_de_pago: OPT.cambioPago,
   hablar_con_un_asesor: OPT.asesor,
+  cobertura: OPT.cobertura,
 };
 
 /** Longest customer text quoted in an office request. */

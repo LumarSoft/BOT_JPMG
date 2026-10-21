@@ -152,6 +152,28 @@ export interface PolizaSummary {
   vehicle: VehiculoSummary | null;
   /** Payment standing; `upToDate` is false with a rejected or past-due installment. */
   paymentStatus?: PaymentStatus;
+  /** Short name of a non-vehicle policy ("Bicicleta", "Sepelio"); null for vehicles. */
+  product?: string | null;
+  /** Insured address of a home or shop ("San Martin 4060"). */
+  place?: string | null;
+  /** What the vehicle's coverage code includes (null when it has no code). */
+  coverage?: CoberturaContratada | null;
+  /** The coverages Triunfo lists on a non-vehicle policy, with their sums. */
+  riesgos?: RiesgoCubierto[];
+}
+
+export interface CoberturaContratada {
+  code: string;
+  name: string;
+  benefits: string[];
+  exclusions: string[];
+  deductible: string | null;
+}
+
+export interface RiesgoCubierto {
+  riesgo: string;
+  cobertura: string;
+  sumaAsegurada: number | null;
 }
 
 export interface PaymentStatus {
@@ -175,6 +197,8 @@ export interface EstadoCuentaPoliza {
   paymentMethod: string | null;
   validTo?: string | null;
   vehicle: VehiculoSummary | null;
+  product?: string | null;
+  place?: string | null;
   /** When the next installment is due, estimated: it isn't billed yet. */
   nextDueDate?: string | null;
   paidInstallments: number;

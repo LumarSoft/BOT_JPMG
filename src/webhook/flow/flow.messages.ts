@@ -69,6 +69,9 @@ export const OPT = {
   // Never shown: the model passes a request only the office can do, with its
   // summary as the text (see the FAQ's pasar_a_la_oficina tool).
   pedidoOficina: 'm_pedido_oficina',
+  // Never shown in the menu: "¿mi póliza cubre X?", read from the message or
+  // opened by the FAQ model.
+  cobertura: 'm_cobertura',
 } as const;
 
 /** The client menu's option ids — the taps that still mean something after a
@@ -84,6 +87,7 @@ export const CLIENT_MENU_OPTS = new Set<string>([
   OPT.bajaPoliza,
   OPT.grua,
   OPT.asesor,
+  OPT.cobertura,
 ]);
 
 /** Same idea for the welcome buttons. */
@@ -120,6 +124,19 @@ export const OTHER_POLIZA_ID = `${POLIZA_PREFIX}otra`;
 export const DOC_PREFIX = 'doc_';
 /** "Todos los documentos" row of the document picker. */
 export const ALL_DOCS_ID = `${DOC_PREFIX}todos`;
+/** "Copia de una denuncia" row of the document picker: the office sends it. */
+export const CLAIM_COPY_ID = `${DOC_PREFIX}denuncia`;
+
+/** "Copia de la denuncia", "la denuncia administrativa". Folded text. */
+export const CLAIM_COPY_RE =
+  /\bcopia de (?:la |mi |una )?denuncia\b|\bdenuncia administrativa\b|\bconstancia de (?:la )?denuncia\b|\b(?:la |mi )?denuncia (?:en pdf|impresa|firmada)\b/;
+
+/**
+ * Asks for the company's claims phone ("¿cuál es el 0800 para denunciar?").
+ * Not "número de siniestro", which is the claim number. Folded text.
+ */
+export const CLAIMS_PHONE_RE =
+  /\b0 ?8[01]0\b|\btelefono\b.{0,50}\b(?:denunci|siniestro|compania|triunfo|aseguradora)|\b(?:denunci|siniestro|compania|triunfo|aseguradora)\w*\b.{0,50}\btelefono\b|\bllam(?:o|ar|amos)\b.{0,40}\b(?:denunci|siniestro|triunfo|compania|aseguradora)/;
 export const PLAN_PREFIX = 'plan_';
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -186,28 +203,126 @@ function riskLabel(riskType: string): string {
  * client always recognises the policy by the same name.
  */
 export function polizaLabel(
-  p: Pick<PolizaSummary, 'riskType' | 'vehicle'>,
+  p: Pick<PolizaSummary, 'riskType' | 'vehicle'> & {
+    product?: string | null;
+  },
 ): string {
   const v = p.vehicle;
   if (v && (v.brand || v.model)) {
     return [v.brand, v.model].filter(Boolean).join(' ');
   }
-  return riskLabel(p.riskType);
+  // "Bicicleta", "Sepelio", "Acc. personales" instead of "Otro riesgo" or
+  // "Vida" three times in a list (#216, #224).
+  return p.product?.trim() || riskLabel(p.riskType);
 }
 
-/** Secondary line for a policy: certificate number plus plate when there is one. */
+/**
+ * Secondary line for a policy: certificate number plus plate, or the insured
+ * address of a home or shop, when there is one.
+ */
 function polizaRef(
-  p: Pick<PolizaSummary, 'certificateNumber' | 'vehicle'>,
+  p: Pick<PolizaSummary, 'certificateNumber' | 'vehicle'> & {
+    place?: string | null;
+  },
 ): string {
-  const dominio = p.vehicle?.licensePlate;
-  return `Póliza ${p.certificateNumber}${dominio ? ` · ${dominio}` : ''}`;
+  const where = p.vehicle?.licensePlate || p.place?.trim();
+  return `Póliza ${p.certificateNumber}${where ? ` · ${where}` : ''}`;
 }
 
 /** One-line mention for the office: "CHEVROLET CORSA (Póliza 1741715 · ABC123)". */
 export function polizaMention(
-  p: Pick<PolizaSummary, 'riskType' | 'vehicle' | 'certificateNumber'>,
+  p: Pick<PolizaSummary, 'riskType' | 'vehicle' | 'certificateNumber'> & {
+    product?: string | null;
+    place?: string | null;
+  },
 ): string {
   return `${polizaLabel(p)} (${polizaRef(p)})`;
+}
+
+/** "CONTENIDO GENERAL" → "Contenido general". */
+const sentenceCase = (text: string) =>
+  text ? text.charAt(0) + text.slice(1).toLowerCase() : text;
+
+/**
+ * What a policy covers, written out: the shown answer when the model can't
+ * read the question, and the detail behind "¿qué me cubre mi seguro?".
+ */
+export function coverageSummary(p: PolizaSummary): string {
+  const head = `🛡️ Tu *${polizaLabel(p)}* (${polizaRef(p)})`;
+  const tail =
+    '\n\nSi lo que buscás no figura acá, tocá *Hablar con un asesor* y la oficina te lo confirma.';
+  const c = p.coverage;
+  if (c && c.benefits.length) {
+    const lines = [
+      `${head} tiene *${c.name}*${c.code ? ` (${c.code})` : ''}:`,
+      ...c.benefits.map((b) => `• ${b}`),
+      ...(c.exclusions.length
+        ? ['', '_No incluye:_', ...c.exclusions.map((e) => `• ${e}`)]
+        : []),
+      ...(c.deductible ? ['', `Franquicia: ${c.deductible}`] : []),
+    ];
+    return lines.join('\n') + tail;
+  }
+  const riesgos = p.riesgos ?? [];
+  if (riesgos.length) {
+    const lines = riesgos.map((r) => {
+      const name =
+        r.cobertura && r.cobertura !== r.riesgo
+          ? `${sentenceCase(r.riesgo)} · ${sentenceCase(r.cobertura)}`
+          : sentenceCase(r.riesgo || r.cobertura);
+      return `• ${name}${r.sumaAsegurada !== null ? ` — hasta ${fmtMoney(r.sumaAsegurada)}` : ''}`;
+    });
+    return [`${head} cubre:`, ...lines].join('\n') + tail;
+  }
+  return `${head}: no tengo el detalle de lo que cubre.${tail}`;
+}
+
+/** Under a coverage answer: the claim and the office are a tap away. */
+export function claimOrAdvisorButtons(): OutgoingMessage {
+  return {
+    kind: 'buttons',
+    body: '¿Qué querés hacer?',
+    buttons: [
+      { id: OPT.siniestros, title: 'Hacer una denuncia' },
+      { id: OPT.asesor, title: 'Hablar con un asesor' },
+      { id: OPT.menu, title: 'Volver al menú' },
+    ],
+  };
+}
+
+/** WhatsApp cuts list-row titles at 24 characters. */
+const ROW_TITLE_MAX = 24;
+
+const shorten = (text: string, max = ROW_TITLE_MAX) =>
+  text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+
+/**
+ * List titles that tell policies apart. Two "RENAULT LOGAN II 1.6" or three
+ * "Vida" read the same on a list (#216, #238): a repeated title starts with the
+ * plate (a vehicle), the address or the policy number, which fit in the 24
+ * characters WhatsApp shows.
+ */
+export function polizaTitles(
+  polizas: Array<
+    Pick<PolizaSummary, 'riskType' | 'vehicle' | 'certificateNumber'> & {
+      product?: string | null;
+      place?: string | null;
+    }
+  >,
+): string[] {
+  const labels = polizas.map((p) => polizaLabel(p));
+  const count = new Map<string, number>();
+  for (const l of labels) count.set(l, (count.get(l) ?? 0) + 1);
+  return polizas.map((p, i) => {
+    const label = labels[i];
+    // Meta cuts a long unique title itself; only the prefixed ones are cut here.
+    if ((count.get(label) ?? 0) < 2) return label;
+    const key = p.vehicle?.licensePlate?.trim() || p.place?.trim();
+    // The policy number reads after the name: "Acc. personales 1205970".
+    return shorten(
+      key ? `${key} · ${label}` : `${label} ${p.certificateNumber}`,
+    );
+  });
 }
 
 /**
@@ -710,9 +825,10 @@ export function polizaPicker(
   body: string,
   options: { allRow?: boolean; otherRow?: boolean } = {},
 ): OutgoingMessage {
-  const rows: ListRow[] = polizas.map((p) => ({
+  const titles = polizaTitles(polizas);
+  const rows: ListRow[] = polizas.map((p, i) => ({
     id: `${POLIZA_PREFIX}${p.id}`,
-    title: polizaLabel(p),
+    title: titles[i],
     description: polizaRef(p),
   }));
   // A WhatsApp list holds at most 10 rows.
@@ -836,6 +952,13 @@ export function docPicker(
   }));
   if (docs.length > 1)
     rows.push({ id: ALL_DOCS_ID, title: 'Todos los documentos' });
+  // Triunfo does not give it: the office sends the claim it filed (#205, #209).
+  if (rows.length < 10)
+    rows.push({
+      id: CLAIM_COPY_ID,
+      title: 'Copia de una denuncia',
+      description: 'Te la manda la oficina',
+    });
   return { kind: 'list', body, button: 'Ver documentos', rows };
 }
 
@@ -969,7 +1092,13 @@ export function formatEstadoCuenta(
               : c.status === 'overdue'
                 ? '⚠️ vencida'
                 : 'pendiente';
-        return `  • Cuota ${c.number}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag})`;
+        // The first installment of a renewed policy read as a second charge
+        // (#245): "the one debited was the last of the old policy".
+        const renewal =
+          c.number === 1 && /RENOVACION/i.test(p.lastMovement ?? '')
+            ? ' · 1ª cuota de la renovación'
+            : '';
+        return `  • Cuota ${c.number}: ${fmtMoney(c.amount)} — vence ${fmtDate(c.dueDate)} (${tag}${renewal})`;
       })
       .join('\n');
     // Only for coupons: debit installments often show as overdue while the
@@ -994,6 +1123,93 @@ export function formatEstadoCuenta(
 }
 
 /**
+ * The payment rules the office repeats by hand (chats 6–20/10): until when an
+ * installment can be paid, how to pay, card versus cash, a stolen vehicle, a
+ * policy left "sin forma de pago" and the first installment of a renewal.
+ * Folded text.
+ */
+export const PAY_DEADLINE_RE =
+  /\bhasta cuando\b|\bhasta que (?:dia|fecha)\b|\bplazo\b|\bhasta el (?:dia )?10\b|\bpuedo pagar(?:la|lo)? (?:despues|mas tarde|la semana|el mes)|\bsi (?:la |lo )?pago (?:despues|tarde|atrasad|la semana|el mes)|\bsigo (?:estando )?cubiert|\bme quedo sin (?:seguro|cobertura)/;
+export const PAY_METHODS_RE =
+  /\bformas? de pago\b|\bmedios? de pago\b|\bcomo (?:puedo |se )?pag|\bdonde (?:puedo |se )?pag|\bpuedo pagar(?:la|lo)? (?:con|por|en|por)\b|\bmercado ?pago\b|\brapipago\b|\bpago ?facil\b|\bsanta fe servicios\b|\bhome ?banking\b/;
+export const CARD_VS_CASH_RE =
+  /\bmismo precio\b|\bmas (?:barat|car)|\bdiferencia\b|\brecargo\b|\bconviene (?:pagar|con)|\b(?:cupon|efectivo)\b.{0,30}\b(?:tarjeta|debito)\b.{0,30}\b(?:precio|sale|cuesta|diferencia|igual)|\b(?:tarjeta|debito)\b.{0,30}\b(?:cupon|efectivo)\b.{0,30}\b(?:precio|sale|cuesta|diferencia|igual)/;
+export const STOLEN_RE =
+  /\b(?:me (?:la |lo )?robaron|robo total|robad[ao])\b.{0,80}\b(?:pag|cuota|seguir)|\b(?:pag|cuotas?|seguir)\b.{0,80}\b(?:robaron|robad[ao]|robo)\b/;
+export const NO_PAYMENT_METHOD_RE =
+  /\bsin (?:forma|medio) de pago\b|\bquedo sin (?:la )?tarjeta\b/;
+export const RENEWAL_CHARGE_RE =
+  /\bya (?:me )?(?:la |lo )?(?:debitaron|cobraron|descontaron|pague|la pague)\b|\b(?:cobraron|debitaron) dos veces\b|\bdoble (?:debito|cobro)\b|\botra vez\b|\bde nuevo\b/;
+
+/** "Hasta antes del 10/11": the 10th of the month after the due date. */
+function payUntil(dueDate: string): Date | null {
+  const due = new Date(dueDate);
+  if (Number.isNaN(due.getTime())) return null;
+  return new Date(Date.UTC(due.getUTCFullYear(), due.getUTCMonth() + 1, 10));
+}
+
+const ddmm = (d: Date) =>
+  `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+
+const PAY_METHODS_TEXT =
+  '📌 *Formas de pago:*\n' +
+  '• Débito automático con tarjeta de crédito o débito, o con CBU.\n' +
+  '• En efectivo con el cupón, en Rapipago, Pago Fácil o Santa Fe Servicios.\n' +
+  '• Por Mercado Pago.\n' +
+  'Con tarjeta la cuota sale un 5 % menos que en efectivo. Si querés el cupón o los datos para transferir, pedilo abajo en *Pedir cupón de pago*.';
+
+const CARD_VS_CASH_TEXT =
+  '📌 Con débito automático en tarjeta la cuota sale un *5 % menos* que pagándola en efectivo con cupón. Si querés pasarte a tarjeta o CBU, tocá *Cambiar forma de pago* abajo.';
+
+const STOLEN_TEXT =
+  '📌 Las cuotas las podés seguir pagando mes a mes. Si no, cuando la compañía te entregue el convenio con lo que te va a pagar por el vehículo, te descuentan las cuotas que quedaron pendientes.';
+
+const NO_PAYMENT_METHOD_TEXT =
+  '📌 *Sin forma de pago* quiere decir que la póliza quedó sin tarjeta ni cuenta para debitar (por ejemplo, porque el banco rechazó el débito o la tarjeta venció). Para seguir con débito automático hay que pasar una tarjeta de crédito o débito, o un CBU; si no, se paga en efectivo con cupón. Abajo podés *Cambiar forma de pago* o *Pedir cupón de pago*.';
+
+function deadlineAnswer(polizas: EstadoCuentaPoliza[]): string {
+  const now = Date.now();
+  const lines: string[] = [];
+  for (const p of polizas) {
+    for (const c of p.unpaidInstallments.slice(0, 2)) {
+      const until = c.dueDate ? payUntil(c.dueDate) : null;
+      if (!until) continue;
+      lines.push(
+        until.getTime() > now
+          ? `• *${polizaLabel(p)}*: la cuota ${c.number} (vence ${fmtDate(c.dueDate)}) la podés pagar hasta antes del ${ddmm(until)}.`
+          : `• *${polizaLabel(p)}*: la cuota ${c.number} (vence ${fmtDate(c.dueDate)}) era hasta antes del ${ddmm(until)}. Ese plazo ya pasó: tocá *Hablar con un asesor* abajo y la oficina lo revisa con vos.`,
+      );
+    }
+  }
+  const debit = polizas.some((p) => paysByDebit(p) === true);
+  return (
+    '📌 *Hasta cuándo pagar:* una cuota se puede pagar hasta antes del día 10 del mes siguiente a su vencimiento.' +
+    (lines.length
+      ? `\n${lines.join('\n')}`
+      : '\nNo tenés cuotas pendientes de pago.') +
+    (debit
+      ? '\nEl débito automático se hace entre el 1 y el 10 de cada mes.'
+      : '')
+  );
+}
+
+/** A renewed policy whose first installment is still to be paid. */
+const renewedFirst = (p: EstadoCuentaPoliza) =>
+  /RENOVACION/i.test(p.lastMovement ?? '') &&
+  p.unpaidInstallments.some((c) => c.number === 1);
+
+function renewalAnswer(polizas: EstadoCuentaPoliza[]): string | null {
+  const renewed = polizas.filter(renewedFirst);
+  if (!renewed.length) return null;
+  return renewed
+    .map(
+      (p) =>
+        `📌 Tu *${polizaLabel(p)}* se renovó: la cuota 1 es la primera de la póliza nueva. Lo que se cobró antes era la última cuota de la póliza anterior.`,
+    )
+    .join('\n');
+}
+
+/**
  * The answer to what the customer asked about their payments, from the same
  * account status. Two questions the office was answering by hand: a debit that
  * didn't go through (a policy paid with a coupon has no debit) and an
@@ -1008,6 +1224,15 @@ export function paymentAnswer(
   const t = fold(question);
   if (DEBIT_FAILED_RE.test(t)) return debitAnswer(polizas);
   if (INSTALLMENT_MISSING_RE.test(t)) return missingAnswer(polizas);
+  if (STOLEN_RE.test(t)) return STOLEN_TEXT;
+  if (NO_PAYMENT_METHOD_RE.test(t)) return NO_PAYMENT_METHOD_TEXT;
+  if (RENEWAL_CHARGE_RE.test(t)) {
+    const renewal = renewalAnswer(polizas);
+    if (renewal) return renewal;
+  }
+  if (PAY_DEADLINE_RE.test(t)) return deadlineAnswer(polizas);
+  if (CARD_VS_CASH_RE.test(t)) return CARD_VS_CASH_TEXT;
+  if (PAY_METHODS_RE.test(t)) return PAY_METHODS_TEXT;
   return null;
 }
 
@@ -1066,7 +1291,9 @@ function missingAnswer(polizas: EstadoCuentaPoliza[]): string {
 
 export function formatSiniestros(siniestros: SiniestroSummary[]): string {
   if (siniestros.length === 0) {
-    return 'No tenés denuncias de siniestro registradas. Si querés iniciar una, elegí *Denuncia nueva*.';
+    // A claim the office or the company took is not in the bot (#119): "no
+    // tenés denuncias" read as if it had been lost.
+    return 'No veo denuncias hechas por este chat. Si la hiciste con la oficina o directamente con la compañía, tocá *Hablar con un asesor* y te dicen cómo va.';
   }
 
   const estados: Record<SiniestroSummary['status'], string> = {

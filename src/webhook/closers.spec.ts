@@ -2,6 +2,7 @@ import type { ConversationMessage } from '../api/api.types';
 import {
   answeringAPerson,
   closesHumanConversation,
+  isAutoReply,
   isCloser,
   lastSpeakerIsHuman,
 } from './closers';
@@ -114,5 +115,24 @@ describe('answeringAPerson across sessions', () => {
     expect(
       answeringAPerson([msg('user'), msg('assistant')], reply(1), now),
     ).toBe(false);
+  });
+});
+
+describe('isAutoReply', () => {
+  it.each([
+    'Gracias por comunicarte con 🐬Delfina tiempo libre 🐬 ¿Cómo podemos ayudarte?',
+    'Gracias por comunicarte con Inmobiliaria Ejemplo. En breve te responderemos. Horario de atención: lunes a viernes de 9 a 18.',
+    'Este es un mensaje automático: estamos fuera de horario.',
+  ])('recognises "%s"', (text) => {
+    expect(isAutoReply(text)).toBe(true);
+  });
+
+  it.each([
+    'Gracias por todo!',
+    '¿Cuál es su horario de atención?',
+    'Gracias por tu mensaje, ahora te paso el DNI',
+    'Hola, quería saber cómo podemos hacer para pagar',
+  ])('lets a customer through: "%s"', (text) => {
+    expect(isAutoReply(text)).toBe(false);
   });
 });

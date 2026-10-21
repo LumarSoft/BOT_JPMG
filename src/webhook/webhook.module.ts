@@ -8,6 +8,7 @@ import { InactivityWarningService } from './inactivity-warning.service';
 import { FlowService } from './flow/flow.service';
 import { IdentificationInterpreter } from './flow/identification-interpreter.service';
 import { IntentInterpreter } from './flow/intent-interpreter.service';
+import { CoverageAnswerer } from './flow/coverage-answerer.service';
 import { SiniestroExtractor } from './flow/siniestro-extractor.service';
 import { AudioTranscriber } from './audio-transcriber.service';
 import { InternalController } from './internal.controller';
@@ -24,6 +25,7 @@ import { InternalController } from './internal.controller';
     SiniestroExtractor,
     IdentificationInterpreter,
     IntentInterpreter,
+    CoverageAnswerer,
     AudioTranscriber,
   ],
 })

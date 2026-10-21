@@ -33,6 +33,9 @@ import {
   cotizarMenu,
   DEBIT_FAILED_RE,
   debitNotDone,
+  CLAIM_COPY_ID,
+  CLAIM_COPY_RE,
+  CLAIMS_PHONE_RE,
   displayName,
   INSTALLMENT_MISSING_RE,
   OTHER_POLIZA_ID,
@@ -63,6 +66,9 @@ import {
   polizaLabel,
   polizaPicker,
   polizaMention,
+  claimOrAdvisorButtons,
+  coverageSummary,
+  toWhatsAppMarkdown,
   returningGreeting,
   ROOT_OPTS,
   siniestroConfirm,
@@ -80,6 +86,10 @@ import { attentionHoursOf } from '../constants/business';
 import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
+import {
+  CoverageAnswerer,
+  hasCoverageFacts,
+} from './coverage-answerer.service';
 import {
   BIEN_DATOS_VACIOS,
   BIEN_TIPO_LABEL,
@@ -416,10 +426,14 @@ const IN_PROGRESS_STEPS = new Set<FlowStep>([
   'SINIESTRO_ALTURA',
   'SINIESTRO_CONFIRM',
   'SINIESTRO_FOTO_TARJETA',
+  'SINIESTRO_FOTO_TARJETA_DORSO',
   'SINIESTRO_FOTO_CARNET',
+  'SINIESTRO_FOTO_CARNET_DORSO',
   'SINIESTRO_TERCERO',
   'SINIESTRO_TERCERO_TARJETA',
+  'SINIESTRO_TERCERO_TARJETA_DORSO',
   'SINIESTRO_TERCERO_CARNET',
+  'SINIESTRO_TERCERO_CARNET_DORSO',
   'SINIESTRO_FOTO_DANIO',
   'BAJA_CONFIRM',
   'COT_LEAD_FIELDS',
@@ -563,9 +577,13 @@ export const PHOTO_RECEIVED = '__photo_received__';
 /** Claim photo steps → the `tipo` label stored on each attachment. */
 export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
   SINIESTRO_FOTO_TARJETA: 'tarjeta_verde',
+  SINIESTRO_FOTO_TARJETA_DORSO: 'tarjeta_verde_dorso',
   SINIESTRO_FOTO_CARNET: 'carnet',
+  SINIESTRO_FOTO_CARNET_DORSO: 'carnet_dorso',
   SINIESTRO_TERCERO_TARJETA: 'tarjeta_verde_tercero',
+  SINIESTRO_TERCERO_TARJETA_DORSO: 'tarjeta_verde_tercero_dorso',
   SINIESTRO_TERCERO_CARNET: 'carnet_tercero',
+  SINIESTRO_TERCERO_CARNET_DORSO: 'carnet_tercero_dorso',
   SINIESTRO_FOTO_DANIO: 'siniestro',
 };
 
@@ -799,7 +817,8 @@ type ClientAction =
   | 'cupones'
   | 'siniestro_nueva'
   | 'siniestro_consultar'
-  | 'baja_poliza';
+  | 'baja_poliza'
+  | 'cobertura';
 
 /** Extra details of the request that started a client action. */
 interface ActionOptions {
@@ -822,6 +841,8 @@ export class FlowService {
   private readonly states = new Map<string, { state: FlowState }>();
 
   private readonly towTruckPhone?: string;
+  /** The company's claims line, given when someone asks for it. */
+  private readonly claimsPhone?: string;
 
   constructor(
     private readonly api: ApiService,
@@ -829,8 +850,10 @@ export class FlowService {
     private readonly extractor: SiniestroExtractor,
     private readonly identification: IdentificationInterpreter,
     private readonly intents: IntentInterpreter,
+    private readonly coverage: CoverageAnswerer,
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
+    this.claimsPhone = config.get<string>('CLAIMS_PHONE')?.trim() || undefined;
   }
 
   /** Drops a conversation's flow state (used by /reset). */
@@ -1272,6 +1295,8 @@ export class FlowService {
         return this.handleBajaConfirm(state, input, ctx, key);
       case 'SINIESTRO_TYPE':
         return this.handleSiniestroType(state, input, ctx, key);
+      case 'COBERTURA_POLIZA':
+        return this.handleCoberturaPoliza(state, input, ctx, key);
       case 'SINIESTRO_POLIZA':
         return this.handleSiniestroPoliza(state, input, ctx, key);
       case 'SINIESTRO_DATOS':
@@ -1296,6 +1321,14 @@ export class FlowService {
         return this.handleSiniestroConfirm(state, input, ctx, key);
       case 'SINIESTRO_FOTO_TARJETA':
         return this.handleSinFotoTarjeta(input, key);
+      case 'SINIESTRO_FOTO_TARJETA_DORSO':
+        return this.handleSinFotoTarjetaDorso(input, key);
+      case 'SINIESTRO_FOTO_CARNET_DORSO':
+        return this.handleSinFotoCarnetDorso(input, key);
+      case 'SINIESTRO_TERCERO_TARJETA_DORSO':
+        return this.handleSinTerceroTarjetaDorso(input, key);
+      case 'SINIESTRO_TERCERO_CARNET_DORSO':
+        return this.handleSinTerceroCarnetDorso(input, key);
       case 'SINIESTRO_FOTO_CARNET':
         return this.handleSinFotoCarnet(input, key);
       case 'SINIESTRO_TERCERO':
@@ -1602,6 +1635,14 @@ export class FlowService {
         opener,
         await this.officeOnlyRequest(input.text, ctx, key),
       );
+    const said = fold(input.text);
+    if (CLAIM_COPY_RE.test(said))
+      return this.withOpener(
+        opener,
+        await this.claimCopyRequest(input.text, ctx, key),
+      );
+    if (CLAIMS_PHONE_RE.test(said))
+      return this.withOpener(opener, this.claimsPhoneReply(key));
     switch (intent) {
       case null:
       case 'saludo':
@@ -1617,6 +1658,13 @@ export class FlowService {
         const result = await this.enterCotizar(input, ctx, key);
         return result.handoff ? result : this.withOpener(opener, result);
       }
+      case 'cobertura':
+        // "¿Tengo cubiertos los cristales?" is answered from the policy, not
+        // with the claim checklist (#87 asked four times).
+        return this.withOpener(
+          opener,
+          await this.guardAsClient(ctx, key, 'cobertura', {}, input.text),
+        );
       case 'siniestro': {
         // "Me chocaron" already says it is a new claim: asking "¿denuncia
         // nueva o consultar?" only adds a step.
@@ -1788,6 +1836,8 @@ export class FlowService {
         return this.matchClientIntent(text) === OPT.bajaPoliza
           ? { action: 'baja_poliza', withDocs: false }
           : null;
+      case 'cobertura':
+        return { action: 'cobertura', withDocs: false };
       default:
         return null;
     }
@@ -2097,6 +2147,8 @@ export class FlowService {
         return {
           messages: [{ kind: 'text', body: this.gruaText() }, clientMenu()],
         };
+      case OPT.cobertura:
+        return this.guard(ctx, key, 'cobertura', {}, input.text);
       case OPT.asesor:
         // What they already asked ("no me aparece la cuota 4") goes with the
         // alert: two customers had to type their question again.
@@ -2211,6 +2263,12 @@ export class FlowService {
   ): Promise<FlowResult> {
     const question = questionOf(opts.question ?? said);
     if (question) opts = { ...opts, question };
+    if (
+      (action === 'documentos' || action === 'siniestro_nueva') &&
+      said &&
+      CLAIM_COPY_RE.test(fold(said))
+    )
+      return this.claimCopyRequest(said, ctx, key);
     const named = action === 'documentos' ? wantedDocs(said) : [];
     if (named.length) opts = { ...opts, docs: named };
     // A claim the office took by hand in this chat is not in our records:
@@ -2574,6 +2632,25 @@ export class FlowService {
           ],
         };
       }
+      case 'cobertura': {
+        const polizas = await this.api.getPolizas(ctx.conversationId);
+        const question = questionOf(opts.question) ?? '';
+        if (polizas.length === 0)
+          return this.noPolizas(key, ctx, 'qué cubre su póliza', opts.question);
+        const poliza =
+          polizas.length === 1
+            ? polizas[0]
+            : question
+              ? this.matchPolizaByText(question, polizas)
+              : null;
+        if (poliza) return this.answerCoverage(question, poliza, ctx, key);
+        this.setState(key, 'COBERTURA_POLIZA', { polizas, question });
+        return {
+          messages: [
+            polizaPicker(polizas, '¿Sobre qué póliza es la consulta?'),
+          ],
+        };
+      }
       case 'siniestro_consultar': {
         const siniestros = await this.api.getSiniestros(ctx.conversationId);
         if (siniestros.length === 0 && ctx.officeThread)
@@ -2599,6 +2676,18 @@ export class FlowService {
                   '\n\nSi querés hacer la denuncia ahora, elegí *Siniestros* y después *Denuncia nueva*.',
               },
               clientMenu(),
+            ],
+          };
+        }
+        if (siniestros.length === 0) {
+          this.setState(key, 'CLIENT_MENU', {
+            lastQuestion:
+              'Quiere saber cómo va una denuncia que no figura en el bot (la habrá hecho con la oficina o con la compañía).',
+          });
+          return {
+            messages: [
+              { kind: 'text', body: formatSiniestros(siniestros) },
+              claimOrAdvisorButtons(),
             ],
           };
         }
@@ -3022,6 +3111,12 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
+    if (!input.selectionId) {
+      const said = fold(input.text);
+      if (CLAIM_COPY_RE.test(said))
+        return this.claimCopyRequest(input.text, ctx, key);
+      if (CLAIMS_PHONE_RE.test(said)) return this.claimsPhoneReply(key);
+    }
     const opt = input.selectionId ?? this.matchSiniestroIntent(input.text);
     // A DNI typed on this menu is kept for when they pick an option.
     const said =
@@ -3120,6 +3215,107 @@ export class FlowService {
       pedidos: [],
     });
     return { messages: [siniestroChecklist()] };
+  }
+
+  // ─── Cobertura: "¿mi póliza cubre X?" ────────────────────
+
+  private async handleCoberturaPoliza(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
+    if (polizaId === null && input.text.trim())
+      polizaId = this.matchPolizaByText(input.text, polizas)?.id ?? null;
+    const poliza = polizas.find((p) => p.id === polizaId);
+    if (!poliza)
+      return this.retry(key, state, [
+        polizaPicker(
+          polizas,
+          'No reconocí esa póliza. Elegí una de la lista, o escribí *menú* para volver.',
+        ),
+      ]);
+    return this.answerCoverage(
+      (state.data.question as string | undefined) ?? '',
+      poliza,
+      ctx,
+      key,
+    );
+  }
+
+  /**
+   * The answer from the policy's own coverage, with the claim and the office a
+   * tap away. What the detail does not settle goes to the office with the
+   * question, which is what it answered by hand before.
+   */
+  private async answerCoverage(
+    question: string,
+    poliza: PolizaSummary,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const mention = polizaMention(poliza);
+    this.setState(
+      key,
+      'CLIENT_MENU',
+      question ? { lastQuestion: question } : {},
+    );
+    const askOffice = async (body: string): Promise<FlowResult> => {
+      await this.api
+        .requestHandoff(
+          ctx.conversationId,
+          `Pregunta qué cubre su ${mention}${question ? `: "${clip(question)}"` : ''}. El bot no lo pudo confirmar con el detalle de la póliza.`,
+        )
+        .catch(() => undefined);
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body:
+              `${body} Le pasé tu consulta a la oficina para que te lo confirme por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+              (await this.closedNote()),
+          },
+          claimOrAdvisorButtons(),
+        ],
+      };
+    };
+    if (!hasCoverageFacts(poliza))
+      return askOffice(
+        `No tengo el detalle de la cobertura de tu ${polizaLabel(poliza)}.`,
+      );
+    if (!question || ctx.llmEnabled === false || !ctx.phoneNumberId)
+      return {
+        messages: [
+          { kind: 'text', body: coverageSummary(poliza) },
+          claimOrAdvisorButtons(),
+        ],
+      };
+    try {
+      const answer = await this.coverage.answer({
+        question,
+        poliza,
+        phoneNumberId: ctx.phoneNumberId,
+      });
+      if (answer.certeza === 'no_figura') return askOffice(answer.respuesta);
+      return {
+        messages: [
+          { kind: 'text', body: toWhatsAppMarkdown(answer.respuesta) },
+          claimOrAdvisorButtons(),
+        ],
+      };
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo responder la cobertura con el modelo: ${this.errMsg(error)}`,
+      );
+      return {
+        messages: [
+          { kind: 'text', body: coverageSummary(poliza) },
+          claimOrAdvisorButtons(),
+        ],
+      };
+    }
   }
 
   // ─── Siniestro: pólizas que no son un vehículo (hogar, comercio…) ───
@@ -3635,7 +3831,7 @@ export class FlowService {
           kind: 'text',
           body:
             'Ahora sumemos algunas *fotos* a tu reclamo 📎.\n\n' +
-            'Mandame una *foto de la tarjeta verde* (cédula del vehículo). ' +
+            'Mandame la *tarjeta verde* (cédula del vehículo): una foto del *frente* y otra del *dorso*. ' +
             'Si no la tenés a mano, escribí *no la tengo* y seguimos.',
         },
       ],
@@ -3678,17 +3874,52 @@ export class FlowService {
     };
   }
 
+  /**
+   * Front and back of each card: the office asked again for the back of the
+   * tarjeta verde and the licence on every claim (#92, #196, #227). A photo
+   * of the front asks for its back; "no la tengo" skips the whole card.
+   */
   private handleSinFotoTarjeta(input: UserInput, key: string): FlowResult {
     if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (input.selectionId === PHOTO_RECEIVED)
+      return this.askPhoto(
+        key,
+        'SINIESTRO_FOTO_TARJETA_DORSO',
+        'Ahora el *dorso* de la tarjeta verde.',
+      );
+    return this.askCarnet(key);
+  }
+
+  private handleSinFotoTarjetaDorso(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askCarnet(key);
+  }
+
+  private askCarnet(key: string): FlowResult {
     return this.askPhoto(
       key,
       'SINIESTRO_FOTO_CARNET',
-      'Perfecto. Ahora una *foto de tu carnet de conducir*. (si no la tenés, escribí *no la tengo*)',
+      'Perfecto. Ahora tu *carnet de conducir*: el *frente* y el *dorso*. (si no lo tenés, escribí *no la tengo*)',
     );
   }
 
   private handleSinFotoCarnet(input: UserInput, key: string): FlowResult {
     if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (input.selectionId === PHOTO_RECEIVED)
+      return this.askPhoto(
+        key,
+        'SINIESTRO_FOTO_CARNET_DORSO',
+        'Ahora el *dorso* del carnet.',
+      );
+    return this.afterOwnPhotos(key);
+  }
+
+  private handleSinFotoCarnetDorso(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.afterOwnPhotos(key);
+  }
+
+  private afterOwnPhotos(key: string): FlowResult {
     const otroVehiculo = this.load(key)?.state.data.otroVehiculo;
     if (otroVehiculo === false) return this.askDanio(key);
     if (otroVehiculo === true) return this.askTerceroTarjeta(key);
@@ -3738,20 +3969,52 @@ export class FlowService {
     return this.askPhoto(
       key,
       'SINIESTRO_TERCERO_TARJETA',
-      'Mandame la *foto de la tarjeta verde del tercero* (si la tenés). (o *no la tengo*)',
+      'Mandame la *tarjeta verde del tercero*, frente y dorso (si la tenés). (o *no la tengo*)',
     );
   }
 
   private handleSinTerceroTarjeta(input: UserInput, key: string): FlowResult {
     if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (input.selectionId === PHOTO_RECEIVED)
+      return this.askPhoto(
+        key,
+        'SINIESTRO_TERCERO_TARJETA_DORSO',
+        'Ahora el *dorso* de la tarjeta verde del tercero.',
+      );
+    return this.askTerceroCarnet(key);
+  }
+
+  private handleSinTerceroTarjetaDorso(
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    return this.askTerceroCarnet(key);
+  }
+
+  private askTerceroCarnet(key: string): FlowResult {
     return this.askPhoto(
       key,
       'SINIESTRO_TERCERO_CARNET',
-      'Ahora la *foto del carnet de conducir del tercero*. (o *no la tengo*)',
+      'Ahora el *carnet de conducir del tercero*, frente y dorso. (o *no la tengo*)',
     );
   }
 
   private handleSinTerceroCarnet(input: UserInput, key: string): FlowResult {
+    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (input.selectionId === PHOTO_RECEIVED)
+      return this.askPhoto(
+        key,
+        'SINIESTRO_TERCERO_CARNET_DORSO',
+        'Ahora el *dorso* del carnet del tercero.',
+      );
+    return this.askDanio(key);
+  }
+
+  private handleSinTerceroCarnetDorso(
+    input: UserInput,
+    key: string,
+  ): FlowResult {
     if (!this.photoAdvances(input)) return this.retryPhoto();
     return this.askDanio(key);
   }
@@ -3932,6 +4195,8 @@ export class FlowService {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
     const other = this.otherPoliza(input, key);
     if (other) return other;
+    if (!input.selectionId && CLAIM_COPY_RE.test(fold(input.text)))
+      return this.claimCopyRequest(input.text, ctx, key);
     let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
 
     if (
@@ -4043,6 +4308,16 @@ export class FlowService {
     const t = fold(input.text);
     const poliza = state.data.poliza as PolizaSummary | undefined;
 
+    if (
+      input.selectionId === CLAIM_COPY_ID ||
+      (!input.selectionId && CLAIM_COPY_RE.test(t))
+    )
+      return this.claimCopyRequest(
+        input.selectionId === CLAIM_COPY_ID ? '' : input.text,
+        ctx,
+        key,
+        poliza,
+      );
     if (!input.selectionId && input.text.trim()) {
       // "Cupón": the coupons of this same policy, which the office sends.
       if (CUPON_RE.test(t))
@@ -5472,6 +5747,56 @@ export class FlowService {
     };
   }
 
+  /**
+   * "¿Cuál es el 0800 para denunciar?" (#148 got the claim checklist instead).
+   * The company's line when it is configured; the claim can be made here too.
+   */
+  private claimsPhoneReply(key: string): FlowResult {
+    this.setState(key, 'SINIESTRO_TYPE', {}, 'client');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: this.claimsPhone
+            ? `📞 Para denunciar por teléfono a Triunfo Seguros: *${this.claimsPhone}*.\nTambién la podés hacer por acá y la oficina la carga en la compañía.`
+            : 'La denuncia la podés hacer por acá: la oficina la carga en Triunfo Seguros y te pasa el número de siniestro.',
+        },
+        siniestroTypeMenu(),
+      ],
+    };
+  }
+
+  /**
+   * A copy of a claim already filed: Triunfo does not give it to the bot, so
+   * the office sends it (#205, #209), with the customer's words.
+   */
+  private async claimCopyRequest(
+    text: string,
+    ctx: FlowContext,
+    key: string,
+    poliza?: PolizaSummary,
+  ): Promise<FlowResult> {
+    const said = text.trim();
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Pide copia de la denuncia de siniestro${poliza ? ` de su ${polizaMention(poliza)}` : ''}${said ? `: "${clip(said)}"` : ''}.`,
+      )
+      .catch(() => undefined);
+    const menu = this.settleAfterRequest(key, ctx);
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `La copia de la denuncia te la manda la oficina por este chat: ya les pasé tu pedido 🙌 (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote()),
+        },
+        ...menu,
+      ],
+    };
+  }
+
   private gruaText(): string {
     return this.towTruckPhone
       ? `🆘 *Auxilio / Grúa*\nLlamá directo al ${this.towTruckPhone}, disponible las 24 hs.`
@@ -5582,10 +5907,14 @@ export class FlowService {
       step === 'COT_LEAD_NOMBRE' ||
       step === 'COT_LEAD_TELEFONO' ||
       step === 'SINIESTRO_FOTO_TARJETA' ||
+      step === 'SINIESTRO_FOTO_TARJETA_DORSO' ||
       step === 'SINIESTRO_FOTO_CARNET' ||
+      step === 'SINIESTRO_FOTO_CARNET_DORSO' ||
       step === 'SINIESTRO_TERCERO' ||
       step === 'SINIESTRO_TERCERO_TARJETA' ||
+      step === 'SINIESTRO_TERCERO_TARJETA_DORSO' ||
       step === 'SINIESTRO_TERCERO_CARNET' ||
+      step === 'SINIESTRO_TERCERO_CARNET_DORSO' ||
       step === 'SINIESTRO_FOTO_DANIO' ||
       step in LEAD_DOC_TIPO
     );
@@ -5714,14 +6043,21 @@ export class FlowService {
       if (terms.some((term) => term.length > 2 && t.includes(term))) return p;
     }
 
+    // A non-vehicle policy by its name ("la bicicleta", "el sepelio").
+    const named = polizas.filter((p) => {
+      const product = p.product ? fold(p.product).replace(/\./g, '') : '';
+      const word = product.split(/\s+/)[0];
+      return word.length > 3 && fold(t).includes(word.slice(0, 5));
+    });
+    if (named.length === 1) return named[0];
+
     let riskKeyword: string | null = null;
     if (/\bauto\b|\bcoche\b|\bveh[ií]culo\b/.test(t)) riskKeyword = 'auto';
     else if (/\bmoto\b|\bscooter\b/.test(t)) riskKeyword = 'moto';
     else if (/\bhogar\b|\bcasa\b|\bdepartamento\b|\bvivienda\b/.test(t))
       riskKeyword = 'home';
     else if (/\bcomercio\b|\blocal\b|\bnegocio\b/.test(t))
-      riskKeyword = 'comercio';
-    else if (/\bbici\b/.test(t)) riskKeyword = 'bici';
+      riskKeyword = 'commercial';
 
     if (riskKeyword) {
       const matches = polizas.filter((p) => p.riskType === riskKeyword);

@@ -155,7 +155,7 @@ module.exports = [
     steps: [
       ...ident('99000002'),
       { select: 'm_siniestros', title: '🛡️ Siniestros', list: true, expect: { any: [/sin_nueva/, /sin_consultar/] } },
-      { select: 'sin_consultar', title: 'Consultar una', expect: { any: [/No tenés denuncias/i] } },
+      { select: 'sin_consultar', title: 'Consultar una', expect: { any: [/No veo denuncias hechas por este chat/, /m_asesor/] } },
     ],
   },
   {
@@ -316,8 +316,8 @@ module.exports = [
       { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
       { select: 'sin_nueva', title: 'Denuncia nueva', expect: { any: [/La denuncia es sobre tu CHEVROLET ONIX/, /Respondé todo en un solo mensaje/], none: [/pol_\d+/] } },
       { text: 'Fue ayer a las 18 hs en Rosario, en Bv. Oroño 1500, iba hacia el norte. Me chocó de atrás un auto en el semáforo. Iba sola, sin lesionados. Fue un Fiat Uno patente AB123CD, conductor Juan Pérez, seguro La Segunda', max: 60000, expect: { any: [/Revisá la denuncia/, /Oroño/] } },
-      { select: 'confirmar', title: 'Confirmar', expect: { any: [/Registré tu denuncia/, /tarjeta verde/] } },
-      { image: true, expect: { any: [/carnet de conducir/], count: 1 } },
+      { select: 'confirmar', title: 'Confirmar', expect: { any: [/Registré tu denuncia/, /tarjeta verde/, /dorso/] } },
+      { image: true, burst: 2, expect: { any: [/carnet de conducir/, /frente/], count: 1 } },
       { text: 'no la tengo', expect: { any: [/tarjeta verde del tercero/], none: [/¿Hubo un \*tercero/] } },
       { text: 'no la tengo' },
       { text: 'no la tengo', expect: { any: [/fotos del siniestro/] } },
@@ -554,6 +554,52 @@ module.exports = [
       { text: 'Hola, me llegó una notificación de que no se pudo realizar el pago. ¿Te puedo transferir a este alias?', expect: { any: [/sin debitar/, /Ya le avisé a la oficina/], none: [/en proceso de débito/, /dejá el dinero disponible/] } },
     ],
     db: [handoffs('aviso con las palabras del cliente', (r) => r.some(([b]) => /Dice que el débito no se realizó/.test(b) && /no se pudo realizar el pago/.test(b)))],
+  },
+
+  // ─── Mejoras del 20/10: cobertura, pagos, denuncias ──────────────
+  {
+    id: 'V01', area: 'Cobertura y pagos (20/10)', name: '"¿Tengo cubierto el parabrisas?" se responde con la cobertura de la póliza', wa: wa(), regression: '#87 (cristales 4 veces)',
+    steps: [
+      ...ident('99000001'),
+      { text: '¿Tengo cubierta la rotura del parabrisas?', max: 60000, expect: { any: [/parabrisas|cristales/i, /500\.000/, /m_siniestros/, /m_asesor/], none: [/Respondé todo en un solo mensaje/, /circulabas/] } },
+    ],
+  },
+  {
+    id: 'V02', area: 'Cobertura y pagos (20/10)', name: 'Hogar: "¿me cubre los vidrios?" con las coberturas que manda Triunfo, eligiendo la póliza', wa: wa(),
+    steps: [
+      ...ident('99000009'),
+      { text: '¿Mi seguro me cubre si se rompe un vidrio de la ventana?', max: 60000, expect: { any: [/\[Hogar\|pol_\d+\]/, /\[Comercio\|pol_\d+\]/] } },
+      { drive: { max: 1, until: /cristales|vidrio/i, answer: (prev) => ({ select: (prev.match(/\[Hogar\|(pol_\d+)\]/) || [])[1], title: 'Hogar', list: true }), expect: { any: [/cristales/i, /300\.000/, /m_siniestros/] } } },
+    ],
+  },
+  {
+    id: 'V03', area: 'Cobertura y pagos (20/10)', name: '"¿Hasta cuándo puedo pagar?" responde la regla de la oficina con las cuotas', wa: wa(),
+    steps: [
+      ...ident('99000002'),
+      { text: '¿Hasta cuándo puedo pagar la cuota sin quedarme sin seguro?', expect: { any: [/Hasta cuándo pagar/, /antes del día 10 del mes siguiente/] } },
+    ],
+  },
+  {
+    id: 'V04', area: 'Cobertura y pagos (20/10)', name: '"¿Puedo pagar con Mercado Pago?" lista las formas de pago', wa: wa(),
+    steps: [
+      ...ident('99000002'),
+      { text: '¿Puedo pagar la cuota con Mercado Pago?', expect: { any: [/Formas de pago/, /Rapipago, Pago Fácil o Santa Fe Servicios/] } },
+    ],
+  },
+  {
+    id: 'V05', area: 'Cobertura y pagos (20/10)', name: 'Copia de la denuncia: a la oficina, sin abrir una denuncia nueva', wa: wa(), regression: '#205, #209',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Necesito la copia de la denuncia del choque de la semana pasada', expect: { any: [/La copia de la denuncia te la manda la oficina/], none: [/Respondé todo en un solo mensaje/] } },
+    ],
+    db: [handoffs('aviso de copia de denuncia', (r) => r.some(([b]) => /Pide copia de la denuncia/.test(b)))],
+  },
+  {
+    id: 'V06', area: 'Cobertura y pagos (20/10)', name: '"¿Cuál es el 0800 para denunciar?" no abre el formulario', wa: wa(), regression: '#148',
+    steps: [
+      ...ident('99000001'),
+      { text: '¿Cuál es el 0800 para hacer la denuncia?', expect: { any: [/la podés hacer por acá/, /sin_nueva/], none: [/Respondé todo en un solo mensaje/] } },
+    ],
   },
 
   // ─── Oficina ─────────────────────────────────────────────────────
@@ -812,7 +858,7 @@ module.exports = [
 
   // ─── Pendientes conocidos (no implementados todavía) ─────────────
   {
-    id: 'G01', area: 'Pendientes conocidos', name: 'Respuesta automática de otra empresa: no contestar', wa: wa(), regression: '#118', known: 'guard anti-autorespuestas (pendiente)',
+    id: 'G01', area: 'Oficina', name: 'Respuesta automática de otra empresa: no contestar', wa: wa(), regression: '#118',
     steps: [
       { text: 'Gracias por comunicarte con Inmobiliaria Ejemplo. En breve te responderemos. Horario de atención: lunes a viernes de 9 a 18.', expect: { silent: true } },
     ],

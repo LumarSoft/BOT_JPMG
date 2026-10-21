@@ -12,7 +12,7 @@ SET @a=(SELECT id FROM Client WHERE dni='99000001'); SET @b=(SELECT id FROM Clie
 SET @c=(SELECT id FROM Client WHERE dni='30712345671'); SET @d=(SELECT id FROM Client WHERE dni='99000004'); SET @g=(SELECT id FROM Client WHERE dni='99000006'); SET @h=(SELECT id FROM Client WHERE dni='99000009');
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
  ('9900001','triunfo','auto','ENDOSOS VARIOS','2026-07-27','2027-07-27','Convenio','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@a,1,2,NOW(3));
-SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ901AA','CHEVROLET','ONIX 1.4',@p);
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, coverage, policyId) VALUES ('ZZ901AA','CHEVROLET','ONIX 1.4','C2',@p);
 INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,68185,'2026-07-27','paid',@p),(2,68186,'2026-08-27','paid',@p),(3,68186,'2026-09-27','paid',@p);
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
  ('9900002','triunfo','auto','REFACTURACION','2026-02-06','2027-02-06','Plan De Pago','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@b,1,2,NOW(3));
@@ -37,7 +37,7 @@ SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policy
 INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,90000,'2026-09-01','paid',@p),(2,90000,'2026-10-01','paid',@p);
 -- Carla: a home and a shop policy (no vehicle), both paid up.
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
- ('9900009','triunfo','home','RENOVACION','2026-07-13','2027-07-13','Débito Caja de Ahorro','{}',@h,1,2,NOW(3));
+ ('9900009','triunfo','home','RENOVACION','2026-07-13','2027-07-13','Débito Caja de Ahorro','{"SDTOtrosRiesgosDatos":{"SDTRiesgosCoberturas":[{"Riesgo":"INCENDIO","Cobertura":"EDIFICIO","SumaAsegurada":"20000000.00"},{"Riesgo":"ROBO","Cobertura":"CONTENIDO GENERAL","SumaAsegurada":"2000000.00"},{"Riesgo":"CRISTALES","Cobertura":"CRISTALES","SumaAsegurada":"300000.00"}],"ObjetoSeguroDescripcion":"CALLE FALSA 123 C.P.:2000"}}',@h,1,2,NOW(3));
 SET @p=LAST_INSERT_ID(); INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,43051,'2026-09-13','paid',@p),(2,43051,'2026-10-13','paid',@p);
 INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
  ('9900010','triunfo','commercial','POLIZA NUEVA','2026-08-01','2027-08-01','Convenio','{}',@h,1,2,NOW(3));

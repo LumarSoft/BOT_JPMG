@@ -211,3 +211,23 @@ export function closesHumanConversation(
 ): boolean {
   return isCloser(text) && answeringAPerson(messages, lastHumanReply);
 }
+
+/**
+ * Another business's automatic reply ("Gracias por comunicarte con X, ¿cómo
+ * podemos ayudarte?"). Answering it with the welcome got another automatic
+ * reply back, five times in two hours (#118). A customer writing to us does
+ * not thank us for contacting them, so the phrase alone is a strong sign;
+ * it still needs a second sign of an automatic message.
+ */
+const THANKS_FOR_CONTACTING_RE =
+  /\bgracias por (?:comunicarte|comunicarse|contactarte|contactarse|contactarnos|escribirnos|tu mensaje|su mensaje|tu consulta|su consulta)\b/;
+const AUTO_REPLY_SIGN_RE =
+  /\b(?:como|en que) (?:te |le )?(?:podemos|puedo) ayudar|\ben (?:breve|instantes|unos minutos)\b|\ba la brevedad\b|\b(?:te|le|les) (?:responderemos|contactaremos|contestaremos)\b|\bnos (?:comunicaremos|contactaremos|pondremos en contacto)\b|\bhorario de atencion\b|\bresponderemos\b/;
+const AUTOMATIC_MESSAGE_RE =
+  /\b(?:este es un )?mensaje automatico\b|\brespuesta automatica\b|\bauto-?respuesta\b/;
+
+export function isAutoReply(text: string): boolean {
+  const t = fold(text);
+  if (AUTOMATIC_MESSAGE_RE.test(t)) return true;
+  return THANKS_FOR_CONTACTING_RE.test(t) && AUTO_REPLY_SIGN_RE.test(t);
+}

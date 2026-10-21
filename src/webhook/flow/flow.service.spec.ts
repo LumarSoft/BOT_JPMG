@@ -7,6 +7,7 @@ import {
   takeOutDocsIntro,
   takeOutDocsState,
   withStaffNotice,
+  PHOTO_RECEIVED,
 } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import { OPT } from './flow.messages';
@@ -14,6 +15,7 @@ import { IdentificationInterpreter } from './identification-interpreter.service'
 import { IntentInterpreter } from './intent-interpreter.service';
 import { identificationFromText } from './identification';
 import { SiniestroExtractor } from './siniestro-extractor.service';
+import { CoverageAnswerer } from './coverage-answerer.service';
 
 /**
  * Covers two things: the flow-switch behaviour (a user parked in a sticky LLM
@@ -41,6 +43,7 @@ describe('FlowService', () => {
     getSiniestros: jest.Mock;
   };
   let extractor: { extract: jest.Mock; extractBien: jest.Mock };
+  let coverage: { answer: jest.Mock };
   let interpreter: { interpret: jest.Mock };
   // Reading of free text with content. Unavailable by default, which is the
   // pre-existing behaviour every other test relies on.
@@ -118,6 +121,7 @@ describe('FlowService', () => {
       getSiniestros: jest.fn().mockResolvedValue([]),
     };
     extractor = { extract: jest.fn(), extractBien: jest.fn() };
+    coverage = { answer: jest.fn().mockRejectedValue(new Error('sin modelo')) };
     interpreter = {
       interpret: jest.fn().mockImplementation(({ text }: { text: string }) => {
         const params = identificationFromText(text);
@@ -139,6 +143,7 @@ describe('FlowService', () => {
         FlowService,
         { provide: ApiService, useValue: api },
         { provide: SiniestroExtractor, useValue: extractor },
+        { provide: CoverageAnswerer, useValue: coverage },
         { provide: IdentificationInterpreter, useValue: interpreter },
         { provide: IntentInterpreter, useValue: intents },
         {
@@ -639,6 +644,243 @@ describe('FlowService', () => {
       );
 
       expect(stored?.step).toBe('SINIESTRO_FECHA');
+    });
+  });
+
+  describe('coverage questions (¿mi póliza cubre X?)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Ana',
+        lastName: 'Prueba',
+        dni: '20000002',
+      } as FlowContext['client'],
+      phoneNumberId: 'P1',
+      llmEnabled: true,
+    };
+    const auto = {
+      id: 833,
+      certificateNumber: '1741715',
+      company: 'Triunfo',
+      riskType: 'auto',
+      status: 'vigente',
+      validFrom: null,
+      validTo: null,
+      paymentMethod: null,
+      vehicle: { licensePlate: 'ABC123', brand: 'CHEVROLET', model: 'CORSA' },
+      coverage: {
+        code: 'C2',
+        name: 'Terceros Completo 2',
+        benefits: ['Rotura de cristales hasta $500.000'],
+        exclusions: [],
+        deductible: null,
+      },
+    };
+    const hogar = {
+      ...auto,
+      id: 900,
+      certificateNumber: '1044644',
+      riskType: 'home',
+      vehicle: null,
+      coverage: null,
+      product: 'Hogar',
+      riesgos: [
+        { riesgo: 'INCENDIO', cobertura: 'EDIFICIO', sumaAsegurada: 1000 },
+      ],
+    };
+
+    it('answers from the policy, with the claim and the office a tap away', async () => {
+      intents.interpret.mockResolvedValue('cobertura');
+      api.getPolizas.mockResolvedValue([auto]);
+      coverage.answer.mockResolvedValue({
+        respuesta:
+          'Sí, tu *Terceros Completo 2* cubre la rotura de cristales hasta $500.000.',
+        certeza: 'cubre',
+      });
+
+      const res = await send(
+        { text: '¿Tengo cubierta la rotura del parabrisas?' },
+        ctx,
+      );
+
+      expect(coverage.answer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          question: '¿Tengo cubierta la rotura del parabrisas?',
+          poliza: expect.objectContaining({ id: 833 }),
+        }),
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'cubre la rotura de cristales',
+      );
+      const buttons = res.messages[res.messages.length - 1] as {
+        buttons: Array<{ id: string }>;
+      };
+      expect(buttons.buttons.map((b) => b.id)).toEqual([
+        OPT.siniestros,
+        OPT.asesor,
+        OPT.menu,
+      ]);
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('passes to the office what the policy detail does not settle', async () => {
+      intents.interpret.mockResolvedValue('cobertura');
+      api.getPolizas.mockResolvedValue([auto]);
+      coverage.answer.mockResolvedValue({
+        respuesta: 'No figura en el detalle de tu póliza si cubre inundación.',
+        certeza: 'no_figura',
+      });
+
+      const res = await send(
+        { text: '¿Me cubre si se me inunda el auto?' },
+        ctx,
+      );
+
+      expect(JSON.stringify(res.messages)).toContain(
+        'Le pasé tu consulta a la oficina',
+      );
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('¿Me cubre si se me inunda el auto?'),
+      );
+    });
+
+    it('asks which policy when there are several and the question does not say', async () => {
+      intents.interpret.mockResolvedValue('cobertura');
+      api.getPolizas.mockResolvedValue([auto, hogar]);
+      coverage.answer.mockResolvedValue({
+        respuesta: 'Sí, cubre el incendio del edificio.',
+        certeza: 'cubre',
+      });
+
+      const pick = await send(
+        { text: '¿Qué me cubre si hay un incendio?' },
+        ctx,
+      );
+      expect(stored?.step).toBe('COBERTURA_POLIZA');
+      expect(JSON.stringify(pick.messages)).toContain(
+        '¿Sobre qué póliza es la consulta?',
+      );
+
+      const res = await send({ selectionId: 'pol_900', text: 'Hogar' }, ctx);
+      expect(coverage.answer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          question: '¿Qué me cubre si hay un incendio?',
+          poliza: expect.objectContaining({ id: 900 }),
+        }),
+      );
+      expect(JSON.stringify(res.messages)).toContain('incendio');
+    });
+
+    it('shows the coverage detail when the model is unavailable', async () => {
+      intents.interpret.mockResolvedValue('cobertura');
+      api.getPolizas.mockResolvedValue([auto]);
+      coverage.answer.mockRejectedValue(new Error('sin modelo'));
+
+      const res = await send({ text: '¿Mi seguro cubre granizo?' }, ctx);
+
+      expect(JSON.stringify(res.messages)).toContain(
+        '*Terceros Completo 2* (C2)',
+      );
+      expect(JSON.stringify(res.messages)).toContain('Rotura de cristales');
+    });
+
+    it('goes to the office when the policy has no coverage detail', async () => {
+      intents.interpret.mockResolvedValue('cobertura');
+      api.getPolizas.mockResolvedValue([{ ...auto, coverage: null }]);
+
+      const res = await send({ text: '¿Mi seguro cubre granizo?' }, ctx);
+
+      expect(coverage.answer).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.messages)).toContain(
+        'No tengo el detalle de la cobertura',
+      );
+      expect(api.requestHandoff).toHaveBeenCalled();
+    });
+  });
+
+  describe('claims: copy, phone, front and back', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      client: {
+        firstName: 'Ana',
+        lastName: 'Prueba',
+        dni: '20000002',
+      } as FlowContext['client'],
+      phoneNumberId: 'P1',
+      llmEnabled: true,
+    };
+
+    it('passes the request for a claim copy to the office instead of opening a claim', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+
+      const res = await send(
+        { text: 'Hola, me podrás pasar la copia de la denuncia del choque?' },
+        ctx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Pide copia de la denuncia de siniestro'),
+      );
+      expect(JSON.stringify(res.messages)).toContain(
+        'La copia de la denuncia te la manda la oficina',
+      );
+      expect(stored?.step).not.toBe('SINIESTRO_DATOS');
+    });
+
+    it('answers the claims phone and offers to file it here', async () => {
+      intents.interpret.mockResolvedValue('siniestro');
+
+      const res = await send(
+        { text: '¿Cuál es el 0800 para hacer la denuncia?' },
+        ctx,
+      );
+
+      // The test config answers every key with '0800-TOW'.
+      expect(JSON.stringify(res.messages)).toContain(
+        'Para denunciar por teléfono a Triunfo Seguros: *0800-TOW*',
+      );
+      expect(JSON.stringify(res.messages)).toContain('sin_nueva');
+      expect(stored?.step).toBe('SINIESTRO_TYPE');
+    });
+
+    it('asks for the back of the green card and the licence', async () => {
+      stored = {
+        step: 'SINIESTRO_FOTO_TARJETA',
+        data: { siniestroId: 99, otroVehiculo: false },
+      };
+      const back = await send({ text: '', selectionId: PHOTO_RECEIVED }, ctx);
+      expect(stored?.step).toBe('SINIESTRO_FOTO_TARJETA_DORSO');
+      expect(JSON.stringify(back.messages)).toContain(
+        '*dorso* de la tarjeta verde',
+      );
+
+      const carnet = await send({ text: '', selectionId: PHOTO_RECEIVED }, ctx);
+      expect(stored?.step).toBe('SINIESTRO_FOTO_CARNET');
+      expect(JSON.stringify(carnet.messages)).toContain(
+        'el *frente* y el *dorso*',
+      );
+
+      const skipped = await send({ text: 'no la tengo' }, ctx);
+      expect(stored?.step).toBe('SINIESTRO_FOTO_DANIO');
+      expect(JSON.stringify(skipped.messages)).toContain('fotos del siniestro');
+    });
+
+    it('offers the office for a claim that is not in the bot', async () => {
+      api.getSiniestros.mockResolvedValue([]);
+      await send({ text: 'hola' }, ctx);
+      await send({ selectionId: OPT.siniestros, text: '' }, ctx);
+
+      const res = await send(
+        { selectionId: OPT.sinConsultar, text: 'Consultar una' },
+        ctx,
+      );
+
+      expect(res.messages[0].body).toContain('Si la hiciste con la oficina');
+      const buttons = res.messages[1] as { buttons: Array<{ id: string }> };
+      expect(buttons.buttons.map((b) => b.id)).toContain(OPT.asesor);
     });
   });
 

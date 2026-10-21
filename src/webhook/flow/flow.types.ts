@@ -15,6 +15,7 @@ export type FlowStep =
   | 'LEAD_MENU' // main menu for non-clients
   | 'IDENTIFY' // waiting for DNI/patente to identify the client
   | 'SINIESTRO_TYPE' // denuncia nueva vs consultar
+  | 'COBERTURA_POLIZA' // which policy a coverage question is about
   | 'SINIESTRO_POLIZA' // pick the affected policy
   | 'SINIESTRO_DATOS' // checklist answered in one message, read by the model
   | 'SINIESTRO_BIEN_TIPO' // home/shop: robo, incendio, daños, responsabilidad civil
@@ -28,11 +29,15 @@ export type FlowStep =
   | 'SINIESTRO_CALLE'
   | 'SINIESTRO_ALTURA'
   | 'SINIESTRO_CONFIRM' // confirm before creating
-  | 'SINIESTRO_FOTO_TARJETA' // waiting for the insured's green-card photo
-  | 'SINIESTRO_FOTO_CARNET' // waiting for the insured's driver-license photo
+  | 'SINIESTRO_FOTO_TARJETA' // waiting for the insured's green-card photo (front)
+  | 'SINIESTRO_FOTO_TARJETA_DORSO' // its back
+  | 'SINIESTRO_FOTO_CARNET' // waiting for the insured's driver-license photo (front)
+  | 'SINIESTRO_FOTO_CARNET_DORSO' // its back
   | 'SINIESTRO_TERCERO' // ask whether a third party was involved
-  | 'SINIESTRO_TERCERO_TARJETA' // third party's green-card photo
-  | 'SINIESTRO_TERCERO_CARNET' // third party's driver-license photo
+  | 'SINIESTRO_TERCERO_TARJETA' // third party's green-card photo (front)
+  | 'SINIESTRO_TERCERO_TARJETA_DORSO'
+  | 'SINIESTRO_TERCERO_CARNET' // third party's driver-license photo (front)
+  | 'SINIESTRO_TERCERO_CARNET_DORSO'
   | 'SINIESTRO_FOTO_DANIO' // photos of the incident/damage (multiple, then finish)
   | 'BAJA_POLIZA'
   | 'BAJA_CONFIRM'

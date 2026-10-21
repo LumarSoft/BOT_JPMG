@@ -13,6 +13,7 @@ export const IDENTIFICATION_ACTIONS = [
   'siniestro_nueva',
   'siniestro_consultar',
   'baja_poliza',
+  'cobertura',
 ] as const;
 export type IdentificationAction = (typeof IDENTIFICATION_ACTIONS)[number];
 export interface IdentificationMeaning {

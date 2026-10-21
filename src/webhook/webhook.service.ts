@@ -64,7 +64,11 @@ import {
   DEFAULT_OPENAI_MODEL,
   renderCatalogForPrompt,
 } from './constants/business';
-import { answeringAPerson, closesHumanConversation } from './closers';
+import {
+  answeringAPerson,
+  closesHumanConversation,
+  isAutoReply,
+} from './closers';
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -739,6 +743,24 @@ export class WebhookService {
       ) {
         this.logger.log(
           `Cierre de una charla atendida por una persona (${JSON.stringify(text.trim())}) — sin respuesta automática`,
+        );
+        await this.api
+          .saveMessage(
+            conversation.conversationId,
+            'user',
+            inbound?.content ?? text,
+            inbound?.media,
+            contactName,
+          )
+          .catch(() => undefined);
+        return;
+      }
+
+      // Another business's automatic reply: answering it only gets another
+      // one back (#118). Kept for the inbox, never answered.
+      if (!selectionId && isAutoReply(text)) {
+        this.logger.log(
+          `Respuesta automática de otro negocio (${JSON.stringify(text.trim().slice(0, 80))}) — sin respuesta`,
         );
         await this.api
           .saveMessage(
