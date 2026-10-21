@@ -21,6 +21,13 @@ export const TRIUNFO_TRANSFER = {
   bank: 'Banco Galicia',
 } as const;
 
+/**
+ * Triunfo's line for claims (the same as assistance: the caller picks the
+ * option). Given when someone asks how to report a claim by phone; the
+ * CLAIMS_PHONE setting overrides it.
+ */
+export const TRIUNFO_CLAIMS_PHONE = '0810-666-0302';
+
 /** OpenAI model used when OPENAI_MODEL is not set. */
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
 

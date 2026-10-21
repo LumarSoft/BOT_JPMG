@@ -88,7 +88,11 @@ import type {
   ProductCatalogItem,
   ProductPlanSummary,
 } from '../../api/api.types';
-import { attentionHoursOf, TRIUNFO_TRANSFER } from '../constants/business';
+import {
+  attentionHoursOf,
+  TRIUNFO_CLAIMS_PHONE,
+  TRIUNFO_TRANSFER,
+} from '../constants/business';
 import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
@@ -861,7 +865,8 @@ export class FlowService {
     private readonly coverage: CoverageAnswerer,
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
-    this.claimsPhone = config.get<string>('CLAIMS_PHONE')?.trim() || undefined;
+    this.claimsPhone =
+      config.get<string>('CLAIMS_PHONE')?.trim() || TRIUNFO_CLAIMS_PHONE;
     const setting = (name: string) =>
       config.get<string>(name)?.trim() || undefined;
     this.transfer = {
@@ -5831,7 +5836,7 @@ export class FlowService {
         {
           kind: 'text',
           body: this.claimsPhone
-            ? `📞 Para denunciar por teléfono a Triunfo Seguros: *${this.claimsPhone}*.\nTambién la podés hacer por acá y la oficina la carga en la compañía.`
+            ? `📞 Para denunciar por teléfono a Triunfo Seguros: *${this.claimsPhone}* (es el mismo de asistencia: al entrar, elegí la opción de siniestros).\nTambién la podés hacer por acá y la oficina la carga en la compañía.`
             : 'La denuncia la podés hacer por acá: la oficina la carga en Triunfo Seguros y te pasa el número de siniestro.',
         },
         siniestroTypeMenu(),

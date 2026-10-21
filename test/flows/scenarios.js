@@ -576,7 +576,7 @@ module.exports = [
     id: 'V03', area: 'Cobertura y pagos (20/10)', name: '"¿Hasta cuándo puedo pagar?" responde la regla de la oficina con las cuotas', wa: wa(),
     steps: [
       ...ident('99000002'),
-      { text: '¿Hasta cuándo puedo pagar la cuota sin quedarme sin seguro?', expect: { any: [/Hasta cuándo pagar/, /antes del día 10 del mes siguiente/] } },
+      { text: '¿Hasta cuándo puedo pagar la cuota sin quedarme sin seguro?', expect: { any: [/Hasta cuándo pagar/, /hasta el vencimiento de la cuota/], none: [/del 10\b/, /1 y el 10/] } },
     ],
   },
   {
@@ -606,7 +606,7 @@ module.exports = [
     id: 'V06', area: 'Cobertura y pagos (20/10)', name: '"¿Cuál es el 0800 para denunciar?" no abre el formulario', wa: wa(), regression: '#148',
     steps: [
       ...ident('99000001'),
-      { text: '¿Cuál es el 0800 para hacer la denuncia?', expect: { any: [/la podés hacer por acá/, /sin_nueva/], none: [/Respondé todo en un solo mensaje/] } },
+      { text: '¿Cuál es el 0800 para hacer la denuncia?', expect: { any: [/0810-666-0302/, /la podés hacer por acá/, /sin_nueva/], none: [/Respondé todo en un solo mensaje/] } },
     ],
   },
 

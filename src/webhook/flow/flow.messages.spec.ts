@@ -529,7 +529,7 @@ describe('payment rules the office repeats', () => {
   });
   afterAll(() => jest.useRealTimers());
 
-  it('says until when each installment can be paid', () => {
+  it('says the due date is the limit, never the internal grace or a debit day', () => {
     const text = paymentAnswer(
       [
         debit({
@@ -537,9 +537,15 @@ describe('payment rules the office repeats', () => {
             {
               number: 3,
               amount: '1000',
-              dueDate: '2026-10-16T00:00:00.000Z',
+              dueDate: '2026-10-26T00:00:00.000Z',
               status: 'pending',
             },
+          ],
+        }),
+        debit({
+          id: 2,
+          vehicle: { licensePlate: 'CD456EF', brand: 'FORD', model: 'KA' },
+          unpaidInstallments: [
             {
               number: 2,
               amount: '1000',
@@ -551,14 +557,35 @@ describe('payment rules the office repeats', () => {
       ],
       '¿hasta cuándo puedo pagar la cuota?',
     );
-    expect(text).toContain('hasta antes del día 10 del mes siguiente');
+    expect(text).toContain('hasta el vencimiento de la cuota');
+    expect(text).toContain('*FIAT PALIO*: la cuota 3 vence el 26/10/2026');
     expect(text).toContain(
-      'la cuota 3 (vence 16/10/2026) la podés pagar hasta antes del 10/11',
+      '*FORD KA*: la cuota 2 venció el 02/09/2026: pagala cuanto antes',
     );
-    expect(text).toContain('era hasta antes del 10/10. Ese plazo ya pasó');
-    // John (20/10): the "0 hs del día siguiente" rule is obsolete with
-    // electronic payments, so the bot does not state it.
-    expect(text).not.toContain('0 hs');
+    // John (20/10): the grace the organization gives is not told to the
+    // customer, the debit day varies, and the "0 hs" rule is obsolete.
+    expect(text).not.toMatch(/del 10|1 y el 10|0 hs/);
+  });
+
+  it('tells a debit customer with no rejection there is nothing to pay by hand', () => {
+    const onDebit = debit({
+      paymentMethod: 'Débito Tarjeta',
+      unpaidInstallments: [
+        // Old enough to read "vencida" in the statement: still no rejection.
+        {
+          number: 2,
+          amount: '1000',
+          dueDate: '2026-08-02T00:00:00.000Z',
+          status: 'overdue',
+        },
+      ],
+    });
+    const text = paymentAnswer([onDebit], '¿hasta cuándo puedo pagar?');
+    expect(text).toContain(
+      'se paga por débito automático: no tenés que hacer nada',
+    );
+    expect(text).not.toContain('pagala cuanto antes');
+    expect(text).not.toMatch(/\b(?:14|24)\b|1 y el 10/);
   });
 
   it('lists the ways to pay and the card discount', () => {
@@ -696,6 +723,63 @@ describe('transfer offer (John, 20/10)', () => {
     expect(text).not.toContain('0 hs');
   });
 
+  it('adds up what falls due on the same date and skips cancelled ones', () => {
+    const text = transferOffer(
+      [
+        poliza({
+          unpaidInstallments: [
+            // An installment and an endorsement on the same due date.
+            {
+              number: 3,
+              amount: '70000',
+              dueDate: '2026-10-16T00:00:00.000Z',
+              status: 'pending',
+            },
+            {
+              number: 1,
+              amount: '10000',
+              dueDate: '2026-10-16T00:00:00.000Z',
+              status: 'pending',
+            },
+          ],
+        }),
+        poliza({
+          id: 2,
+          vehicle: { licensePlate: 'CD456EF', brand: 'FORD', model: 'KA' },
+          unpaidInstallments: [
+            // A cancelled installment that offsets another one.
+            {
+              number: 1,
+              amount: '-53127',
+              dueDate: '2026-04-04T00:00:00.000Z',
+              status: 'overdue',
+            },
+            {
+              number: 3,
+              amount: '53127',
+              dueDate: '2026-04-04T00:00:00.000Z',
+              status: 'overdue',
+            },
+            {
+              number: 4,
+              amount: '20000',
+              dueDate: '2026-11-04T00:00:00.000Z',
+              status: 'pending',
+            },
+          ],
+        }),
+      ],
+      transfer,
+    );
+    expect(text).toMatch(
+      /FIAT PALIO\*: cuotas 3 y 1, \$\s?80\.000,00 en total \(vence 16\/10\/2026\)/,
+    );
+    expect(text).toMatch(
+      /FORD KA\*: cuota 4, \$\s?20\.000,00 \(vence 04\/11\/2026\)/,
+    );
+    expect(text).not.toContain('53.127');
+  });
+
   it('offers an installment not yet due too', () => {
     const text = transferOffer(
       [
@@ -729,6 +813,15 @@ describe('transfer offer (John, 20/10)', () => {
     expect(transferOffer([debiting], transfer, true)).toContain(
       'ALIAS.DE.PRUEBA',
     );
+
+    // Covered until a rejection (John, 20/10), however old the installment.
+    const old = poliza({
+      paymentMethod: 'Débito Caja de Ahorro',
+      unpaidInstallments: [
+        { number: 1, amount: '1000', dueDate: daysAgo(60), status: 'overdue' },
+      ],
+    });
+    expect(transferOffer([old], transfer)).not.toContain('ALIAS.DE.PRUEBA');
   });
 
   it('offers nothing without an account or an installment', () => {

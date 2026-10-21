@@ -1141,15 +1141,43 @@ export const NO_PAYMENT_METHOD_RE =
 export const RENEWAL_CHARGE_RE =
   /\bya (?:me )?(?:la |lo )?(?:debitaron|cobraron|descontaron|pague|la pague)\b|\b(?:cobraron|debitaron) dos veces\b|\bdoble (?:debito|cobro)\b|\botra vez\b|\bde nuevo\b/;
 
-/** "Hasta antes del 10/11": the 10th of the month after the due date. */
-function payUntil(dueDate: string): Date | null {
-  const due = new Date(dueDate);
-  if (Number.isNaN(due.getTime())) return null;
-  return new Date(Date.UTC(due.getUTCFullYear(), due.getUTCMonth() + 1, 10));
+/**
+ * What falls due on one date for a policy. Triunfo puts an endorsement (a
+ * value raise, an added coverage) on the same due date as the installment, so
+ * the amount due that day is their sum (John, 20/10: "70 + 10"). Cancelled
+ * installments come as negative amounts that offset another one: a date that
+ * adds up to nothing is not due.
+ */
+interface DueGroup {
+  dueDate: string | null;
+  numbers: number[];
+  total: number;
+  items: CuotaImpaga[];
 }
 
-const ddmm = (d: Date) =>
-  `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+function dueGroups(p: EstadoCuentaPoliza): DueGroup[] {
+  const byDate = new Map<string, CuotaImpaga[]>();
+  for (const c of p.unpaidInstallments) {
+    const key = c.dueDate ? c.dueDate.slice(0, 10) : '';
+    byDate.set(key, [...(byDate.get(key) ?? []), c]);
+  }
+  return [...byDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, items]) => ({
+      dueDate: items[0].dueDate,
+      numbers: items.filter((c) => Number(c.amount) > 0).map((c) => c.number),
+      total: items.reduce((sum, c) => sum + Number(c.amount), 0),
+      items,
+    }))
+    .filter((g) => g.total > 0);
+}
+
+/** "cuota 3" or "cuotas 1 y 3". */
+function cuotasLabel(numbers: number[]): string {
+  return numbers.length === 1
+    ? `cuota ${numbers[0]}`
+    : `cuotas ${joinWithY(numbers.map(String))}`;
+}
 
 /** The account a customer can transfer an installment to (bot config). */
 export interface TransferInfo {
@@ -1193,7 +1221,7 @@ function payMethodsText(transfer?: TransferInfo): string {
 }
 
 const CARD_VS_CASH_TEXT =
-  '📌 Con débito automático en tarjeta la cuota sale un *5 % menos* que pagándola en efectivo con cupón. Si querés pasarte a tarjeta o CBU, tocá *Cambiar forma de pago* abajo.';
+  '📌 Con débito automático (tarjeta de crédito, débito o CBU) la cuota sale un *5 % menos* que pagándola en efectivo con cupón. Si querés pasarte a débito automático, tocá *Cambiar forma de pago* abajo.';
 
 const STOLEN_TEXT =
   '📌 Las cuotas las podés seguir pagando mes a mes. Si no, cuando la compañía te entregue el convenio con lo que te va a pagar por el vehículo, te descuentan las cuotas que quedaron pendientes.';
@@ -1201,29 +1229,35 @@ const STOLEN_TEXT =
 const NO_PAYMENT_METHOD_TEXT =
   '📌 *Sin forma de pago* quiere decir que la póliza quedó sin tarjeta ni cuenta para debitar (por ejemplo, porque el banco rechazó el débito o la tarjeta venció). Para seguir con débito automático hay que pasar una tarjeta de crédito o débito, o un CBU; si no, se paga en efectivo con cupón. Abajo podés *Cambiar forma de pago* o *Pedir cupón de pago*.';
 
+/**
+ * "¿Hasta cuándo puedo pagar?": until the installment's due date. The grace
+ * the organization gives on its own is never told to the customer, who goes
+ * by the due date (John, 20/10); nor is a debit day, which varies with the
+ * card or account.
+ */
 function deadlineAnswer(polizas: EstadoCuentaPoliza[]): string {
   const now = Date.now();
   const lines: string[] = [];
   for (const p of polizas) {
-    for (const c of p.unpaidInstallments.slice(0, 2)) {
-      const until = c.dueDate ? payUntil(c.dueDate) : null;
-      if (!until) continue;
+    const [next] = dueGroups(p);
+    if (!next?.dueDate) continue;
+    const what = cuotasLabel(next.numbers);
+    const when = fmtDate(next.dueDate);
+    if (onDebit(p))
       lines.push(
-        until.getTime() > now
-          ? `• *${polizaLabel(p)}*: la cuota ${c.number} (vence ${fmtDate(c.dueDate)}) la podés pagar hasta antes del ${ddmm(until)}.`
-          : `• *${polizaLabel(p)}*: la cuota ${c.number} (vence ${fmtDate(c.dueDate)}) era hasta antes del ${ddmm(until)}. Ese plazo ya pasó: tocá *Hablar con un asesor* abajo y la oficina lo revisa con vos.`,
+        `• *${polizaLabel(p)}*: la ${what} (vence ${when}) se paga por débito automático: no tenés que hacer nada. Si el banco la rechaza, te avisamos.`,
       );
-    }
+    else if (new Date(next.dueDate).getTime() < now)
+      lines.push(
+        `• *${polizaLabel(p)}*: la ${what} venció el ${when}: pagala cuanto antes. Abajo podés pedir el cupón o los datos para transferir.`,
+      );
+    else lines.push(`• *${polizaLabel(p)}*: la ${what} vence el ${when}.`);
   }
-  const debit = polizas.some((p) => paysByDebit(p) === true);
   return (
-    '📌 *Hasta cuándo pagar:* una cuota se puede pagar hasta antes del día 10 del mes siguiente a su vencimiento.' +
+    '📌 *Hasta cuándo pagar:* hasta el vencimiento de la cuota.' +
     (lines.length
       ? `\n${lines.join('\n')}`
-      : '\nNo tenés cuotas pendientes de pago.') +
-    (debit
-      ? '\nEl débito automático se hace entre el 1 y el 10 de cada mes.'
-      : '')
+      : '\nNo tenés cuotas pendientes de pago.')
   );
 }
 
@@ -1289,17 +1323,14 @@ export function transferOffer(
   const lines: string[] = [];
   const waiting: string[] = [];
   for (const p of polizas) {
-    const due = [...p.unpaidInstallments].sort(
-      (a, b) =>
-        Number(new Date(a.dueDate ?? 0)) - Number(new Date(b.dueDate ?? 0)),
-    )[0];
+    const [due] = dueGroups(p);
     if (!due) continue;
-    if (!debitFailed && inDebitNow(p, due)) {
+    if (!debitFailed && onDebit(p)) {
       waiting.push(polizaLabel(p));
       continue;
     }
     lines.push(
-      `• *${polizaLabel(p)}*: cuota ${due.number}, ${fmtMoney(due.amount)} (vence ${fmtDate(due.dueDate)})`,
+      `• *${polizaLabel(p)}*: ${cuotasLabel(due.numbers)}, ${fmtMoney(due.total)}${due.numbers.length > 1 ? ' en total' : ''} (vence ${fmtDate(due.dueDate)})`,
     );
   }
   if (!lines.length && !waiting.length) return null;
@@ -1315,8 +1346,14 @@ export function transferOffer(
   return parts.join('\n\n');
 }
 
-const inDebitNow = (p: EstadoCuentaPoliza, c: CuotaImpaga) =>
-  !p.hasRejectedInstallments && inDebitProcess(p, c);
+/**
+ * Paid by automatic debit with no rejection on record: covered until a
+ * rejection comes (John, 20/10), and the debit day depends on the card or
+ * account (a Visa credit card debits on the 14th and the 24th). Nothing to
+ * pay by hand, and paying it too would pay twice.
+ */
+const onDebit = (p: EstadoCuentaPoliza) =>
+  paysByDebit(p) === true && !p.hasRejectedInstallments;
 
 function joinWithY(items: string[]): string {
   return items.length <= 1
