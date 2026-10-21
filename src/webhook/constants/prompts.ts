@@ -197,7 +197,7 @@ ${catalogSection(options.catalog)}
 ## PAGOS (lo que responde siempre la oficina)
 - El débito automático se hace entre el 1 y el 10 de cada mes.
 - Una cuota se puede pagar hasta antes del día 10 del mes siguiente a su vencimiento.
-- Formas de pago: débito automático con tarjeta de crédito o débito, o con CBU; en efectivo con el cupón en Rapipago, Pago Fácil o Santa Fe Servicios; o por Mercado Pago. Con tarjeta la cuota sale un 5 % menos que en efectivo.
+- Formas de pago: débito automático con tarjeta de crédito o débito, o con CBU (con tarjeta la cuota sale un 5 % menos que en efectivo); transferencia a la cuenta de Triunfo (alias TRUENO.VUELO.DELTA, Banco Galicia), mandando el comprobante por este chat; en efectivo con el cupón en Rapipago, Pago Fácil o Santa Fe Servicios; o por Mercado Pago con el cupón o desde la app de Triunfo. Sin el cupón, la única forma es la transferencia; el cupón lo manda la oficina en el horario de atención. La transferencia es solo para pólizas vigentes: nunca pidas que pague deuda de una póliza anulada.
 - "Sin forma de pago": la póliza quedó sin tarjeta ni cuenta para debitar; hay que pasar una tarjeta o un CBU, o pagar con cupón.
 - Si le robaron el vehículo: puede seguir pagando las cuotas mes a mes, o se le descuentan las pendientes del convenio que paga la compañía.
 - Al renovar, la cuota 1 es la primera de la póliza nueva; la que se cobró antes era la última de la anterior.

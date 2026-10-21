@@ -9,6 +9,18 @@ import type { ProductCatalogItem } from '../../api/api.types';
  */
 export const DEFAULT_ATTENTION_HOURS = 'lunes a viernes de 8 a 16 hs';
 
+/**
+ * Triunfo's account for paying an installment by transfer: what the office
+ * sends as an image with the coupon (data from the office, 20/10). The
+ * TRANSFER_* settings override it.
+ */
+export const TRIUNFO_TRANSFER = {
+  alias: 'TRUENO.VUELO.DELTA',
+  cbu: '0070081820000004432793',
+  holder: 'Triunfo Coop. de Seguros Ltda. (CUIT 30-50006577-6)',
+  bank: 'Banco Galicia',
+} as const;
+
 /** OpenAI model used when OPENAI_MODEL is not set. */
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
 

@@ -148,7 +148,13 @@ describe('FlowService', () => {
         { provide: IntentInterpreter, useValue: intents },
         {
           provide: ConfigService,
-          useValue: { get: jest.fn().mockReturnValue('0800-TOW') },
+          useValue: {
+            get: jest.fn((name: string) =>
+              name === 'TOW_TRUCK_PHONE' || name === 'CLAIMS_PHONE'
+                ? '0800-TOW'
+                : undefined,
+            ),
+          },
         },
       ],
     }).compile();
@@ -2684,6 +2690,55 @@ describe('FlowService', () => {
     const bodies = (res: { messages: unknown[] }) =>
       JSON.stringify(res.messages);
 
+    it('no ofrece transferir cuando no tiene pólizas vigentes (John 20/10: nunca deuda de anuladas)', async () => {
+      api.getPolizas.mockResolvedValue([]);
+      api.getEstadoCuenta.mockResolvedValue([]);
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
+
+      expect(bodies(res)).not.toContain('TRUENO.VUELO.DELTA');
+      expect(bodies(res)).not.toContain('podés transferir');
+    });
+
+    it('ofrece transferir la cuota a la cuenta de Triunfo mientras llega el cupón', async () => {
+      api.getEstadoCuenta.mockResolvedValue([
+        {
+          id: 833,
+          certificateNumber: '1741715',
+          riskType: 'auto',
+          lastMovement: 'REFACTURACION',
+          paymentMethod: 'Convenio',
+          vehicle: {
+            licensePlate: 'ABC123',
+            brand: 'CHEVROLET',
+            model: 'CORSA',
+          },
+          paidInstallments: 1,
+          unpaidInstallments: [
+            {
+              number: 2,
+              amount: '39757.00',
+              dueDate: '2026-10-08T00:00:00.000Z',
+              status: 'overdue',
+            },
+          ],
+          hasRejectedInstallments: false,
+        },
+      ]);
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
+
+      expect(bodies(res)).toContain('Si querés pagarla ya, podés transferir');
+      expect(bodies(res)).toContain('cuota 2');
+      expect(bodies(res)).toContain('TRUENO.VUELO.DELTA');
+      expect(bodies(res)).toContain('0070081820000004432793');
+      expect(bodies(res)).toContain('mandame el comprobante');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Se le pasaron los datos para transferir'),
+      );
+    });
+
     it('pasa el pedido a la oficina cuando Triunfo no tiene la cuponera, sin el estado de cuenta', async () => {
       await send({ text: 'hola' }, clientCtx);
       const res = await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
@@ -2694,7 +2749,7 @@ describe('FlowService', () => {
       );
       expect(api.getDocumentos).toHaveBeenCalledWith(1, 833);
       expect(api.getDocumentoPdf).not.toHaveBeenCalled();
-      expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+      expect(bodies(res)).not.toContain('💳 *Estado de cuenta*');
       expect(bodies(res)).toContain(
         'Los cupones de pago te los manda la oficina por este chat',
       );
@@ -4143,7 +4198,7 @@ describe('FlowService', () => {
 
       expect(api.requestHandoff).toHaveBeenCalledWith(
         1,
-        'Rechazo de débito en FIAT PALIO (Póliza 1000001 · AB123CD): regularizar el pago con el cliente.',
+        'Rechazo de débito en FIAT PALIO (Póliza 1000001 · AB123CD): regularizar el pago con el cliente. Se le pasaron los datos para transferir: si manda el comprobante, aplicar el pago.',
       );
       expect(body(res)).toContain(
         'Ya le avisé a la oficina para regularizarlo',

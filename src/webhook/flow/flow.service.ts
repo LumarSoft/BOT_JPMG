@@ -11,7 +11,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { ApiService } from '../../api/api.service';
-import type { PolizaDocumento, PolizaSummary } from '../../api/api.types';
+import type {
+  EstadoCuentaPoliza,
+  PolizaDocumento,
+  PolizaSummary,
+} from '../../api/api.types';
 import type {
   FlowContext,
   FlowHandleResult,
@@ -33,6 +37,8 @@ import {
   cotizarMenu,
   DEBIT_FAILED_RE,
   debitNotDone,
+  transferOffer,
+  type TransferInfo,
   CLAIM_COPY_ID,
   CLAIM_COPY_RE,
   CLAIMS_PHONE_RE,
@@ -82,7 +88,7 @@ import type {
   ProductCatalogItem,
   ProductPlanSummary,
 } from '../../api/api.types';
-import { attentionHoursOf } from '../constants/business';
+import { attentionHoursOf, TRIUNFO_TRANSFER } from '../constants/business';
 import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
@@ -843,6 +849,8 @@ export class FlowService {
   private readonly towTruckPhone?: string;
   /** The company's claims line, given when someone asks for it. */
   private readonly claimsPhone?: string;
+  /** Where a customer can transfer an installment (empty = not offered). */
+  private readonly transfer: TransferInfo;
 
   constructor(
     private readonly api: ApiService,
@@ -854,6 +862,14 @@ export class FlowService {
   ) {
     this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
     this.claimsPhone = config.get<string>('CLAIMS_PHONE')?.trim() || undefined;
+    const setting = (name: string) =>
+      config.get<string>(name)?.trim() || undefined;
+    this.transfer = {
+      alias: setting('TRANSFER_ALIAS') ?? TRIUNFO_TRANSFER.alias,
+      cbu: setting('TRANSFER_CBU') ?? TRIUNFO_TRANSFER.cbu,
+      holder: setting('TRANSFER_HOLDER') ?? TRIUNFO_TRANSFER.holder,
+      bank: setting('TRANSFER_BANK') ?? TRIUNFO_TRANSFER.bank,
+    };
   }
 
   /** Drops a conversation's flow state (used by /reset). */
@@ -2594,27 +2610,40 @@ export class FlowService {
           'CLIENT_MENU',
           question ? { lastQuestion: question } : {},
         );
-        const answer = question ? paymentAnswer(estado, question) : null;
+        const answer = question
+          ? paymentAnswer(estado, question, this.transfer)
+          : null;
         // "Un asesor te va a contactar" about a rejected debit: now the office
         // actually hears about it (the API keeps one alert per chat and matter).
         const rejected = estado.filter((p) => p.hasRejectedInstallments);
-        if (rejected.length)
-          await this.api
-            .requestHandoff(
-              ctx.conversationId,
-              `Rechazo de débito en ${rejected.map(polizaMention).join('; ')}: regularizar el pago con el cliente.`,
-            )
-            .catch(() => undefined);
         // The customer says the debit did not go through and we have no
         // rejection on record: the office hears it with their words instead
         // of the bot promising "se debita en estos días" (#242, #172).
         const debitFailed = !!question && DEBIT_FAILED_RE.test(fold(question));
         const notDone = debitFailed ? debitNotDone(estado) : [];
+        // A rejected or failed debit is paid by transfer to Triunfo, which is
+        // what the office sends with the coupon (John, 20/10).
+        const offer =
+          rejected.length || notDone.length
+            ? transferOffer([...rejected, ...notDone], this.transfer, true)
+            : null;
+        const sentTransfer = offer
+          ? ' Se le pasaron los datos para transferir: si manda el comprobante, aplicar el pago.'
+          : '';
+        // "Un asesor te va a contactar" about a rejected debit: now the office
+        // actually hears about it (the API keeps one alert per chat and matter).
+        if (rejected.length)
+          await this.api
+            .requestHandoff(
+              ctx.conversationId,
+              `Rechazo de débito en ${rejected.map(polizaMention).join('; ')}: regularizar el pago con el cliente.${sentTransfer}`,
+            )
+            .catch(() => undefined);
         if (notDone.length)
           await this.api
             .requestHandoff(
               ctx.conversationId,
-              `Dice que el débito no se realizó en ${notDone.map(polizaMention).join('; ')}: "${clip(question!)}". Regularizar el pago con el cliente (cupón o transferencia).`,
+              `Dice que el débito no se realizó en ${notDone.map(polizaMention).join('; ')}: "${clip(question!)}". Regularizar el pago con el cliente (cupón o transferencia).${sentTransfer}`,
             )
             .catch(() => undefined);
         return {
@@ -2628,6 +2657,7 @@ export class FlowService {
                   : '') +
                 (answer ? `\n\n${answer}` : ''),
             },
+            ...(offer ? [{ kind: 'text' as const, body: offer }] : []),
             estado.length ? pagosMenu() : clientMenu(),
           ],
         };
@@ -2794,11 +2824,17 @@ export class FlowService {
         if (polizas.length === 0)
           return this.noPolizas(key, ctx, 'los cupones de pago', opts.question);
         const withDocs = opts.withDocs === true;
+        // "No se pudo debitar, mandame el cupón": the transfer is offered
+        // even for an installment the cartera still shows as being debited.
+        const debitFailed = DEBIT_FAILED_RE.test(fold(opts.question ?? ''));
         if (polizas.length === 1)
-          return this.requestCupones(polizas, false, withDocs, ctx, key);
+          return this.requestCupones(polizas, false, withDocs, ctx, key, {
+            debitFailed,
+          });
         this.setState(key, 'CUPON_POLIZA', {
           polizas,
           ...(withDocs ? { withDocs } : {}),
+          ...(debitFailed ? { debitFailed } : {}),
         });
         return {
           messages: [
@@ -2830,13 +2866,18 @@ export class FlowService {
       input.selectionId === ALL_POLIZAS_ID ||
       /\b(todas|todos|ambas|ambos|las dos|los dos)\b/.test(t)
     )
-      return this.requestCupones(polizas, true, withDocs, ctx, key);
+      return this.requestCupones(polizas, true, withDocs, ctx, key, {
+        debitFailed: state.data.debitFailed === true,
+      });
 
     const id = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
     const poliza =
       polizas.find((p) => p.id === id) ??
       this.matchPolizaByText(input.text, polizas);
-    if (poliza) return this.requestCupones([poliza], false, withDocs, ctx, key);
+    if (poliza)
+      return this.requestCupones([poliza], false, withDocs, ctx, key, {
+        debitFailed: state.data.debitFailed === true,
+      });
 
     if (!input.selectionId && input.text.trim())
       return {
@@ -2870,6 +2911,7 @@ export class FlowService {
     withDocs: boolean,
     ctx: FlowContext,
     key: string,
+    opts: { debitFailed?: boolean } = {},
   ): Promise<FlowResult> {
     // Triunfo hands over the cuponera of some Plan de Pago policies only, never
     // Convenio ones: the bot sends what it gets and the office the rest.
@@ -2922,10 +2964,20 @@ export class FlowService {
       missing.length === 1
         ? `de su póliza ${polizaMention(missing[0])}`
         : `de todas sus pólizas: ${missing.map(polizaMention).join('; ')}`;
+    // Until the coupon arrives, the installment and the account to transfer
+    // to: what the office sent by hand at night or on weekends (John, 20/10).
+    const offer = await this.transferOfferFor(
+      missing,
+      ctx,
+      opts.debitFailed === true,
+    );
     await this.api
       .requestHandoff(
         ctx.conversationId,
-        `Pide ${what} ${which}. El bot no puede obtenerlos de Triunfo: enviárselos por este chat.`,
+        `Pide ${what} ${which}. El bot no puede obtenerlos de Triunfo: enviárselos por este chat.` +
+          (offer
+            ? ' Se le pasaron los datos para transferir: si manda el comprobante, aplicar el pago.'
+            : ''),
       )
       .catch(() => undefined);
 
@@ -2952,9 +3004,28 @@ export class FlowService {
           `Te los envían en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
           (await this.closedNote()),
       },
+      ...(offer ? [{ kind: 'text' as const, body: offer }] : []),
     ];
     if (docsToo) return thenDocs(head);
     return { messages: [...head, clientMenu()] };
+  }
+
+  /** The transfer offer for these policies' next installments, if any. */
+  private async transferOfferFor(
+    polizas: PolizaSummary[],
+    ctx: FlowContext,
+    debitFailed: boolean,
+  ): Promise<string | null> {
+    if (!this.transfer.alias && !this.transfer.cbu) return null;
+    const ids = new Set(polizas.map((p) => p.id));
+    const estado = await this.api
+      .getEstadoCuenta(ctx.conversationId)
+      .catch((): EstadoCuentaPoliza[] => []);
+    return transferOffer(
+      estado.filter((p) => ids.has(p.id)),
+      this.transfer,
+      debitFailed,
+    );
   }
 
   /** Whether Triunfo has any document of the policy other than the cuponera. */
@@ -4322,7 +4393,9 @@ export class FlowService {
       // "Cupón": the coupons of this same policy, which the office sends.
       if (CUPON_RE.test(t))
         return poliza
-          ? this.requestCupones([poliza], false, false, ctx, key)
+          ? this.requestCupones([poliza], false, false, ctx, key, {
+              debitFailed: DEBIT_FAILED_RE.test(t),
+            })
           : this.guard(ctx, key, 'cupones', {}, input.text);
       if (OTHER_POLICY_RE.test(t)) return this.otherPolicyDocs(state, key);
     }

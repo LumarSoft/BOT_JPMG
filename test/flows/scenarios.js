@@ -583,8 +583,16 @@ module.exports = [
     id: 'V04', area: 'Cobertura y pagos (20/10)', name: '"¿Puedo pagar con Mercado Pago?" lista las formas de pago', wa: wa(),
     steps: [
       ...ident('99000002'),
-      { text: '¿Puedo pagar la cuota con Mercado Pago?', expect: { any: [/Formas de pago/, /Rapipago, Pago Fácil o Santa Fe Servicios/] } },
+      { text: '¿Puedo pagar la cuota con Mercado Pago?', expect: { any: [/Formas de pago/, /Mercado Pago con el cupón/, /TRUENO\.VUELO\.DELTA/] } },
     ],
+  },
+  {
+    id: 'V07', area: 'Cobertura y pagos (20/10)', name: 'Cupón de una cuota rechazada: pasa el pedido y ofrece transferir a Triunfo', wa: wa(), regression: 'John 20/10',
+    steps: [
+      ...ident('99000004'),
+      { text: 'Necesito el cupón para pagar la cuota que me rechazaron', expect: { any: [/Si querés pagarla ya, podés transferir/, /cuota 5/, /TRUENO\.VUELO\.DELTA/, /comprobante/], none: [/0 hs/] } },
+    ],
+    db: [handoffs('aviso con los datos de transferencia', (r) => r.some(([b]) => /Se le pasaron los datos para transferir/.test(b)))],
   },
   {
     id: 'V05', area: 'Cobertura y pagos (20/10)', name: 'Copia de la denuncia: a la oficina, sin abrir una denuncia nueva', wa: wa(), regression: '#205, #209',

@@ -18,6 +18,7 @@ import {
   docPicker,
   formatSiniestros,
   polizaTitles,
+  transferOffer,
 } from './flow.messages';
 
 describe('leadMenu', () => {
@@ -555,6 +556,9 @@ describe('payment rules the office repeats', () => {
       'la cuota 3 (vence 16/10/2026) la podés pagar hasta antes del 10/11',
     );
     expect(text).toContain('era hasta antes del 10/10. Ese plazo ya pasó');
+    // John (20/10): the "0 hs del día siguiente" rule is obsolete with
+    // electronic payments, so the bot does not state it.
+    expect(text).not.toContain('0 hs');
   });
 
   it('lists the ways to pay and the card discount', () => {
@@ -637,5 +641,127 @@ describe('claims', () => {
 
   it('does not say a claim made with the office was lost', () => {
     expect(formatSiniestros([])).toContain('Si la hiciste con la oficina');
+  });
+});
+
+describe('transfer offer (John, 20/10)', () => {
+  const transfer = {
+    alias: 'ALIAS.DE.PRUEBA',
+    cbu: '0000000000000000000000',
+    holder: 'Compañía',
+  };
+  const poliza = (over: Partial<EstadoCuentaPoliza>): EstadoCuentaPoliza => ({
+    id: 1,
+    certificateNumber: '1000001',
+    riskType: 'auto',
+    lastMovement: 'REFACTURACION',
+    paymentMethod: 'Convenio',
+    vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'PALIO' },
+    paidInstallments: 1,
+    unpaidInstallments: [],
+    hasRejectedInstallments: false,
+    ...over,
+  });
+  const daysAgo = (n: number) =>
+    new Date(Date.now() - n * 86_400_000).toISOString();
+
+  it('offers the next installment with the account', () => {
+    const text = transferOffer(
+      [
+        poliza({
+          unpaidInstallments: [
+            {
+              number: 3,
+              amount: '1000',
+              dueDate: daysAgo(-20),
+              status: 'pending',
+            },
+            {
+              number: 2,
+              amount: '39757',
+              dueDate: daysAgo(10),
+              status: 'overdue',
+            },
+          ],
+        }),
+      ],
+      transfer,
+    );
+    expect(text).toContain('cuota 2');
+    expect(text).toContain('ALIAS.DE.PRUEBA');
+    expect(text).toContain('mandame el comprobante');
+    expect(text).toContain(
+      'la oficina te manda el cupón en el horario de atención',
+    );
+    expect(text).not.toContain('0 hs');
+  });
+
+  it('offers an installment not yet due too', () => {
+    const text = transferOffer(
+      [
+        poliza({
+          unpaidInstallments: [
+            {
+              number: 4,
+              amount: '1000',
+              dueDate: daysAgo(-10),
+              status: 'pending',
+            },
+          ],
+        }),
+      ],
+      transfer,
+    );
+    expect(text).toContain('cuota 4');
+  });
+
+  it('waits for the rejection of an installment the bank is still debiting', () => {
+    const debiting = poliza({
+      paymentMethod: 'Débito Tarjeta',
+      unpaidInstallments: [
+        { number: 1, amount: '1000', dueDate: daysAgo(5), status: 'overdue' },
+      ],
+    });
+    const text = transferOffer([debiting], transfer);
+    expect(text).toContain('se está debitando');
+    expect(text).not.toContain('ALIAS.DE.PRUEBA');
+    // Unless the customer says the debit failed.
+    expect(transferOffer([debiting], transfer, true)).toContain(
+      'ALIAS.DE.PRUEBA',
+    );
+  });
+
+  it('offers nothing without an account or an installment', () => {
+    expect(
+      transferOffer(
+        [
+          poliza({
+            unpaidInstallments: [
+              {
+                number: 1,
+                amount: '1',
+                dueDate: daysAgo(1),
+                status: 'pending',
+              },
+            ],
+          }),
+        ],
+        {},
+      ),
+    ).toBeNull();
+    expect(transferOffer([poliza({})], transfer)).toBeNull();
+  });
+
+  it('says the coupon is needed for Rapipago and Mercado Pago, and the transfer is not', () => {
+    const text = paymentAnswer(
+      [poliza({})],
+      '¿puedo pagar por transferencia o con Mercado Pago?',
+      transfer,
+    );
+    expect(text).toContain('Transferencia, mandando el comprobante');
+    expect(text).toContain('ALIAS.DE.PRUEBA');
+    expect(text).toContain(
+      'Por Mercado Pago con el cupón, o desde la app de Triunfo',
+    );
   });
 });

@@ -1151,12 +1151,46 @@ function payUntil(dueDate: string): Date | null {
 const ddmm = (d: Date) =>
   `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 
-const PAY_METHODS_TEXT =
-  '📌 *Formas de pago:*\n' +
-  '• Débito automático con tarjeta de crédito o débito, o con CBU.\n' +
-  '• En efectivo con el cupón, en Rapipago, Pago Fácil o Santa Fe Servicios.\n' +
-  '• Por Mercado Pago.\n' +
-  'Con tarjeta la cuota sale un 5 % menos que en efectivo. Si querés el cupón o los datos para transferir, pedilo abajo en *Pedir cupón de pago*.';
+/** The account a customer can transfer an installment to (bot config). */
+export interface TransferInfo {
+  alias?: string;
+  cbu?: string;
+  holder?: string;
+  bank?: string;
+}
+
+const hasTransfer = (t?: TransferInfo): t is TransferInfo =>
+  !!(t?.alias || t?.cbu);
+
+/** "Alias: x · CBU: y · Titular: z" as WhatsApp lines. */
+export function transferLines(t: TransferInfo): string {
+  return [
+    t.alias ? `• Alias: *${t.alias}*` : '',
+    t.cbu ? `• CBU: *${t.cbu}*` : '',
+    t.holder ? `• Titular: ${t.holder}` : '',
+    t.bank ? `• Banco: ${t.bank}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * How to pay, as John put it (20/10): Rapipago, Pago Fácil, Santa Fe
+ * Servicios and Mercado Pago all need the coupon (its barcode) or Triunfo's
+ * app; what works without it is a transfer.
+ */
+function payMethodsText(transfer?: TransferInfo): string {
+  return (
+    '📌 *Formas de pago:*\n' +
+    '• Débito automático con tarjeta de crédito o débito, o con CBU: la cuota sale un 5 % menos que en efectivo.\n' +
+    (hasTransfer(transfer)
+      ? `• Transferencia, mandando el comprobante por acá:\n${transferLines(transfer)}\n`
+      : '• Transferencia: la oficina te pasa los datos y aplica el pago con el comprobante.\n') +
+    '• En efectivo con el cupón, en Rapipago, Pago Fácil o Santa Fe Servicios.\n' +
+    '• Por Mercado Pago con el cupón, o desde la app de Triunfo.\n' +
+    'Si necesitás el cupón, pedilo abajo en *Pedir cupón de pago*.'
+  );
+}
 
 const CARD_VS_CASH_TEXT =
   '📌 Con débito automático en tarjeta la cuota sale un *5 % menos* que pagándola en efectivo con cupón. Si querés pasarte a tarjeta o CBU, tocá *Cambiar forma de pago* abajo.';
@@ -1219,6 +1253,7 @@ function renewalAnswer(polizas: EstadoCuentaPoliza[]): string | null {
 export function paymentAnswer(
   polizas: EstadoCuentaPoliza[],
   question: string,
+  transfer?: TransferInfo,
 ): string | null {
   if (polizas.length === 0) return null;
   const t = fold(question);
@@ -1232,8 +1267,61 @@ export function paymentAnswer(
   }
   if (PAY_DEADLINE_RE.test(t)) return deadlineAnswer(polizas);
   if (CARD_VS_CASH_RE.test(t)) return CARD_VS_CASH_TEXT;
-  if (PAY_METHODS_RE.test(t)) return PAY_METHODS_TEXT;
+  if (PAY_METHODS_RE.test(t) || /\btransfer/.test(t))
+    return payMethodsText(transfer);
   return null;
+}
+
+/**
+ * What a customer who asked for the coupon can do right away: transfer the
+ * installment and send the receipt (John, 20/10: the coupon only serves to pay
+ * at Rapipago, Pago Fácil, Santa Fe Servicios or Mercado Pago). An installment
+ * the bank is still debiting is not offered: paying it too would pay twice,
+ * and the office waits for the rejection (#140, #158) — unless the customer
+ * says the debit failed. Null when there is nothing to offer.
+ */
+export function transferOffer(
+  polizas: EstadoCuentaPoliza[],
+  transfer: TransferInfo | undefined,
+  debitFailed = false,
+): string | null {
+  if (!hasTransfer(transfer)) return null;
+  const lines: string[] = [];
+  const waiting: string[] = [];
+  for (const p of polizas) {
+    const due = [...p.unpaidInstallments].sort(
+      (a, b) =>
+        Number(new Date(a.dueDate ?? 0)) - Number(new Date(b.dueDate ?? 0)),
+    )[0];
+    if (!due) continue;
+    if (!debitFailed && inDebitNow(p, due)) {
+      waiting.push(polizaLabel(p));
+      continue;
+    }
+    lines.push(
+      `• *${polizaLabel(p)}*: cuota ${due.number}, ${fmtMoney(due.amount)} (vence ${fmtDate(due.dueDate)})`,
+    );
+  }
+  if (!lines.length && !waiting.length) return null;
+  const parts: string[] = [];
+  if (lines.length)
+    parts.push(
+      `💸 Si querés pagarla ya, podés transferir:\n${lines.join('\n')}\n\n${transferLines(transfer)}\n\nCuando transfieras, mandame el comprobante por acá y la oficina lo aplica. Para pagar en Rapipago, Pago Fácil o Santa Fe Servicios, la oficina te manda el cupón en el horario de atención.`,
+    );
+  if (waiting.length)
+    parts.push(
+      `_La cuota de ${joinWithY(waiting.map((w) => `tu ${w}`))} se está debitando: si el banco la rechaza, la podés transferir y la oficina te avisa._`,
+    );
+  return parts.join('\n\n');
+}
+
+const inDebitNow = (p: EstadoCuentaPoliza, c: CuotaImpaga) =>
+  !p.hasRejectedInstallments && inDebitProcess(p, c);
+
+function joinWithY(items: string[]): string {
+  return items.length <= 1
+    ? (items[0] ?? '')
+    : `${items.slice(0, -1).join(', ')} y ${items[items.length - 1]}`;
 }
 
 function debitAnswer(polizas: EstadoCuentaPoliza[]): string {
