@@ -845,6 +845,46 @@ export function polizaPicker(
   return { kind: 'list', body, button: 'Elegir póliza', rows };
 }
 
+/** Selection ids of the cancellation-reason picker. */
+export const BAJA_MOTIVO_PREFIX = 'bm_';
+export const BAJA_MOTIVO_OTRO_ID = `${BAJA_MOTIVO_PREFIX}otro`;
+
+/**
+ * Why the client wants out, worded as the office files it. "venta" reads
+ * differently for a car and for a home or shop policy.
+ */
+export function bajaMotivoLabels(vehicle: boolean): Record<string, string> {
+  return {
+    [`${BAJA_MOTIVO_PREFIX}venta`]: vehicle
+      ? 'Vendí el vehículo'
+      : 'Vendí / ya no tengo el bien',
+    [`${BAJA_MOTIVO_PREFIX}costo`]: 'Por el costo',
+    [`${BAJA_MOTIVO_PREFIX}desistimiento`]: 'Ya no lo necesito',
+    [`${BAJA_MOTIVO_PREFIX}cambio`]: 'Cambio de compañía',
+  };
+}
+
+/**
+ * Asked after the client confirms the cancellation, so the office knows the
+ * motive before calling (John, 21/10: sale, desisting, cost…).
+ */
+export function bajaMotivoPicker(vehicle: boolean): OutgoingMessage {
+  const labels = bajaMotivoLabels(vehicle);
+  return {
+    kind: 'list',
+    body: '¿Por qué motivo pedís la baja? Así la oficina lo gestiona más rápido.',
+    button: 'Elegir motivo',
+    rows: [
+      ...Object.entries(labels).map(([id, title]) => ({ id, title })),
+      {
+        id: BAJA_MOTIVO_OTRO_ID,
+        title: 'Otro motivo',
+        description: 'Te pido que me lo cuentes',
+      },
+    ],
+  };
+}
+
 /** What to send for "Otra póliza": the office takes it from the description. */
 export function otherPolizaPrompt(): OutgoingMessage {
   return {

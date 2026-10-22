@@ -41,6 +41,7 @@ export type FlowStep =
   | 'SINIESTRO_FOTO_DANIO' // photos of the incident/damage (multiple, then finish)
   | 'BAJA_POLIZA'
   | 'BAJA_CONFIRM'
+  | 'BAJA_MOTIVO' // why the client wants the policy cancelled (sale, cost…)
   | 'DOC_POLIZA' // pick the policy to get documents from
   | 'DOC_TYPE' // pick which document to send
   | 'CUPON_POLIZA' // pick the policy (or all) whose payment coupons the office sends

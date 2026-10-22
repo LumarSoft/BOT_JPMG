@@ -599,10 +599,14 @@ export class ApiService {
   async requestPolicyCancellation(
     conversationId: number,
     polizaId: number,
+    reason?: string,
   ): Promise<{ id: number }> {
     const { data } = await this.http.post<{ id: number }>(
       `/bot/conversation/${conversationId}/request-policy-cancellation`,
-      { policyId: polizaId },
+      {
+        policyId: polizaId,
+        ...(reason ? { reason: reason.slice(0, 300) } : {}),
+      },
     );
     return data;
   }

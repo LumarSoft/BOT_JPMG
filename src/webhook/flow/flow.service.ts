@@ -28,7 +28,10 @@ import type {
 import {
   advisorSameQuestion,
   ALL_POLIZAS_ID,
+  BAJA_MOTIVO_OTRO_ID,
   bajaCheck,
+  bajaMotivoLabels,
+  bajaMotivoPicker,
   LEAD_MENU_OPTS,
   claimPhotoAddedText,
   vehiclePhotoAddedText,
@@ -446,6 +449,7 @@ const IN_PROGRESS_STEPS = new Set<FlowStep>([
   'SINIESTRO_TERCERO_CARNET_DORSO',
   'SINIESTRO_FOTO_DANIO',
   'BAJA_CONFIRM',
+  'BAJA_MOTIVO',
   'COT_LEAD_FIELDS',
   'COT_LEAD_NOMBRE',
   'COT_LEAD_TELEFONO',
@@ -1314,6 +1318,8 @@ export class FlowService {
         return this.handleBajaPoliza(state, input, key);
       case 'BAJA_CONFIRM':
         return this.handleBajaConfirm(state, input, ctx, key);
+      case 'BAJA_MOTIVO':
+        return this.handleBajaMotivo(state, input, ctx, key);
       case 'SINIESTRO_TYPE':
         return this.handleSiniestroType(state, input, ctx, key);
       case 'COBERTURA_POLIZA':
@@ -3139,12 +3145,12 @@ export class FlowService {
     };
   }
 
-  private async handleBajaConfirm(
+  private handleBajaConfirm(
     state: FlowState,
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): Promise<FlowResult> {
+  ): FlowResult {
     const choice = input.selectionId ?? this.matchConfirmIntent(input.text);
     if (choice === OPT.cancelar) {
       this.setState(key, 'CLIENT_MENU');
@@ -3164,14 +3170,64 @@ export class FlowService {
       return this.retry(key, state, [
         this.bajaConfirmMessage(poliza, state.data.single === true),
       ]);
-    await this.api.requestPolicyCancellation(ctx.conversationId, poliza.id);
+    // The office asks "¿por qué motivo?" before anything else (John, 21/10):
+    // collect it here so the request arrives complete.
+    this.setState(key, 'BAJA_MOTIVO', { ...state.data });
+    return { messages: [bajaMotivoPicker(isVehiclePolicy(poliza))] };
+  }
+
+  /**
+   * The reason behind the cancellation: one of the listed motives, or what
+   * the client writes after "Otro motivo" (or instead of picking).
+   */
+  private async handleBajaMotivo(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const poliza = (state.data.polizas as PolizaSummary[]).find(
+      (p) => p.id === state.data.polizaId,
+    )!;
+    const vehicle = isVehiclePolicy(poliza);
+    if (input.selectionId === BAJA_MOTIVO_OTRO_ID) {
+      this.setState(key, 'BAJA_MOTIVO', { ...state.data, askedOther: true });
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Dale, contame brevemente el motivo de la baja.',
+          },
+        ],
+      };
+    }
+    const labeled = input.selectionId
+      ? bajaMotivoLabels(vehicle)[input.selectionId]
+      : undefined;
+    const typed = input.text.trim();
+    const reason = labeled ?? (typed.length >= 3 ? typed : undefined);
+    if (!reason) return this.retry(key, state, [bajaMotivoPicker(vehicle)]);
+    return this.submitBaja(poliza, reason, ctx, key);
+  }
+
+  private async submitBaja(
+    poliza: PolizaSummary,
+    reason: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    await this.api.requestPolicyCancellation(
+      ctx.conversationId,
+      poliza.id,
+      reason,
+    );
     this.setState(key, 'CLIENT_MENU');
     return {
       messages: [
         {
           kind: 'text',
           body:
-            `Registré tu solicitud de baja de la póliza *${poliza.certificateNumber}*. La oficina recibió la notificación y te confirmará la gestión por este chat. La póliza todavía no fue dada de baja.` +
+            `Registré tu solicitud de baja de la póliza *${poliza.certificateNumber}* (motivo: ${reason}). La oficina recibió la notificación y te confirmará la gestión por este chat. La póliza todavía no fue dada de baja.` +
             (await this.closedNote()),
         },
         clientMenu(),

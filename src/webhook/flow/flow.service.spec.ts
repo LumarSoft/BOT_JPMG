@@ -339,10 +339,49 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('BAJA_CONFIRM');
       expect(JSON.stringify(stored)).toContain('833');
       expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
-      const result = await send({ selectionId: OPT.confirmar, text: '' });
-      expect(api.requestPolicyCancellation).toHaveBeenCalledWith(1, 833);
+      // Confirmed: the office wants the motive before calling (John, 21/10).
+      const motivo = await send({ selectionId: OPT.confirmar, text: '' });
+      expect(stored?.step).toBe('BAJA_MOTIVO');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      expect(JSON.stringify(motivo.messages)).toContain('Vendí el vehículo');
+      expect(JSON.stringify(motivo.messages)).toContain('Otro motivo');
+      const result = await send({ selectionId: 'bm_venta', text: '' });
+      expect(api.requestPolicyCancellation).toHaveBeenCalledWith(
+        1,
+        833,
+        'Vendí el vehículo',
+      );
       expect(result.messages[0].body).toContain('todavía no fue dada de baja');
+      expect(result.messages[0].body).toContain('Vendí el vehículo');
       expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('takes the motive written after "Otro motivo"', async () => {
+      await send({ text: 'quiero dar de baja mi póliza' });
+      await send({ text: '37334584' });
+      await send({ selectionId: OPT.confirmar, text: '' });
+      const ask = await send({ selectionId: 'bm_otro', text: 'Otro motivo' });
+      expect(JSON.stringify(ask.messages)).toContain('contame brevemente');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      await send({ text: 'me mudo al exterior' });
+      expect(api.requestPolicyCancellation).toHaveBeenCalledWith(
+        1,
+        833,
+        'me mudo al exterior',
+      );
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('takes a motive typed instead of picked', async () => {
+      await send({ text: 'quiero dar de baja mi póliza' });
+      await send({ text: '37334584' });
+      await send({ selectionId: OPT.confirmar, text: '' });
+      await send({ text: 'lo vendí la semana pasada' });
+      expect(api.requestPolicyCancellation).toHaveBeenCalledWith(
+        1,
+        833,
+        'lo vendí la semana pasada',
+      );
     });
 
     it('offers "Es otra póliza" when the client has a single policy', async () => {
@@ -4222,8 +4261,9 @@ describe('FlowService', () => {
 
       stored = null;
       await send({ text: 'quiero dar de baja mi póliza' }, asClient);
+      await send({ selectionId: OPT.confirmar, text: '' }, asClient);
       const baja = await send(
-        { selectionId: OPT.confirmar, text: '' },
+        { selectionId: 'bm_costo', text: 'Por el costo' },
         asClient,
       );
       expect(api.requestPolicyCancellation).toHaveBeenCalled();
