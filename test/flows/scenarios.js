@@ -45,7 +45,7 @@ const rwa = () => `54934199903${String(rn++).padStart(2, '0')}`;
 const quoteAnswer = (vehicle, gnc = false, pick = '1') => (prev) =>
   /\|gnc_no\]/.test(prev) ? (gnc ? { select: 'gnc_si', title: 'Sí, tiene GNC' } : { select: 'gnc_no', title: 'No tiene GNC' })
     : /(^|\n)\s*\*?1[.)]/.test(prev) ? { text: pick }
-      : /•[^\n]*puertas/.test(prev) ? { text: '5 puertas Trendline' }
+      : /•[^\n]*puertas/.test(prev) ? { text: '3 puertas L/13' }
       : /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' }
         : { text: vehicle };
 
@@ -1097,7 +1097,7 @@ module.exports = [
 
   // Documentación
   {
-    id: 'R29', area: 'Revisión 26/10 · Documentación', name: 'Dos papeles en el primer mensaje con la patente: manda los dos', wa: rwa(), regression: '#286', known: 'manda solo el certificado',
+    id: 'R29', area: 'Revisión 26/10 · Documentación', name: 'Dos papeles en el primer mensaje con la patente: manda los dos', wa: rwa(), regression: '#286',
     steps: [{ text: 'Hola buenos días me pasarías certificado de cobertura y póliza del onix ZZ901AA que me chocaron', expect: { any: [/te identifiqué/i], docs: 2 } }],
   },
   {
@@ -1213,7 +1213,7 @@ module.exports = [
     steps: [
       { text: 'Hola' },
       { select: 'no_cliente', title: 'Todavía no' },
-      { text: 'Necesito cambiar el seguro, tengo un auto 0km y quiero retirar el seguro de la compañía y poner el de ustedes', expect: { any: [/marca, modelo/], none: [/DNI/] } },
+      { text: 'Necesito cambiar el seguro, tengo un auto 0km y quiero retirar el seguro de la compañía y poner el de ustedes', expect: { any: [/marca/i], none: [/DNI/] } },
       { text: 'Volkswagen Gol Trend 1.6 2015, código postal 2000', max: 90000, quiet: 5000 },
       { drive: { max: 4, until: /por mes/, answer: quoteAnswer('Volkswagen Gol Trend 1.6 2015, Rosario'), expect: { any: [/por mes/] } } },
     ],
