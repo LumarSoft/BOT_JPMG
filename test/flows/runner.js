@@ -104,6 +104,8 @@ function check(expect, text, sent) {
   if (expect.silent && sent.length) fails.push('debería quedarse callado');
   if (expect.count !== undefined && sent.length !== expect.count) fails.push(`esperaba ${expect.count} mensaje(s), mandó ${sent.length}`);
   if (expect.reply && !sent.length) fails.push('no respondió');
+  const docs = sent.filter((m) => m.startsWith('[documento ')).length;
+  if (expect.docs !== undefined && docs !== expect.docs) fails.push(`esperaba ${expect.docs} PDF(s), mandó ${docs}`);
   return fails;
 }
 

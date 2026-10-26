@@ -92,7 +92,7 @@ async function waitReady(name, url, child) {
 function uploadedFiles() {
   const rows = query(`
     SELECT m.rawData FROM Message m JOIN Conversation c ON c.id=m.conversationId WHERE c.waId LIKE '5493419990%' AND m.rawData IS NOT NULL
-    UNION ALL SELECT cl.attachments FROM Claim cl JOIN Client c ON c.id=cl.clientId WHERE c.dni IN ('99000001','99000002','30712345671','99000004','99000006') AND cl.attachments IS NOT NULL
+    UNION ALL SELECT cl.attachments FROM Claim cl JOIN Client c ON c.id=cl.clientId WHERE c.dni IN ('99000001','99000002','30712345671','99000004','99000006','99000010','99000011','99000012','99000013','99000014') AND cl.attachments IS NOT NULL
     UNION ALL SELECT l.payload FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId LIKE '5493419990%';`);
   const found = new Set();
   for (const [json] of rows)

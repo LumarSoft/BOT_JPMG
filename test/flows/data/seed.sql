@@ -49,3 +49,73 @@ SET @cv=LAST_INSERT_ID();
 INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
  ('user','Quiero hacer una denuncia, me chocaron estacionado','live', UTC_TIMESTAMP(3) - INTERVAL 4 HOUR, @cv),
  ('assistant','Hola, para la denuncia mandame fotos del daño y de tu carnet','app_echo', UTC_TIMESTAMP(3) - INTERVAL 3 HOUR, @cv);
+-- Revisión 26/10 (R01–R53). Mariela: one auto with cupón, known phone, and a chat
+-- the office answered three hours ago. Fabián: auto + moto, both cupón. Rocío:
+-- two policies with a rejected debit each.
+INSERT INTO Client (dni, firstName, lastName, password, phone, producerId, producerCodeId, updatedAt) VALUES
+ ('99000010','MARIELA','PRUEBA','x','341159990010',1,2,NOW(3)),
+ ('99000011','FABIAN','PRUEBA','x','341159990011',1,2,NOW(3)),
+ ('99000012','ROCIO','PRUEBA','x',NULL,1,2,NOW(3));
+SET @m=(SELECT id FROM Client WHERE dni='99000010'); SET @f=(SELECT id FROM Client WHERE dni='99000011'); SET @r=(SELECT id FROM Client WHERE dni='99000012');
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900020','triunfo','auto','RENOVACION','2026-08-15','2027-08-15','Plan De Pago','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@m,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ910AA','PEUGEOT','208',@p);
+INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,70000,'2026-09-15','paid',@p),(2,70000,'2026-10-15','paid',@p),(3,70000,'2026-11-15','pending',@p);
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900021','triunfo','auto','RENOVACION','2026-08-20','2027-08-20','Plan De Pago','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@f,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ911AA','RENAULT','KANGOO',@p);
+INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,65000,'2026-09-20','paid',@p),(2,65000,'2026-10-20','paid',@p),(3,65000,'2026-11-20','pending',@p);
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900022','triunfo','moto','POLIZA NUEVA','2026-09-05','2027-09-05','Plan De Pago','{"Articulo":481,"Empresa":"T","Sucursal":"CC"}',@f,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('Z912AAA','YAMAHA','XTZ 125',@p);
+INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,18000,'2026-10-05','paid',@p),(2,18000,'2026-11-05','pending',@p);
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900023','triunfo','auto','REFACTURACION','2026-06-02','2027-06-02','Débito Tarjeta','{}',@r,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ913AA','FIAT','CRONOS',@p);
+INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (4,61000,'2026-09-02','paid',@p),(5,61000,'2026-10-02','rejected',@p);
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900024','triunfo','moto','REFACTURACION','2026-06-12','2027-06-12','Débito Tarjeta','{}',@r,1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('Z914AAA','MOTOMEL','SKUA 150',@p);
+INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (4,19000,'2026-09-12','paid',@p),(5,19000,'2026-10-12','rejected',@p);
+-- Silvia (one auto with cupón) and Hernán (no policies): known phones nobody
+-- else in the run uses, for the "¿Hablo con…?" cases R25 and R03.
+INSERT INTO Client (dni, firstName, lastName, password, phone, producerId, producerCodeId, updatedAt) VALUES
+ ('99000013','SILVIA','PRUEBA','x','341159990013',1,2,NOW(3)),
+ ('99000014','HERNAN','PRUEBA','x','341159990014',1,2,NOW(3));
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900025','triunfo','auto','RENOVACION','2026-08-10','2027-08-10','Plan De Pago','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',(SELECT id FROM Client WHERE dni='99000013'),1,2,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ915AA','TOYOTA','ETIOS',@p);
+INSERT INTO Installment (number, amount, dueDate, status, policyId) VALUES (1,72000,'2026-09-10','paid',@p),(2,72000,'2026-10-10','paid',@p),(3,72000,'2026-11-10','pending',@p);
+-- Chats the office handled: Mariela 3 h ago, 20 h ago (cupón y alias), 24 h ago
+-- ("Gracias lu"), 60 h ago, and one with the bot paused.
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
+ ('5493419990010',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 4 HOUR, UTC_TIMESTAMP(3) - INTERVAL 3 HOUR, NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Hola, quería pagar la cuota del auto','live', UTC_TIMESTAMP(3) - INTERVAL 4 HOUR, @cv),
+ ('assistant','¿Pudiste hacer la transferencia?','app_echo', UTC_TIMESTAMP(3) - INTERVAL 3 HOUR, @cv);
+-- The office took it over a minute ago (an older takeover is released by the API's sweep).
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, botPaused, handedOverAt, status, updatedAt) VALUES
+ ('5493419990121',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 5 MINUTE, UTC_TIMESTAMP(3) - INTERVAL 1 MINUTE, 1, UTC_TIMESTAMP(3) - INTERVAL 1 MINUTE, 'pending', NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Mili, te consulto algo','live', UTC_TIMESTAMP(3) - INTERVAL 5 MINUTE, @cv),
+ ('agent','Decime','live', UTC_TIMESTAMP(3) - INTERVAL 1 MINUTE, @cv);
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
+ ('5493419990122',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 21 HOUR, UTC_TIMESTAMP(3) - INTERVAL 20 HOUR, NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Me pasás el cupón de octubre?','live', UTC_TIMESTAMP(3) - INTERVAL 21 HOUR, @cv),
+ ('assistant','Te paso el cupón. Si preferís transferir, el alias es TRUENO.VUELO.DELTA','app_echo', UTC_TIMESTAMP(3) - INTERVAL 20 HOUR, @cv);
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
+ ('5493419990123',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 61 HOUR, UTC_TIMESTAMP(3) - INTERVAL 60 HOUR, NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Hola, consulta por la póliza','live', UTC_TIMESTAMP(3) - INTERVAL 61 HOUR, @cv),
+ ('assistant','Hola, ya te la mandé por mail','app_echo', UTC_TIMESTAMP(3) - INTERVAL 60 HOUR, @cv);
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
+ ('5493419990124',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 25 HOUR, UTC_TIMESTAMP(3) - INTERVAL 24 HOUR, NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Ya está aplicado el pago?','live', UTC_TIMESTAMP(3) - INTERVAL 25 HOUR, @cv),
+ ('assistant','Gracias lu','app_echo', UTC_TIMESTAMP(3) - INTERVAL 24 HOUR, @cv);
