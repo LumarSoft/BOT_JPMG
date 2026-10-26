@@ -2589,6 +2589,151 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('CLIENT_MENU');
     });
 
+    const withPoliza = [
+      ...papers,
+      { code: '1020', name: 'Póliza', url: 'https://x' },
+    ];
+
+    it('"toda la documentación" en la lista manda todos los papeles (#258)', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+      const res = await send(
+        { text: 'Bueno sería toda la documentación del seguro' },
+        clientCtx,
+      );
+
+      expect(res.messages.filter((m) => m.kind === 'document')).toHaveLength(3);
+    });
+
+    it('la patente del pedido elige la póliza, sin preguntar cuál (#258)', async () => {
+      api.getPolizas.mockResolvedValue([
+        {
+          id: 833,
+          certificateNumber: '1741715',
+          riskType: 'auto',
+          vehicle: {
+            licensePlate: 'ABC123',
+            brand: 'CHEVROLET',
+            model: 'CORSA',
+          },
+        },
+        {
+          id: 900,
+          certificateNumber: '1741999',
+          riskType: 'moto',
+          vehicle: { licensePlate: 'A123BCD', brand: 'HONDA', model: 'WAVE' },
+        },
+      ]);
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        { text: 'necesito la documentación de la moto patente A123BCD' },
+        clientCtx,
+      );
+
+      expect(api.getDocumentos).toHaveBeenCalledWith(1, 900);
+      expect(stored?.step).toBe('DOC_TYPE');
+      expect(JSON.stringify(res.messages)).not.toContain('¿De qué póliza');
+    });
+
+    it('"enviame la póliza … a mi mail" manda la Póliza por el chat (#186)', async () => {
+      api.getDocumentos.mockResolvedValue(withPoliza);
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        {
+          text: 'Podrías enviarme la póliza de mi auto a mi mail nombre@ejemplo.com',
+        },
+        clientCtx,
+      );
+
+      expect(api.getDocumentoPdf).toHaveBeenCalledTimes(1);
+      expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1020');
+    });
+
+    it('"el recibo porque pagué por transferencia" es la constancia de pago (#157)', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+      await send(
+        {
+          text: 'Tengo que tener el recibo porque pagué por transferencia pero no tengo lo que emiten ustedes',
+        },
+        clientCtx,
+      );
+
+      expect(api.getDocumentoPdf).toHaveBeenCalledTimes(1);
+      expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1040');
+    });
+
+    it('"la del Mercosur no, la cédula" no vuelve a mandar la tarjeta (#220)', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ text: 'me mandás la tarjeta verde del auto?' }, clientCtx);
+      const res = await send(
+        {
+          text: 'No, la del Mercosur no, la cédula para circular por la ciudad',
+        },
+        clientCtx,
+      );
+
+      expect(api.getDocumentoPdf).toHaveBeenCalledTimes(1);
+      expect(res.messages.some((m) => m.kind === 'document')).toBe(false);
+      expect(res.messages[0].body).toContain('Registro del Automotor');
+    });
+
+    it('"poner el seguro a otro auto" con los papeles en pantalla va a cotizar (#261)', async () => {
+      api.getDocumentos.mockResolvedValue(papers);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+      await send({ text: 'le quiero poner el seguro a otro auto' }, clientCtx);
+
+      expect(stored?.step).not.toBe('ASESOR_MOTIVO');
+      expect(stored?.step).toMatch(/^COT|^LLM_COTIZACION/);
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
+    it('"quitar el débito, lo pago yo" es un cambio de forma de pago (#259)', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const text =
+        'Habrá forma de quitar el débito automático? Lo pago yo manualmente cuando cobro';
+      const res = await send({ text }, clientCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Quiere cambiar la forma de pago'),
+      );
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('quitar el débito automático'),
+      );
+      expect(res.messages[0].body).toContain('cambiar la forma de pago');
+      expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+    });
+
+    it('"dar de baja el débito" no abre una baja de la póliza', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { text: 'quiero dar de baja el débito automático' },
+        clientCtx,
+      );
+
+      expect(stored?.step).not.toBe('BAJA_CONFIRM');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Quiere cambiar la forma de pago'),
+      );
+    });
+
+    it('"te paso los datos" en Siniestros es una denuncia nueva (#289)', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ selectionId: OPT.siniestros, text: '' }, clientCtx);
+      expect(stored?.step).toBe('SINIESTRO_TYPE');
+      await send({ text: 'Te paso los datos' }, clientCtx);
+
+      expect(stored?.step).not.toBe('SINIESTRO_TYPE');
+    });
+
     it('elige el documento escrito con otras palabras', async () => {
       api.getDocumentos.mockResolvedValue(papers);
       await send({ text: 'hola' }, clientCtx);
@@ -3815,6 +3960,52 @@ describe('FlowService', () => {
       expect(res.messages).toEqual([]);
       expect(JSON.stringify(res.messages)).not.toContain('Antes confirmame');
       expect(api.requestHandoff).toHaveBeenCalledWith(1);
+    });
+
+    it('keeps the rest of the session for that person once it said so out of hours (#215)', async () => {
+      api.getHours.mockResolvedValue({
+        formatted: 'Lunes a viernes de 8 a 16 hs',
+        isOpenNow: false,
+        todayClosure: null,
+        message: '',
+        closedNote: 'Ahora estamos fuera de horario.',
+      });
+      const withPhone = { ...ctx, phoneMatch: { firstName: 'MARIELA' } };
+      const first = await send({ text: 'Buenos días como estás?' }, withPhone);
+      expect(JSON.stringify(first.messages)).toContain(
+        'persona que te venía atendiendo',
+      );
+      expect(stored?.personThread).toBe(true);
+
+      // The bot spoke after the person, so the API no longer reports her reply.
+      const next = await send(
+        { text: 'sisi la idea es transferir entre hoy y lunes' },
+        {
+          ...withPhone,
+          answeringPerson: false,
+          lastHumanReply: null,
+          botSpoke: true,
+        },
+      );
+
+      expect(next.messages).toEqual([]);
+      expect(api.requestHandoff).toHaveBeenLastCalledWith(1);
+      expect(intents.interpret).not.toHaveBeenCalled();
+    });
+
+    it('lets a tap through to the bot after passing messages to the person', async () => {
+      await send({ text: 'Buenos días como estás?' }, ctx);
+      const menu = await send(
+        { selectionId: 'no_cliente', text: '' },
+        {
+          ...ctx,
+          answeringPerson: false,
+          lastHumanReply: null,
+          botSpoke: true,
+        },
+      );
+
+      expect(menu.messages.length).toBeGreaterThan(0);
     });
 
     it('answers a reply to its own question even if a person wrote earlier', async () => {

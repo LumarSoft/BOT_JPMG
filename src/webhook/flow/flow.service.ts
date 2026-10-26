@@ -191,6 +191,15 @@ const CUPON_RE =
 /** "La constancia de pago": a policy document, not the account status. Folded. */
 const PAYMENT_CERTIFICATE_RE = /\b(?:constancia|certificado) de pago\b/;
 
+/**
+ * Changing how the policy is paid: "quitar el débito automático, lo pago yo",
+ * "pasarla a cupón", "cambiar la forma de pago". The office asks for the card
+ * or CBU itself; #259 got "tomé nota" and once only the account status.
+ * Folded.
+ */
+const PAYMENT_CHANGE_RE =
+  /\b(?:quitar|sacar|dar de baja|cancelar|desadherir|anular|suspender)(?:me|lo|la|le)?\b[^.?]{0,25}\bdebito\b|\b(?:cambiar|modificar)(?:le)?\b[^.?]{0,15}\b(?:forma|medio|metodo) de pago\b|\b(?:pasar(?:me|lo|la)?|pagar(?:lo|la)?) (?:a|con) (?:cupon|cuponera|efectivo)\b|\badherir(?:me|lo|la)? al debito\b/;
+
 /** Triunfo codes of the documents the bot asks for by name (see the API's document-types). */
 const DOC_CODE = {
   tarjeta: '1050',
@@ -208,11 +217,29 @@ function wantedDocs(text: string | undefined): string[] {
     codes.push(DOC_CODE.tarjeta);
   if (/\bcertificado\b(?! de pago)|\bconstancia de cobertura\b/.test(t))
     codes.push(DOC_CODE.certificado);
-  if (PAYMENT_CERTIFICATE_RE.test(t)) codes.push(DOC_CODE.constancia);
-  if (/\bpoliza (?:completa|en pdf)\b|\bpdf de (?:la|mi) poliza\b/.test(t))
+  // "Tengo que tener el recibo porque pagué por transferencia" (#157).
+  if (
+    PAYMENT_CERTIFICATE_RE.test(t) ||
+    /\b(?:el|un|los|mi|del) recibos?\b/.test(t)
+  )
+    codes.push(DOC_CODE.constancia);
+  // "Enviame la póliza de mi auto", "certificado y póliza": the PDF (#186,
+  // #286). A bare "póliza" is how people name the insurance itself.
+  if (
+    /\bpoliza (?:completa|en pdf)\b|\bpdf de (?:la|mi) poliza\b/.test(t) ||
+    /\b(?:envi|mand|pas)\w*\b[^.?!]{0,25}\b(?:la|mi|una) poliza\b/.test(t) ||
+    (codes.length > 0 && /\by (?:la |mi )?poliza\b/.test(t))
+  )
     codes.push(DOC_CODE.poliza);
   return codes;
 }
+
+/**
+ * "No, la del Mercosur no, la cédula para circular": right after the tarjeta
+ * verde was sent, the same paper again (#220 got it twice). Folded.
+ */
+const NOT_MERCOSUR_RE =
+  /\bno (?:la |el )?(?:del |de )?mercosur\b|\b(?:la |el )?(?:del |de )?mercosur no\b|\bcedula\b/;
 
 /** How the customer calls each document, to ask "¿De qué póliza querés la tarjeta verde?". */
 const DOC_SPOKEN: Record<string, string> = {
@@ -334,7 +361,7 @@ const clip = (text: string, max = 300) =>
 
 /** A new incident being reported, as people say it. Folded text. */
 const NEW_INCIDENT_RE =
-  /\bnuev[ao]|\bdenunci|\breportar|\bregistr|\bquiero hacer|\bocurri|\btuve|\bchoc|\baccidente|\bme robaron|\brob(?:o|aron)\b|\bhurt|\bgranizo|\bincendi|\bse (?:quemo|prendio fuego)|\bme (?:rompieron|golpearon|pegaron)/;
+  /\bnuev[ao]|\bdenunci|\breportar|\bregistr|\bquiero hacer|\bocurri|\btuve|\bchoc|\baccidente|\bme robaron|\brob(?:o|aron)\b|\bhurt|\bgranizo|\bincendi|\bse (?:quemo|prendio fuego)|\bme (?:rompieron|golpearon|pegaron|rozaron|rayaron)|\b(?:roce|roze|rozamos|raye|golpee)\b|\b(?:te )?paso (?:los )?datos\b/;
 
 const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
 
@@ -550,6 +577,14 @@ export function withStaffNotice(result: FlowResult, name: string): FlowResult {
 
 const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
+
+/**
+ * Insuring a vehicle they don't have with us yet: "le quiero poner el seguro
+ * a otro auto", "sacar un seguro para la moto nueva". #261 was taken for
+ * another policy of theirs and sent to the office. Folded.
+ */
+const NEW_VEHICLE_QUOTE_RE =
+  /\b(?:poner|sacar|hacer|contratar|tener)(?:le|lo|la)?\b[^.?]{0,20}\bseguro\b[^.?]{0,15}\b(?:a|para|de) (?:otr[oa]|un[oa]?|mi|el|la) (?:nuev[oa] )?(?:auto|moto|vehiculo|camioneta|coche)\b/;
 
 /**
  * Someone insured elsewhere who wants to come over ("quiero pasar el seguro
@@ -890,6 +925,8 @@ interface ActionOptions {
 export class FlowService {
   private readonly logger = new Logger(FlowService.name);
   private readonly states = new Map<string, { state: FlowState }>();
+  /** Chats whose message this turn went to the person of the office. */
+  private readonly personRelayed = new Set<string>();
 
   private readonly towTruckPhone?: string;
   /** The company's claims line, given when someone asks for it. */
@@ -961,12 +998,29 @@ export class FlowService {
       prior?.officeThread === true || this.answeringOffice(ctx);
     ctx = { ...ctx, officeThread };
     const named = await this.notifyStaff(input, ctx, prior);
+    // Still writing to the person of the office. Out of hours the bot said
+    // once that it passed the message on, and from then the API no longer
+    // reports that person's reply: the next line got "¿Hablo con Mariela?"
+    // (#215). A tap, a command word or the tow truck is for the bot.
+    if (
+      prior?.personThread &&
+      !named &&
+      !input.selectionId &&
+      !OPENING_COMMAND_RE.test(fold(input.text).trim()) &&
+      !/\bgrua\b|\bauxilio\b|\bremolque\b/.test(fold(input.text))
+    ) {
+      await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+      return { messages: [] };
+    }
+    this.personRelayed.delete(key);
     const result = await this.computeTurn(key, input, ctx);
     // Remembered for the session: the API stops reporting that person's reply
     // as soon as the bot answers.
     const entry = this.states.get(key);
     if (officeThread && entry)
       entry.state = { ...entry.state, officeThread: true };
+    if (this.personRelayed.delete(key) && entry)
+      entry.state = { ...entry.state, personThread: true };
     if (!named) return result;
     // "¿Hablo con Mili?": until Mili takes the chat, the answer is no — it is
     // the bot, and she was told. Never let it pass as if she were answering.
@@ -1738,6 +1792,12 @@ export class FlowService {
       const result = await this.enterCotizar(input, ctx, key);
       return result.handoff ? result : this.withOpener(opener, result);
     }
+    // Taking the debit off or moving to coupons, from someone identified.
+    if (ctx.client && PAYMENT_CHANGE_RE.test(fold(input.text)))
+      return this.withOpener(
+        opener,
+        await this.paymentChangeRequest(ctx, key, input.text),
+      );
     const intent =
       known !== undefined ? known : await this.readIntent(input, ctx);
     if (
@@ -2164,6 +2224,7 @@ export class FlowService {
     // for the chat however many messages follow. With the text as reason, a
     // customer writing four lines to Mili opened four "Pedido de asesor".
     await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+    this.personRelayed.add(key);
     const closed = await this.closedNote();
     if (!closed) return { messages: [] };
     return {
@@ -2203,6 +2264,29 @@ export class FlowService {
         ))
     )
       return this.closerReply(key, input.text);
+    // "¿Habrá forma de quitar el débito? Lo pago yo": the office changes the
+    // payment method with the customer's words (#259).
+    if (typed && PAYMENT_CHANGE_RE.test(fold(input.text)))
+      return this.paymentChangeRequest(ctx, key, input.text);
+    // "No, la del Mercosur no, la cédula para circular", right after the
+    // tarjeta verde: the same paper, so it is said instead of sent again.
+    if (
+      typed &&
+      NOT_MERCOSUR_RE.test(fold(input.text)) &&
+      (
+        (this.load(key)?.state.data.sentDocs as string[] | undefined) ?? []
+      ).includes(DOC_CODE.tarjeta)
+    )
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body:
+              'La *tarjeta verde (Mercosur)* que te mandé es tu tarjeta de circulación: sirve también en la ciudad, es la que mostrás si te paran 🙌\n' +
+              'La *cédula* (verde o azul) no la da el seguro: es del Registro del Automotor, viene con los papeles del vehículo.',
+          },
+        ],
+      };
     // "Es otra moto", "es por otra póliza": not one of theirs, so the office
     // takes it with the details, instead of the papers of the one they have
     // (#264 got the documents picker of his own moto).
@@ -2930,17 +3014,25 @@ export class FlowService {
           polizas,
           ...(opts.docs?.length ? { wanted: opts.docs } : {}),
         });
-        if (polizas.length === 1) {
+        // One policy, or the one the request names ("la póliza del PALIO
+        // dominio …" was asked which one, #258).
+        const only =
+          polizas.length === 1
+            ? polizas[0]
+            : opts.question
+              ? this.matchPolizaNamed(opts.question, polizas)
+              : null;
+        if (only) {
           const result = await this.handleDocPoliza(
             this.load(key)!.state,
-            { text: '', selectionId: `${POLIZA_PREFIX}${polizas[0].id}` },
+            { text: '', selectionId: `${POLIZA_PREFIX}${only.id}` },
             ctx,
             key,
           );
           // Sent documents already say which policy they are from.
           return result.messages[0]?.kind === 'document'
             ? result
-            : this.prepend(`Es sobre tu ${polizaMention(polizas[0])}.`, result);
+            : this.prepend(`Es sobre tu ${polizaMention(only)}.`, result);
         }
         return {
           messages: [
@@ -4515,6 +4607,8 @@ export class FlowService {
     if (other) return other;
     if (!input.selectionId && CLAIM_COPY_RE.test(fold(input.text)))
       return this.claimCopyRequest(input.text, ctx, key);
+    if (!input.selectionId && NEW_VEHICLE_QUOTE_RE.test(fold(input.text)))
+      return this.enterCotizar(input, ctx, key);
     let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
 
     if (
@@ -4644,13 +4738,15 @@ export class FlowService {
               debitFailed: DEBIT_FAILED_RE.test(t),
             })
           : this.guard(ctx, key, 'cupones', {}, input.text);
+      if (QUOTE_INTENT_RE.test(t) || NEW_VEHICLE_QUOTE_RE.test(t))
+        return this.enterCotizar(input, ctx, key);
       if (OTHER_POLICY_RE.test(t)) return this.otherPolicyDocs(state, key);
     }
 
     let chosen: PolizaDocumento[] = [];
     if (
       input.selectionId === ALL_DOCS_ID ||
-      (!input.selectionId && /\b(todos|todas|todo)\b/.test(t))
+      (!input.selectionId && /\b(todos|todas|todo|toda)\b/.test(t))
     ) {
       chosen = docs;
     } else {
@@ -4811,10 +4907,8 @@ export class FlowService {
       );
     }
 
-    this.setState(
-      key,
-      'CLIENT_MENU',
-      failed.length > 0
+    this.setState(key, 'CLIENT_MENU', {
+      ...(failed.length > 0
         ? {
             requested: {
               action: 'documentos',
@@ -4822,8 +4916,10 @@ export class FlowService {
               label: poliza ? `tu ${polizaLabel(poliza)}` : 'tu póliza',
             },
           }
-        : {},
-    );
+        : {}),
+      // What just went out, so "la del Mercosur no" is not sent again.
+      ...(sent.length > 0 ? { sentDocs: sent.map((d) => d.code) } : {}),
+    });
     return {
       messages: [
         ...files,
@@ -5791,11 +5887,13 @@ export class FlowService {
   private async paymentChangeRequest(
     ctx: FlowContext,
     key: string,
+    said?: string,
   ): Promise<FlowResult> {
     await this.api
       .requestHandoff(
         ctx.conversationId,
-        'Quiere cambiar la forma de pago (adherir tarjeta o CBU, o pasar a cupón).',
+        'Quiere cambiar la forma de pago (adherir tarjeta o CBU, o pasar a cupón)' +
+          (said?.trim() ? `: "${clip(said.trim())}"` : '.'),
       )
       .catch(() => undefined);
     this.setState(key, 'CLIENT_MENU');
@@ -6274,6 +6372,7 @@ export class FlowService {
   /** Keyword routing so typed text (not just taps) reaches the right flow. */
   private matchClientIntent(text: string): string | null {
     const t = fold(text);
+    if (PAYMENT_CHANGE_RE.test(t)) return OPT.cambioPago;
     if (
       !/\bno (?:quiero|deseo|necesito) (?:dar(?:me)? de baja|cancelar)\b/.test(
         t,
@@ -6347,6 +6446,42 @@ export class FlowService {
     text: string,
     polizas: PolizaSummary[],
   ): PolizaSummary | null {
+    const named = this.matchPolizaNamed(text, polizas);
+    if (named) return named;
+    const t = text.toLowerCase();
+
+    // A non-vehicle policy by its name ("la bicicleta", "el sepelio").
+    const byProduct = polizas.filter((p) => {
+      const product = p.product ? fold(p.product).replace(/\./g, '') : '';
+      const word = product.split(/\s+/)[0];
+      return word.length > 3 && fold(t).includes(word.slice(0, 5));
+    });
+    if (byProduct.length === 1) return byProduct[0];
+
+    let riskKeyword: string | null = null;
+    if (/\bauto\b|\bcoche\b|\bveh[ií]culo\b/.test(t)) riskKeyword = 'auto';
+    else if (/\bmoto\b|\bscooter\b/.test(t)) riskKeyword = 'moto';
+    else if (/\bhogar\b|\bcasa\b|\bdepartamento\b|\bvivienda\b/.test(t))
+      riskKeyword = 'home';
+    else if (/\bcomercio\b|\blocal\b|\bnegocio\b/.test(t))
+      riskKeyword = 'commercial';
+
+    if (riskKeyword) {
+      const matches = polizas.filter((p) => p.riskType === riskKeyword);
+      if (matches.length === 1) return matches[0];
+    }
+
+    return null;
+  }
+
+  /**
+   * The policy a text names outright: its plate, its number, or the vehicle's
+   * brand or model. Not "el auto", which a request mentions in passing.
+   */
+  private matchPolizaNamed(
+    text: string,
+    polizas: PolizaSummary[],
+  ): PolizaSummary | null {
     const t = text.toLowerCase();
 
     for (const p of polizas) {
@@ -6373,27 +6508,6 @@ export class FlowService {
         .filter(Boolean)
         .map((s) => s!.toLowerCase());
       if (terms.some((term) => term.length > 2 && t.includes(term))) return p;
-    }
-
-    // A non-vehicle policy by its name ("la bicicleta", "el sepelio").
-    const named = polizas.filter((p) => {
-      const product = p.product ? fold(p.product).replace(/\./g, '') : '';
-      const word = product.split(/\s+/)[0];
-      return word.length > 3 && fold(t).includes(word.slice(0, 5));
-    });
-    if (named.length === 1) return named[0];
-
-    let riskKeyword: string | null = null;
-    if (/\bauto\b|\bcoche\b|\bveh[ií]culo\b/.test(t)) riskKeyword = 'auto';
-    else if (/\bmoto\b|\bscooter\b/.test(t)) riskKeyword = 'moto';
-    else if (/\bhogar\b|\bcasa\b|\bdepartamento\b|\bvivienda\b/.test(t))
-      riskKeyword = 'home';
-    else if (/\bcomercio\b|\blocal\b|\bnegocio\b/.test(t))
-      riskKeyword = 'commercial';
-
-    if (riskKeyword) {
-      const matches = polizas.filter((p) => p.riskType === riskKeyword);
-      if (matches.length === 1) return matches[0];
     }
 
     return null;

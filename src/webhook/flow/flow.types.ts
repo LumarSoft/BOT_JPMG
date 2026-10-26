@@ -75,6 +75,11 @@ export interface FlowState {
    * OFFICE_THREAD_MS): kept for the session, since the API stops reporting
    * that person's reply once the bot answers. */
   officeThread?: boolean;
+  /** What the customer wrote went to the person of the office who was
+   * answering (see FlowService.personFollowUp): the rest of the session is for
+   * them too, since the API stops reporting that person's reply once the bot
+   * said it passed the message on. */
+  personThread?: boolean;
   /** Said "No, soy otra persona" to "¿Hablo con Juan?": not asked again this
    * session. It came back on the next step that needed identification. */
   phoneDeclined?: boolean;
