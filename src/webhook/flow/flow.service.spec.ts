@@ -557,6 +557,63 @@ describe('FlowService', () => {
       expect(filed.description).toContain('Personas en el vehículo: 2');
     });
 
+    it('adds what is typed at the confirmation card (the other vehicle) and shows it again (#289, #286)', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce({
+        ...completo,
+        terceroPatente: null,
+      });
+      const card = await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(card.messages[0].body).toContain('patente: no informada');
+
+      extractor.extract.mockResolvedValueOnce({
+        ...vacio,
+        terceroPatente: 'AG827QI',
+        terceroConductor: 'Diego Sperandio',
+        terceroCompania: 'Sancor',
+      });
+      const updated = await send(
+        { text: 'VW Tiguan AG827QI Sperandio Diego, asegurado en Sancor' },
+        ctx,
+      );
+
+      expect(extractor.extract).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          text: 'VW Tiguan AG827QI Sperandio Diego, asegurado en Sancor',
+          asked: [],
+        }),
+      );
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(api.createSiniestro).not.toHaveBeenCalled();
+      expect(updated.messages[0].body).toBe('Anoté eso 👍');
+      expect(updated.messages[1].body).toContain(
+        'patente: AG827QI; conductor: Diego Sperandio; compañía: Sancor',
+      );
+      expect(updated.messages[1].body).toContain('¿Confirmás?');
+
+      await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+      const [, filed] = api.createSiniestro.mock.calls[0] as [
+        number,
+        { description: string },
+      ];
+      expect(filed.description).toContain('AG827QI');
+    });
+
+    it('re-shows the confirmation card when the typed text adds nothing', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce(completo);
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+
+      extractor.extract.mockResolvedValueOnce(vacio);
+      const again = await send({ text: 'los datos del otro vehículo' }, ctx);
+
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(again.messages).toHaveLength(1);
+      expect(again.messages[0].body).toContain('¿Confirmás?');
+      expect(api.createSiniestro).not.toHaveBeenCalled();
+    });
+
     it('asks for the street number when only a corner was given, and accepts "no sé"', async () => {
       await openChecklist();
       extractor.extract.mockResolvedValueOnce({
@@ -2793,6 +2850,70 @@ describe('FlowService', () => {
         'Los cupones de pago te los manda la oficina por este chat',
       );
       expect(bodies(res)).toContain('tu CHEVROLET CORSA');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('"las boletas de pago" son los cupones (#299)', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        { text: 'Necesito que me pases las boletas de pago' },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Pide los cupones de pago'),
+      );
+      expect(bodies(res)).toContain(
+        'Los cupones de pago te los manda la oficina',
+      );
+      expect(bodies(res)).not.toContain('¿Qué documento querés');
+    });
+
+    it('un tap tardío de "Sí, soy…" ya identificado vuelve al menú sin repetir el pedido (#292)', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+
+      const res = await send(
+        { text: 'Sí, soy Marcelo', selectionId: OPT.phoneSi },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+      expect(bodies(res)).toContain('Perfecto 👍');
+      expect(bodies(res)).not.toContain('cupones de pago de tu');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('el número de póliza en la lista elige esa póliza (#286)', async () => {
+      api.getPolizas.mockResolvedValue([
+        {
+          id: 833,
+          certificateNumber: '1741715',
+          company: 'Triunfo',
+          riskType: 'auto',
+          validFrom: null,
+          validTo: null,
+          paymentMethod: null,
+          vehicle: {
+            licensePlate: 'ABC123',
+            brand: 'CHEVROLET',
+            model: 'CORSA',
+          },
+        },
+        ranger,
+      ]);
+      await send({ text: 'hola' }, clientCtx);
+      await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
+      expect(stored?.step).toBe('CUPON_POLIZA');
+
+      await send({ text: 'Póliza 2000001' }, clientCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('FORD RANGER'),
+      );
       expect(stored?.step).toBe('CLIENT_MENU');
     });
 

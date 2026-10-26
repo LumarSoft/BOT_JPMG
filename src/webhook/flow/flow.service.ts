@@ -184,7 +184,8 @@ const OPENING_COMMAND_RE =
  * documents picker, which ended in "no tengo los documentos" every time.
  * Folded text.
  */
-const CUPON_RE = /\bcupon(?:es|era|eras)?\b/;
+const CUPON_RE =
+  /\bcupon(?:es|era|eras)?\b|\bboletas?\b|\btalonarios?\b|\bchequeras?\b/;
 
 /** "La constancia de pago": a policy document, not the account status. Folded. */
 const PAYMENT_CERTIFICATE_RE = /\b(?:constancia|certificado) de pago\b/;
@@ -1016,6 +1017,24 @@ export class FlowService {
       return this.toMainMenu(key, ctx);
     }
     if (sel === OPT.stuckAsesor) return this.startAdvisor(ctx, key);
+
+    // "Sí, soy Mariela" tapped after she identified by plate: the old buttons
+    // are still on screen. Answered as a repeat of the last request, the bot
+    // sent the coupon text three times (#292). Back to the menu from an open
+    // step; mid-flow it is ignored.
+    if (
+      (sel === OPT.phoneSi || sel === OPT.phoneNo) &&
+      !(
+        existing.state.step === 'IDENTIFY' &&
+        existing.state.data.phoneConfirm === true
+      )
+    ) {
+      if (!OPEN_STEPS.has(existing.state.step)) {
+        this.logger.log('Tap tardío de "¿Hablo con…?" ignorado');
+        return { messages: [] };
+      }
+      return this.prepend('Perfecto 👍', this.toMainMenu(key, ctx));
+    }
 
     // A menu option tapped from a menu still on screen (or shown under a
     // model's answer) is what the customer wants now, whatever step this is.
@@ -3875,6 +3894,64 @@ export class FlowService {
     };
   }
 
+  /**
+   * Typed at the confirmation card of a vehicle claim filled in through the
+   * checklist: whatever the model reads from it (the other vehicle, a time,
+   * injuries) is merged into the claim and the card is shown again. Null when
+   * nothing new was read, or the claim came the step-by-step way (no `datos`).
+   */
+  private async addToSiniestroConfirm(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    const text = input.text.trim();
+    const known = state.data.datos as SiniestroDatos | undefined;
+    if (input.selectionId || !known || !/[\p{L}\p{N}]/u.test(text)) return null;
+    let extracted: Partial<SiniestroDatos>;
+    try {
+      extracted = await this.extractor.extract({
+        text,
+        known,
+        asked: [],
+        phoneNumberId: ctx.phoneNumberId ?? '',
+      });
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer lo agregado en la confirmación del siniestro: ${(error as Error).message}`,
+      );
+      return null;
+    }
+    if (extracted.fecha && !parseFecha(extracted.fecha)) extracted.fecha = null;
+    const datos = mergeDatos(known, extracted);
+    if (JSON.stringify(datos) === JSON.stringify(known)) return null;
+
+    const fecha = parseFecha(datos.fecha!) ?? {
+      iso: state.data.fechaIso as string,
+      display: state.data.fechaDisplay as string,
+    };
+    const descripcion = siniestroDescripcion(datos);
+    this.setState(key, 'SINIESTRO_CONFIRM', {
+      ...state.data,
+      datos,
+      fechaIso: fecha.iso,
+      fechaDisplay: fecha.display,
+      descripcion,
+      [RETRIES]: 0,
+    });
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    return this.prepend('Anoté eso 👍', {
+      messages: [
+        siniestroConfirm(
+          polizas.find((p) => p.id === state.data.polizaId),
+          fecha.display,
+          descripcion,
+        ),
+      ],
+    });
+  }
+
   private async handleSiniestroConfirm(
     state: FlowState,
     input: UserInput,
@@ -3893,8 +3970,16 @@ export class FlowService {
       };
     }
     if (sel !== OPT.confirmar) {
-      // Anything that isn't a clear yes/no (free text or a stray tap): re-show
-      // the confirmation card so the final step never slips into the FAQ model.
+      // Free text here is usually a detail the card showed as missing ("VW
+      // Tiguan AG827QI, Sperandio Diego"): it is read into the claim and the
+      // card comes back updated. Two customers typed the other car this way
+      // and the bot re-showed "patente: no informada" until they gave up or
+      // confirmed without it (#289, #286).
+      const added = await this.addToSiniestroConfirm(state, input, ctx, key);
+      if (added) return added;
+      // Anything that isn't a clear yes/no (a stray tap, text that adds
+      // nothing): re-show the confirmation card so the final step never
+      // slips into the FAQ model.
       const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
       const poliza = polizas.find((p) => p.id === state.data.polizaId);
       return this.retry(key, state, [
@@ -6166,6 +6251,18 @@ export class FlowService {
     for (const p of polizas) {
       const dom = p.vehicle?.licensePlate;
       if (dom && t.includes(dom.toLowerCase())) return p;
+    }
+
+    // The policy number as the card shows it ("3831688", "Póliza 38…"): a
+    // customer typed it at the picker and got "no reconocí esa póliza" (#286).
+    // Five digits or more, so a year or a street number never picks one.
+    const numbers = t.match(/\d{5,}/g) ?? [];
+    for (const n of numbers) {
+      const byNumber = polizas.filter((p) => {
+        const cert = (p.certificateNumber ?? '').replace(/\D/g, '');
+        return cert.length >= 5 && (cert === n || cert.endsWith(n));
+      });
+      if (byNumber.length === 1) return byNumber[0];
     }
 
     for (const p of polizas) {
