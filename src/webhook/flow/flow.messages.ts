@@ -1037,6 +1037,14 @@ export const DEBIT_FAILED_RE =
   /\bno (?:se )?(?:me |le |nos )?(?:(?:pudo|pudieron|pueden) )?(?:debit|descont|cobr)|\brechaz|\bstop debit|\bno (?:paso|entro|impacto) el (?:debito|pago)|\bno se (?:realizo|hizo|efectuo|proceso|concreto|acredito)\b.*\b(?:debito|pago|cobro)|\bno (?:se )?pud(?:o|ieron) (?:realizar|hacer|efectuar|procesar|concretar)(?: el| la)? (?:pago|debito|cobro)|\b(?:pago|debito) (?:fallido|fallo|rechazado|no realizado)|\bfallo el (?:pago|debito)/;
 
 /**
+ * "Se me cobró dos veces el seguro", "me debitaron doble", "cuota duplicada":
+ * a charge the office has to check with Triunfo, not an account status (#124).
+ * Folded text.
+ */
+export const DOUBLE_CHARGE_RE =
+  /\b(?:cobr|debit|descont|pag)\w*\b[^.]*\b(?:dos veces|2 veces|doble|duplicad\w*|repetid\w*|de mas)\b|\b(?:dos veces|2 veces|doble|duplicad\w*)\b[^.]*\b(?:cobr|debit|descont|cuota|pago)\w*/;
+
+/**
  * "No me aparece la factura para pagar", "ya debería pagar la cuota 4 y no me
  * aparece en la aplicación". Folded text.
  */

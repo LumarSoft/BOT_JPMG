@@ -234,6 +234,16 @@ describe('FlowService', () => {
       expect(res.handoff).toBe('cotizacion');
     });
 
+    it('reads "sacar el seguro de la otra compañía y poner el de ustedes" as a quote (#295)', async () => {
+      const res = await send({
+        text: 'Necesito cambiar el seguro, tengo un auto 0km y quiero retirar el seguro de la compañía y poner el de ustedes',
+      });
+
+      expect(stored?.step).toBe('LLM_COTIZACION');
+      expect(res.handoff).toBe('cotizacion');
+      expect(JSON.stringify(res.messages)).not.toContain('identificarte');
+    });
+
     it('knows a VW is a car without the word "auto"', async () => {
       const res = await send({
         text: 'Hola! quiero cotizar un seguro para mi vw gol trend 2015',
@@ -2853,6 +2863,27 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('CLIENT_MENU');
     });
 
+    it('"es otra moto" va a la oficina con los datos, no a los papeles de la suya (#264)', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const ask = await send({ text: 'Es otra moto' }, clientCtx);
+
+      expect(stored?.step).toBe('ASESOR_MOTIVO');
+      expect(bodies(ask)).toContain('Contame cuál es');
+      expect(bodies(ask)).not.toContain('¿Qué documento querés');
+
+      await send(
+        {
+          text: 'Es la moto de mi sobrina, patente AB123CD, quiere sacar el débito',
+        },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Habla de otra póliza o vehículo (no figura en el bot): Es la moto de mi sobrina, patente AB123CD, quiere sacar el débito',
+      );
+    });
+
     it('"las boletas de pago" son los cupones (#299)', async () => {
       await send({ text: 'hola' }, clientCtx);
       const res = await send(
@@ -3096,6 +3127,27 @@ describe('FlowService', () => {
       expect(bodies(res)).toContain('Ya le avisé a Mili que le escribiste');
       expect(bodies(res)).toContain('¿ya sos cliente nuestro?');
       expect(stored?.data.forPerson).toBeUndefined();
+    });
+
+    it('"¿hablo con Mili?" → no, es el bot, y Mili queda avisada', async () => {
+      const res = await send({ text: 'Hola, ¿hablo con Mili?' }, staffCtx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Mensaje para Mili: "Hola, ¿hablo con Mili?"',
+      );
+      expect(bodies(res)).toContain('No, por ahora hablás con *Nico*');
+      expect(bodies(res)).toContain('Ya le avisé a Mili que le escribiste');
+      expect(bodies(res)).not.toContain(
+        'Ya le avisé a Mili que le escribiste 🙌',
+      );
+    });
+
+    it('"quiero hablar con Mili" no es preguntar si es ella', async () => {
+      const res = await send({ text: 'Quiero hablar con Mili' }, staffCtx);
+
+      expect(bodies(res)).not.toContain('No, por ahora hablás con');
+      expect(bodies(res)).toContain('Ya le avisé a Mili');
     });
 
     it('el mensaje siguiente sigue el flujo normal sin volver a avisar', async () => {
@@ -3738,6 +3790,33 @@ describe('FlowService', () => {
       expect(JSON.stringify(res.messages)).not.toContain('Soy *Nico*');
     });
 
+    it('does not ask "¿hablo con…?" to someone greeting the office person (#215)', async () => {
+      const res = await send(
+        { text: 'Buenos días como estas?' },
+        { ...ctx, phoneMatch: { firstName: 'IVAN' } },
+      );
+
+      expect(res.messages).toEqual([]);
+      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+      expect(stored?.step).not.toBe('IDENTIFY');
+    });
+
+    it('drops a pending "¿hablo con…?" when the person is answering (#215)', async () => {
+      stored = {
+        step: 'IDENTIFY',
+        data: { phoneConfirm: true, pendingAction: 'menu' },
+      };
+
+      const res = await send(
+        { text: 'sisi la idea es transferir entre hoy y lunes' },
+        { ...ctx, phoneMatch: { firstName: 'IVAN' } },
+      );
+
+      expect(res.messages).toEqual([]);
+      expect(JSON.stringify(res.messages)).not.toContain('Antes confirmame');
+      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+    });
+
     it('answers a reply to its own question even if a person wrote earlier', async () => {
       // The person wrote this morning, but the bot is the one who just asked.
       intents.interpret.mockResolvedValue('seguimiento');
@@ -3979,6 +4058,28 @@ describe('FlowService', () => {
         1,
         expect.stringMatching(
           /Dice que el débito no se realizó en .*HONDA STORM.*: "quería saber porque no se débito el seguro"/,
+        ),
+      );
+    });
+
+    it('passes a double charge to the office instead of the account status alone (#124)', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([onixAlDia]);
+
+      const res = await send(
+        {
+          text: 'Quería consultar porque se me cobró dos veces el seguro este mes',
+        },
+        { ...withModel, client },
+      );
+
+      const body = JSON.stringify(res.messages);
+      expect(body).toContain('Le pasé a la oficina lo del cobro doble');
+      expect(body).toContain('Estado de cuenta');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringMatching(
+          /Dice que le cobraron de más o dos veces: "Quería consultar porque se me cobró dos veces/,
         ),
       );
     });

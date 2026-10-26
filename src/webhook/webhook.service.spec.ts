@@ -2615,6 +2615,48 @@ describe('WebhookService', () => {
       expect(sentTexts()[0]).toContain('Contame para qué es');
     });
 
+    it('answers a photo sent mid-quote with what it needs to quote, once (#232)', async () => {
+      meta.downloadMedia.mockResolvedValue(image);
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [
+          {
+            role: 'assistant',
+            content:
+              'Mandame la foto y, para cotizarla, también necesito *marca, modelo, año*…',
+            source: 'live',
+          },
+        ],
+        flowState: JSON.stringify({ step: 'LLM_COTIZACION', data: {} }),
+      });
+
+      await service.handleMedia('5491155666777', 'q1', 'P1', 'wq1', 'Dani');
+      await settlePhotoReplies();
+
+      expect(sentTexts()).toHaveLength(1);
+      expect(sentTexts()[0]).toContain('Para cotizar necesito');
+      expect(sentTexts()[0]).not.toContain('Contame para qué');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+
+      // A minute later, another photo: the reminder was already given.
+      api.getConversation.mockResolvedValue({
+        conversationId: 7,
+        client: null,
+        newSession: false,
+        messages: [
+          { role: 'assistant', content: sentTexts()[0], source: 'live' },
+        ],
+        flowState: JSON.stringify({ step: 'LLM_COTIZACION', data: {} }),
+      });
+      await service.handleMedia('5491155666777', 'q2', 'P1', 'wq2', 'Dani');
+      await settlePhotoReplies();
+
+      expect(sentTexts()).toHaveLength(1);
+    });
+
     it('reads the text sent with a photo instead of asking what it is for', async () => {
       meta.downloadMedia.mockResolvedValue(image);
       api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });

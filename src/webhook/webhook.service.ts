@@ -6,6 +6,7 @@ import { ApiService } from '../api/api.service';
 import type {
   BotContext,
   BotConversation,
+  ConversationMessage,
   MessageMedia,
 } from '../api/api.types';
 import { MetaService } from './meta.service';
@@ -261,7 +262,22 @@ type PhotoReplyKind =
   | 'unknown'
   | 'early'
   | 'needClaim'
-  | 'proof';
+  | 'proof'
+  | 'quote';
+
+/** Steps of a quote in progress: a photo there is of the vehicle to quote. */
+const QUOTE_PHOTO_STEPS = new Set(['LLM_COTIZACION', 'COT_PLAN']);
+
+/** Start of the reply to a photo sent mid-quote (see PHOTO_REPLIES.quote). */
+const QUOTE_PHOTO_PREFIX = '📸 Recibí';
+
+/** The bot already answered a photo of this quote: one reminder is enough. */
+function saidQuotePhotoReply(messages: ConversationMessage[]): boolean {
+  const lastBot = [...messages]
+    .reverse()
+    .find((m) => m.role === 'assistant' && m.source !== 'app_echo');
+  return !!lastBot && lastBot.content.startsWith(QUOTE_PHOTO_PREFIX);
+}
 
 /** A file whose name says it is a receipt ("comprobante.pdf"). Not "recibo":
  * Triunfo's coupon book is "ocuponerarecibo_.pdf", which clients forward. */
@@ -322,6 +338,12 @@ const PHOTO_REPLIES: Record<
   early: (n, files = false) =>
     text(
       `📎 Guardé ${received(n, files)}. Terminemos primero los datos de la denuncia y después te pido las fotos.`,
+    ),
+  // Mid-quote the photo is of the vehicle; the bot can't read it, so it says
+  // what it needs instead of "contame para qué es" (#232, four times).
+  quote: (n, files = false) =>
+    text(
+      `${QUOTE_PHOTO_PREFIX} ${received(n, files)} 🙌 Para cotizar necesito que me escribas *marca, modelo, año* y *localidad o código postal* (si ya me los pasaste, decime la *versión* que te pedí). La oficina ve las fotos cuando emita la póliza.`,
     ),
   needClaim: () =>
     text(
@@ -1424,6 +1446,13 @@ export class WebhookService {
         : fillingNewClaim || flowState?.step.startsWith('SINIESTRO_')
           ? 'early'
           : 'unknown';
+      // Photos of the vehicle in the middle of a quote ("mandame la foto"
+      // were the bot's own words): say what is needed to quote, and only
+      // once (#232 got "contame para qué es" four times in a row).
+      if (kind === 'unknown' && QUOTE_PHOTO_STEPS.has(flowState?.step ?? '')) {
+        if (saidQuotePhotoReply(conversation.messages)) return false;
+        kind = 'quote';
+      }
       // "¡Recibí tu foto! Contame para qué es" to a payment receipt left it
       // unregistered for days: a receipt goes to the office as such.
       if (
@@ -1621,7 +1650,9 @@ export class WebhookService {
     // The caption is answered instead; a receipt's alert is already made.
     if (
       options.dropQuestion &&
-      (pending.kind === 'unknown' || pending.kind === 'proof')
+      (pending.kind === 'unknown' ||
+        pending.kind === 'proof' ||
+        pending.kind === 'quote')
     )
       return;
     try {

@@ -39,6 +39,7 @@ import {
   CLIENT_MENU_OPTS,
   cotizarMenu,
   DEBIT_FAILED_RE,
+  DOUBLE_CHARGE_RE,
   debitNotDone,
   transferOffer,
   type TransferInfo,
@@ -485,6 +486,25 @@ export function stepTopic(step: FlowStep): string | null {
   return null;
 }
 
+/**
+ * "¿Hablo con Mili?", "¿sos Mili?", "Mili, ¿sos vos?": the customer asks
+ * whether the person named is the one answering.
+ */
+export function asksIfTalkingTo(text: string, name: string): boolean {
+  const t = fold(text)
+    .replace(/[¿?¡!.,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const n = fold(name)
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (
+    new RegExp(
+      `\\b(?:hablo|estoy hablando|hablando|es|sos|eres|habla) (?:con |vos )?${n}\\b|\\b${n} (?:sos vos|eres tu|es usted|es ahi|esta ahi|estas ahi)\\b|\\b(?:sos|es) vos ${n}\\b`,
+    ).test(t) && !/\b(?:hablar|comunicarme|contactarme) con\b/.test(t)
+  );
+}
+
 /** The office person a message names ("Hola Mili", "decile a Milagros"), if any. */
 export function staffNamed(
   text: string,
@@ -530,6 +550,22 @@ export function withStaffNotice(result: FlowResult, name: string): FlowResult {
 
 const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
+
+/**
+ * Someone insured elsewhere who wants to come over ("quiero pasar el seguro
+ * con ustedes", "cambiarme de compañía", "sacar el seguro de la otra y poner
+ * el de ustedes"): a quote, not a cancellation of ours (#295 was asked for a
+ * DNI). Folded text.
+ */
+const SWITCH_INSURER_RE =
+  /\b(?:poner|pasar|pasarme|pasarnos|tener|hacer|contratar|sacar)(?:lo|la|los|las)?\b[^.]{0,40}\b(?:con|a) ustedes\b|\bcambiar(?:me|nos|lo|la)? (?:de|a otra) (?:compania|aseguradora|empresa|seguro)\b|\b(?:retirar|sacar|dar de baja)(?:lo|la)?\b[^.]{0,30}\b(?:la otra|otra|esa|la) (?:compania|aseguradora)\b/;
+
+/**
+ * "Es otra moto", "no, es por otra póliza", "me refiero a otro auto": a
+ * policy that is not among the ones the bot found for this person.
+ */
+const OTHER_VEHICLE_TYPED_RE =
+  /^(?:no[,.]? )?(?:es|era|hablo de|me refiero a|te hablo de|es por|es de|es sobre) (?:otra|otro) (?:moto|auto|vehiculo|camioneta|poliza|seguro|persona|titular)\b/;
 
 /**
  * Asking about one's own debt or installments ("¿cuánto debo de mi seguro?",
@@ -931,7 +967,15 @@ export class FlowService {
     const entry = this.states.get(key);
     if (officeThread && entry)
       entry.state = { ...entry.state, officeThread: true };
-    return named ? withStaffNotice(result, named) : result;
+    if (!named) return result;
+    // "¿Hablo con Mili?": until Mili takes the chat, the answer is no — it is
+    // the bot, and she was told. Never let it pass as if she were answering.
+    if (asksIfTalkingTo(input.text, named))
+      return this.prepend(
+        `No, por ahora hablás con *${ctx.botName || 'Nico'}*, el asistente de la oficina 🤖 Ya le avisé a ${named} que le escribiste: te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).`,
+        { ...result, staffNotified: named },
+      );
+    return withStaffNotice(result, named);
   }
 
   private async computeTurn(
@@ -1220,6 +1264,12 @@ export class FlowService {
           await this.handleClientMenu({ ...input, selectionId: opt }, ctx, key),
         );
       }
+      // A greeting to the person of the office who is in the middle of it:
+      // the chat is theirs, no greeting and menu from the bot.
+      if (!sel && personRecently) {
+        const followed = await this.personFollowUp(input, ctx, key);
+        if (followed) return followed;
+      }
       return this.rememberGreeting(
         key,
         input.text,
@@ -1255,7 +1305,11 @@ export class FlowService {
     // round-trip is one more billed message and one more wait. Introduce
     // ourselves in the same message — or let the quote model do it when it
     // answers directly (its prompt introduces itself on a first message).
-    if (!sel && QUOTE_INTENT_RE.test(fold(input.text))) {
+    if (
+      !sel &&
+      (QUOTE_INTENT_RE.test(fold(input.text)) ||
+        SWITCH_INSURER_RE.test(fold(input.text)))
+    ) {
       const result = await this.enterCotizar(input, ctx, key);
       return result.handoff ? result : this.withOpener(opener, result);
     }
@@ -1295,6 +1349,13 @@ export class FlowService {
         },
         bareGreeting,
       );
+    }
+    // "Buenos días, ¿cómo estás?" to Mili, who asked about a transfer three
+    // hours earlier: she is the one in this chat, not the bot. Asking
+    // "¿Hablo con Ivan?" there, twice, was noise (#215).
+    if (!sel && personRecently) {
+      const followed = await this.personFollowUp(input, ctx, key);
+      if (followed) return followed;
     }
     // A client's own number: "¿hablo con Juan?" instead of "¿ya sos cliente?"
     // and the DNI after it.
@@ -1669,6 +1730,13 @@ export class FlowService {
         opener,
         await this.officeFollowUp(input.text, ctx, key),
       );
+    }
+    // Insured elsewhere and wants to come over: a quote, whatever the model
+    // reads ("retirar el seguro de la compañía y poner el de ustedes" was
+    // read as a cancellation and asked for a DNI, #295).
+    if (SWITCH_INSURER_RE.test(fold(input.text))) {
+      const result = await this.enterCotizar(input, ctx, key);
+      return result.handoff ? result : this.withOpener(opener, result);
     }
     const intent =
       known !== undefined ? known : await this.readIntent(input, ctx);
@@ -2135,6 +2203,15 @@ export class FlowService {
         ))
     )
       return this.closerReply(key, input.text);
+    // "Es otra moto", "es por otra póliza": not one of theirs, so the office
+    // takes it with the details, instead of the papers of the one they have
+    // (#264 got the documents picker of his own moto).
+    if (typed && OTHER_VEHICLE_TYPED_RE.test(fold(input.text).trim())) {
+      this.setState(key, 'ASESOR_MOTIVO', {
+        otherPoliza: 'Habla de otra póliza o vehículo',
+      });
+      return { messages: [otherPolizaPrompt()] };
+    }
     // A request in the customer's own words is read like a first message:
     // keywords sent "¿mi póliza cubre granizo?" to the papers and "¿por qué
     // aumentó el precio?" to a new quote.
@@ -2377,6 +2454,15 @@ export class FlowService {
         return this.confirmPhoneMatch(state, ctx, key);
       if (input.selectionId === OPT.phoneNo || /^no\b/.test(t))
         return this.declinePhoneMatch(state, ctx, key);
+      // The person of the office is answering this chat right now: what is
+      // typed is for them, not an answer to "¿hablo con…?".
+      if (ctx.answeringPerson) {
+        const followed = await this.personFollowUp(input, ctx, key);
+        if (followed) {
+          this.setState(key, 'ROOT');
+          return followed;
+        }
+      }
       // A request typed instead of the answer ("¿me podrías enviar la
       // cuponera?"): it is what they want once identified, so the question
       // comes back with it remembered. The bot used to drop the question and
@@ -2676,13 +2762,28 @@ export class FlowService {
               `Dice que el débito no se realizó en ${notDone.map(polizaMention).join('; ')}: "${clip(question!)}". Regularizar el pago con el cliente (cupón o transferencia).${sentTransfer}`,
             )
             .catch(() => undefined);
+        // "Se me cobró dos veces este mes": the bot cannot see the bank side,
+        // so the office checks it with Triunfo instead of the customer getting
+        // the account status alone (#124).
+        const doubleCharge =
+          !!question && DOUBLE_CHARGE_RE.test(fold(question));
+        if (doubleCharge)
+          await this.api
+            .requestHandoff(
+              ctx.conversationId,
+              `Dice que le cobraron de más o dos veces: "${clip(question)}". Revisar los débitos con Triunfo y responderle.`,
+            )
+            .catch(() => undefined);
         return {
           messages: [
             {
               kind: 'text',
               body:
+                (doubleCharge
+                  ? `Le pasé a la oficina lo del cobro doble para que lo revise con Triunfo y te escriba por este chat (${attentionHoursOf(ctx.attentionHours)}). Mientras tanto, te muestro cómo están tus cuotas:\n\n`
+                  : '') +
                 formatEstadoCuenta(estado, { debitFailed }) +
-                (rejected.length || notDone.length
+                (rejected.length || notDone.length || doubleCharge
                   ? await this.closedNote()
                   : '') +
                 (answer ? `\n\n${answer}` : ''),
