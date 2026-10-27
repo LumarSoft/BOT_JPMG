@@ -142,6 +142,13 @@ const VERSION_FILLER = new Set(
 );
 
 /**
+ * What a reply rules out: "sin GNC", "no tiene GNC", "ni aire". Folded text;
+ * the word after the negation is what the version must not have.
+ */
+const NEGATED_WORD_RE =
+  /\b(?:sin|ni|no(?:\s+(?:tiene|lleva|usa|es|viene|trae))?)\s+(?:el\s+|la\s+|los\s+|las\s+|equipo\s+(?:de\s+)?)?([a-z0-9./]+)/g;
+
+/**
  * The same thing written the way the bot shows it and the way InfoAuto has it:
  * the bot listed "3 puertas L/13" for "GOL TREND 1.6 3 P L/13", and the
  * customer's "1" picked nothing.
@@ -1900,6 +1907,15 @@ export class WebhookService {
     fromClient = true,
   ): QuoteVehicleMemory | undefined {
     if (!memory || memory.candidates.length === 0) return memory;
+    // "Sin GNC" answers the GNC question and says nothing about the version:
+    // "gnc" alone named the only version with GNC, and a FIRE TOP was quoted
+    // and requested as FIRE FULL GNC (#307).
+    if (
+      fromClient &&
+      memory.selected &&
+      gncAnswer(text, previousAssistantText) !== undefined
+    )
+      return memory;
     const normalized = fold(text)
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
@@ -1976,10 +1992,19 @@ export class WebhookService {
     text: string,
     strict: boolean,
   ): QuoteVehicleCandidate[] {
-    const wanted = versionWords(text).filter((w) => !VERSION_FILLER.has(w));
+    const negated = new Set(
+      [...fold(text).matchAll(NEGATED_WORD_RE)].flatMap((m) =>
+        versionWords(m[1]),
+      ),
+    );
+    const wanted = versionWords(text).filter(
+      (w) => !VERSION_FILLER.has(w) && !negated.has(w),
+    );
     if (wanted.length === 0) return strict ? [] : candidates;
     return candidates.filter((candidate) => {
       const words = new Set(versionWords(candidate.description));
+      // "la GL sin GNC" is the GL, not the GL GNC.
+      if ([...negated].some((w) => words.has(w))) return false;
       return wanted.every(
         (w) =>
           words.has(w) ||

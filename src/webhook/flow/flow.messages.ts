@@ -904,6 +904,14 @@ export function otherPolizaPrompt(): OutgoingMessage {
   };
 }
 
+/** A plate at a picker that is none of the client's: the office takes it. */
+export function plateNotListedPrompt(plate: string): OutgoingMessage {
+  return {
+    kind: 'text',
+    body: `La patente *${plate}* no figura entre tus pólizas. Contame a nombre de quién está y qué necesitás, y se lo paso a la oficina.`,
+  };
+}
+
 /** "¿Hablo con Juan?" — the number writing is that client's phone. */
 export function phoneQuestion(
   name: string,

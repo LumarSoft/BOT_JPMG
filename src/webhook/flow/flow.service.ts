@@ -50,6 +50,7 @@ import {
   INSTALLMENT_MISSING_RE,
   OTHER_POLIZA_ID,
   otherPolizaPrompt,
+  plateNotListedPrompt,
   pagosMenu,
   paymentAnswer,
   phoneQuestion,
@@ -358,6 +359,20 @@ function withoutPhoneQuestion(
 
 const clip = (text: string, max = 300) =>
   text.length > max ? `${text.slice(0, max)}…` : text;
+
+/** The tow truck, however it is asked. Folded text. */
+const GRUA_RE = /\bgrua\b|\bauxilio\b|\bremolque\b/;
+
+/** The question is about a moto. Folded text. */
+const MOTO_WORD_RE = /\bmotos?\b|\bmotocicleta|\bscooter|\bciclomotor/;
+
+/** A question typed where a photo was expected ("¿Qué aseguradora es?"). Folded, trimmed text. */
+const PHOTO_STEP_QUESTION_RE =
+  /\?|^(?:que|cual|cuales|cuanto|cuanta|cuantos|cuantas|como|donde|cuando|por que|porque|quien|quienes|hay|tiene|tienen|es|son|puedo|puede|pueden|se puede|me cubre|incluye|cubre|sirve|sirven|vale|hace falta|necesito saber)\b/;
+
+/** Plates as typed and as the cartera has them ("AB 123 CD", "ab123cd"). */
+const samePlate = (listed: string | null | undefined, typed: string) =>
+  !!listed && listed.replace(/[ -]/g, '').toUpperCase() === typed.toUpperCase();
 
 /** A new incident being reported, as people say it. Folded text. */
 const NEW_INCIDENT_RE =
@@ -1028,7 +1043,14 @@ export class FlowService {
       !OPENING_COMMAND_RE.test(fold(input.text).trim()) &&
       !/\bgrua\b|\bauxilio\b|\bremolque\b/.test(fold(input.text))
     ) {
-      await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+      // With what they wrote: the alert said only "Pedido de asesor ·" and
+      // the office had to open the chat to see the request (#143).
+      await this.api
+        .requestHandoff(
+          ctx.conversationId,
+          `Le sigue escribiendo a la oficina: "${clip(input.text.trim())}"`,
+        )
+        .catch(() => undefined);
       return { messages: [] };
     }
     this.personRelayed.delete(key);
@@ -1853,6 +1875,12 @@ export class FlowService {
         return result.handoff ? result : this.withOpener(opener, result);
       }
       case 'cobertura':
+        // "¿Tienen grúa las motos con cobertura B?" needs no DNI: a producer
+        // asking for a customer was asked for one (#188).
+        if (GRUA_RE.test(said) && (!ctx.client || MOTO_WORD_RE.test(said)))
+          return this.withOpener(opener, {
+            messages: [{ kind: 'text', body: this.gruaText(ctx, input.text) }],
+          });
         // "¿Tengo cubiertos los cristales?" is answered from the policy, not
         // with the claim checklist (#87 asked four times).
         return this.withOpener(
@@ -1917,7 +1945,7 @@ export class FlowService {
         );
       case 'grua':
         return this.withOpener(opener, {
-          messages: [{ kind: 'text', body: this.gruaText(ctx) }],
+          messages: [{ kind: 'text', body: this.gruaText(ctx, input.text) }],
         });
       case 'asesor':
         return this.withOpener(
@@ -2240,10 +2268,15 @@ export class FlowService {
         this.load(key)?.state.data.officeGreeted === true
         ? this.officeFollowUp(input.text, ctx, key)
         : null;
-    // Without a reason on purpose: the API then keeps a single pending matter
-    // for the chat however many messages follow. With the text as reason, a
-    // customer writing four lines to Mili opened four "Pedido de asesor".
-    await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
+    // With what they wrote: without it the alert read only "Pedido de asesor ·"
+    // and the office had to open the chat (#143). Four lines to Mili no longer
+    // open four matters: the API joins them into the open one for a day.
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Le sigue escribiendo a la oficina: "${clip(input.text.trim())}"`,
+      )
+      .catch(() => undefined);
     this.personRelayed.add(key);
     const closed = await this.closedNote(ctx);
     if (!closed) return { messages: [] };
@@ -2318,6 +2351,12 @@ export class FlowService {
       });
       return { messages: [otherPolizaPrompt()] };
     }
+    // A plate on its own: one of theirs, or someone else's for the office
+    // (the moto of another holder got "no te entendí", #143).
+    if (typed && ctx.client) {
+      const plated = await this.plateFromClientMenu(input, ctx, key);
+      if (plated) return plated;
+    }
     // A request in the customer's own words is read like a first message:
     // keywords sent "¿mi póliza cubre granizo?" to the papers and "¿por qué
     // aumentó el precio?" to a new quote.
@@ -2374,7 +2413,10 @@ export class FlowService {
         );
       case OPT.grua:
         return {
-          messages: [{ kind: 'text', body: this.gruaText(ctx) }, clientMenu()],
+          messages: [
+            { kind: 'text', body: this.gruaText(ctx, input.text) },
+            clientMenu(),
+          ],
         };
       case OPT.cobertura:
         return this.guard(ctx, key, 'cobertura', {}, input.text);
@@ -4309,12 +4351,34 @@ export class FlowService {
   }
 
   /**
+   * A question typed where a photo was expected ("¿Qué aseguradora es?") is
+   * answered, and the photo asked again under the answer: it used to get
+   * "Mandame la foto" (#307). The step stays as it is.
+   */
+  private questionInPhotoStep(
+    input: UserInput,
+    key: string,
+    again: OutgoingMessage = this.retryPhoto().messages[0],
+  ): FlowResult | null {
+    if (
+      input.selectionId ||
+      !PHOTO_STEP_QUESTION_RE.test(fold(input.text).trim())
+    )
+      return null;
+    const current = this.load(key)?.state;
+    if (current)
+      this.setState(key, current.step, current.data, current.audience);
+    return { messages: [], handoff: 'faq', onScreen: again };
+  }
+
+  /**
    * Front and back of each card: the office asked again for the back of the
    * tarjeta verde and the licence on every claim (#92, #196, #227). A photo
    * of the front asks for its back; "no la tengo" skips the whole card.
    */
   private handleSinFotoTarjeta(input: UserInput, key: string): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     if (input.selectionId === PHOTO_RECEIVED)
       return this.askPhoto(
         key,
@@ -4325,7 +4389,8 @@ export class FlowService {
   }
 
   private handleSinFotoTarjetaDorso(input: UserInput, key: string): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     return this.askCarnet(key);
   }
 
@@ -4338,7 +4403,8 @@ export class FlowService {
   }
 
   private handleSinFotoCarnet(input: UserInput, key: string): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     if (input.selectionId === PHOTO_RECEIVED)
       return this.askPhoto(
         key,
@@ -4349,7 +4415,8 @@ export class FlowService {
   }
 
   private handleSinFotoCarnetDorso(input: UserInput, key: string): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     return this.afterOwnPhotos(key);
   }
 
@@ -4408,7 +4475,8 @@ export class FlowService {
   }
 
   private handleSinTerceroTarjeta(input: UserInput, key: string): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     if (input.selectionId === PHOTO_RECEIVED)
       return this.askPhoto(
         key,
@@ -4422,7 +4490,8 @@ export class FlowService {
     input: UserInput,
     key: string,
   ): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     return this.askTerceroCarnet(key);
   }
 
@@ -4435,7 +4504,8 @@ export class FlowService {
   }
 
   private handleSinTerceroCarnet(input: UserInput, key: string): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     if (input.selectionId === PHOTO_RECEIVED)
       return this.askPhoto(
         key,
@@ -4449,7 +4519,8 @@ export class FlowService {
     input: UserInput,
     key: string,
   ): FlowResult {
-    if (!this.photoAdvances(input)) return this.retryPhoto();
+    if (!this.photoAdvances(input))
+      return this.questionInPhotoStep(input, key) ?? this.retryPhoto();
     return this.askDanio(key);
   }
 
@@ -4490,14 +4561,11 @@ export class FlowService {
     if (!input.selectionId && this.isPhotoSkip(input.text)) {
       return this.finishSiniestroPhotos(key, ctx);
     }
-    return {
-      messages: [
-        {
-          kind: 'text',
-          body: 'Mandame las *fotos* de lo que pasó (los daños, el lugar), o escribí *listo* cuando termines.',
-        },
-      ],
+    const again: OutgoingMessage = {
+      kind: 'text',
+      body: 'Mandame las *fotos* de lo que pasó (los daños, el lugar), o escribí *listo* cuando termines.',
     };
+    return this.questionInPhotoStep(input, key, again) ?? { messages: [again] };
   }
 
   // ─── Cotización: documentos para contratar ────────────────
@@ -4511,7 +4579,10 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     if (!this.photoAdvances(input)) {
-      return this.retry(key, state, this.retryPhoto().messages);
+      return (
+        this.questionInPhotoStep(input, key) ??
+        this.retry(key, state, this.retryPhoto().messages)
+      );
     }
     return this.nextTakeOutStep(state.step, state.data, ctx, key);
   }
@@ -4553,12 +4624,14 @@ export class FlowService {
     }
     if (!input.selectionId && this.isPhotoSkip(input.text))
       return this.nextTakeOutStep(state.step, state.data, ctx, key);
-    return this.retry(key, state, [
-      {
-        kind: 'text',
-        body: 'Mandame las *fotos del vehículo* 📷 y cuando termines escribí *listo*. Si no podés ahora, escribí *no tengo*.',
-      },
-    ]);
+    const again: OutgoingMessage = {
+      kind: 'text',
+      body: 'Mandame las *fotos del vehículo* 📷 y cuando termines escribí *listo*. Si no podés ahora, escribí *no tengo*.',
+    };
+    return (
+      this.questionInPhotoStep(input, key, again) ??
+      this.retry(key, state, [again])
+    );
   }
 
   /** Asks for what comes after `current` for this vehicle, or closes the take-out. */
@@ -5903,12 +5976,71 @@ export class FlowService {
 
   /** "Otra póliza" in a picker: the customer describes it and the office takes it. */
   private otherPoliza(input: UserInput, key: string): FlowResult | null {
-    if (input.selectionId !== OTHER_POLIZA_ID) return null;
+    const plate =
+      input.selectionId === OTHER_POLIZA_ID
+        ? null
+        : this.plateOutsideList(input, key);
+    if (input.selectionId !== OTHER_POLIZA_ID && !plate) return null;
     // What the customer was asking for goes with the description, or the
     // office reads "la del seguro de vida" without knowing it is a cancellation.
     const asking = OTHER_POLIZA_REQUEST[this.load(key)?.state.step ?? 'ROOT'];
-    this.setState(key, 'ASESOR_MOTIVO', asking ? { otherPoliza: asking } : {});
-    return { messages: [otherPolizaPrompt()] };
+    const about = plate
+      ? `${asking ?? 'Pregunta por otra póliza'}, patente ${plate}`
+      : asking;
+    this.setState(key, 'ASESOR_MOTIVO', about ? { otherPoliza: about } : {});
+    return {
+      messages: [plate ? plateNotListedPrompt(plate) : otherPolizaPrompt()],
+    };
+  }
+
+  /**
+   * A plate typed at a policy picker that is none of the listed ones: the
+   * moto of another holder got "Elegí la póliza" twice and waited half an
+   * hour for the office (#143). It is "otra póliza", plate already said.
+   */
+  private plateOutsideList(input: UserInput, key: string): string | null {
+    if (input.selectionId) return null;
+    const read = bareIdentification(input.text);
+    if (!read || !('plate' in read)) return null;
+    const polizas =
+      (this.load(key)?.state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    return polizas.some((p) => samePlate(p.vehicle?.licensePlate, read.plate))
+      ? null
+      : read.plate;
+  }
+
+  /**
+   * A plate on its own from an identified client: theirs, so the menu is for
+   * it, or someone else's, which the office takes with what they need.
+   */
+  private async plateFromClientMenu(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    const read = bareIdentification(input.text);
+    if (!read || !('plate' in read)) return null;
+    const polizas = await this.api
+      .getPolizas(ctx.conversationId)
+      .catch(() => null);
+    if (!polizas) return null;
+    const own = polizas.find((p) =>
+      samePlate(p.vehicle?.licensePlate, read.plate),
+    );
+    if (own)
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: `Tengo tu ${polizaMention(own)}. ¿Qué necesitás?`,
+          },
+          clientMenu(),
+        ],
+      };
+    this.setState(key, 'ASESOR_MOTIVO', {
+      otherPoliza: `Pregunta por la patente ${read.plate}`,
+    });
+    return { messages: [plateNotListedPrompt(read.plate)] };
   }
 
   /** "Cambiar forma de pago": the office asks for the card or CBU itself. */
@@ -6248,7 +6380,11 @@ export class FlowService {
     };
   }
 
-  private gruaText(ctx: FlowContext): string {
+  private gruaText(ctx: FlowContext, said = ''): string {
+    // The office's rule (27/10): no moto policy includes a tow service, so
+    // the answer is that, not the number (#188 was asked for a DNI instead).
+    if (MOTO_WORD_RE.test(fold(said)))
+      return '🆘 *Auxilio / Grúa*\nLas pólizas de moto no incluyen grúa ni auxilio mecánico. Si tuviste un siniestro, hacé la denuncia por acá (*Siniestros*) y la oficina te orienta.';
     const { towTruckPhone } = this.org(ctx);
     return towTruckPhone
       ? `🆘 *Auxilio / Grúa*\nLlamá directo al ${towTruckPhone}, disponible las 24 hs.`

@@ -1297,6 +1297,35 @@ describe('WebhookService', () => {
         expect(select('la 7', short)).toBeUndefined();
       });
 
+      it('keeps the chosen version when the client answers the GNC question (#307)', () => {
+        const pick = (
+          service as unknown as { selectRememberedVehicle: Select }
+        ).selectRememberedVehicle.bind(service) as Select;
+        const palio = {
+          vehicleType: 'auto',
+          candidates: [
+            { codia: 170408, description: 'PALIO 1.3 3 P FIRE TOP' },
+            { codia: 170399, description: 'PALIO 1.3 3 P FIRE FULL GNC' },
+          ],
+          selected: { codia: 170408, description: 'PALIO 1.3 3 P FIRE TOP' },
+        };
+        const asked = '¿Tu auto tiene GNC?';
+        for (const text of [
+          'Sin gnc',
+          'No tiene GNC',
+          'no',
+          'Sí, tiene GNC',
+          'con gnc',
+        ])
+          expect(pick(palio, text, asked)?.selected?.codia).toBe(170408);
+      });
+
+      it('"la GL sin GNC" is the GL, and "sin gnc" alone picks nothing', () => {
+        expect(select('la GL sin GNC', listed)).toBe(120248);
+        expect(select('sin gnc', listed)).toBeUndefined();
+        expect(select('no tiene gnc', listed)).toBeUndefined();
+      });
+
       it('reads a pick when the bot wrote "puertas" for InfoAuto\'s "P"', () => {
         // The 14/10 suite: "1" against "1. 3 puertas L/13" picked nothing and
         // the quote stopped with "hay varias versiones posibles".

@@ -98,7 +98,13 @@ export function optionIds(message: OutgoingMessage | undefined): string[] {
 export function describeOnScreen(
   message: OutgoingMessage | undefined,
 ): { question: string; options: { id: string; title: string }[] } | undefined {
+  if (!message) return undefined;
   const options = optionsOf(message);
-  if (!message || options.length === 0) return undefined;
+  // A plain request on screen (the photo a step is waiting for) has no
+  // options to pick, but the model still needs to know what was asked.
+  if (options.length === 0)
+    return message.kind === 'text'
+      ? { question: message.body, options: [] }
+      : undefined;
   return { question: message.body, options };
 }

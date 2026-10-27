@@ -148,6 +148,7 @@ Los códigos postales argentinos tienen 4 dígitos y se parecen a un año (ej: 2
    - Si figura en "incluye" de una cobertura, esa lo cubre (con el límite que diga, ej.: "hasta $1.000.000").
    - Si preguntan por la franquicia, respondé con el campo "franquicia" de cada cobertura; si viene vacío, esa cobertura no tiene franquicia.
    - Si figura en "noIncluye", decí claramente que esa no lo cubre y, si otra cobertura de la misma cotización sí lo incluye, nombrala con su código y su precio.
+   - Grúa o auxilio mecánico en una *moto*: ninguna cobertura de moto lo incluye; decilo directamente, sin derivarlo a un asesor.
    - Si no figura en ninguna de las dos listas (ej.: grúa, auto de reemplazo), no lo deduzcas del nombre (que se llame "Todo Total" no dice nada de cristales): decí que ese detalle lo confirma un asesor. No vuelvas a llamar quote_vehicle para buscarlo: la cotización no trae más detalle que esas listas.
    - Para comparar dos coberturas, decí en una o dos líneas qué tiene una que no tenga la otra.
    - El cliente no usa los términos de la póliza. Traducí así: parabrisas, luneta, ventanillas o vidrios = *cristales*; choque o accidente que deja el auto irrecuperable = *destrucción total por accidente*; choque con arreglo (abolladura, paragolpes, raspón) = *daños parciales por accidente*; que se roben el auto = *robo total*; que se roben partes (ruedas, espejos, estéreo) = *robo parcial*; piedra de granizo = *granizo*.
@@ -195,6 +196,7 @@ ${catalogSection(options.catalog)}
 ## QUÉ HACÉS
 - Si es un saludo o charla (ej: "hola", "buenas", "cómo andás"): respondé cálido y breve, y ofrecé ayuda ("¿en qué te doy una mano?").
 - Si es una consulta general sobre seguros o la productora: respondé claro y simple.
+- Grúa o auxilio mecánico: las pólizas de *moto* no lo incluyen, decilo directamente. Para un auto, la opción *Auxilio / Grúa* del menú da el número de asistencia.
 - Si te preguntan *qué cubre* o *qué incluye* un seguro (auto, moto, bici, bolso, comercio, hogar, personas o praxis): explicalo con la info de "COBERTURAS QUE OFRECEMOS", breve y claro. *Nunca des precios acá*: para un valor, ofrecé cotizarlo con la opción *Cotización* (auto/moto al instante; el resto lo arma un asesor) y terminá con ${MENU_MARKER}.
 - Las opciones del menú son EXACTAMENTE: ${MENU_OPTIONS}. No nombres ninguna otra (no existen "Modificaciones", "Asistencia", "Asesoría" ni "Documentos"). Nunca le pidas que escriba "menú".
 - Si te pregunta *qué opción* usar o *cómo funciona* algo, sin pedirlo todavía, explicalo en una línea y terminá con ${MENU_MARKER}: el sistema le muestra el menú debajo de tu mensaje.
@@ -248,7 +250,13 @@ function transferFact(org: OrgProfile): string {
  * model can pick a row for them, and the list is shown again under its answer.
  */
 function onScreenSection(onScreen: FocusedPromptOptions['onScreen']): string {
-  if (!onScreen?.options.length) return '';
+  if (!onScreen) return '';
+  // A step waiting for something (a photo) and the person asked instead.
+  if (!onScreen.options.length)
+    return `
+
+## EN PANTALLA
+El sistema le acaba de pedir "${onScreen.question}" y la persona escribió una pregunta en vez de mandarlo. Respondela en una o dos líneas y nada más: el sistema le vuelve a pedir lo suyo debajo de tu respuesta. No uses ${MENU_MARKER} ni le digas que mande la foto.`;
   const rows = onScreen.options.map((o) => `- ${o.id}: ${o.title}`).join('\n');
   return `
 

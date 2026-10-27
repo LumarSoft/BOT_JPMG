@@ -4288,8 +4288,11 @@ describe('FlowService', () => {
 
       expect(res.messages).toEqual([]);
       expect(res.handoff).toBeUndefined();
-      // No reason: the API keeps one pending matter however many follow.
-      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+      // With what they wrote: the office reads it in the alert (#143).
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Ya te las mandé por mail'),
+      );
       // A reply to the office is not read by the model: it goes on with her.
       expect(intents.interpret).not.toHaveBeenCalled();
     });
@@ -4318,7 +4321,10 @@ describe('FlowService', () => {
       );
 
       expect(res.messages).toEqual([]);
-      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Buenos días como estas?'),
+      );
       expect(stored?.step).not.toBe('IDENTIFY');
     });
 
@@ -4335,7 +4341,10 @@ describe('FlowService', () => {
 
       expect(res.messages).toEqual([]);
       expect(JSON.stringify(res.messages)).not.toContain('Antes confirmame');
-      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('sisi la idea es transferir'),
+      );
     });
 
     it('keeps the rest of the session for that person once it said so out of hours (#215)', async () => {
@@ -4365,7 +4374,10 @@ describe('FlowService', () => {
       );
 
       expect(next.messages).toEqual([]);
-      expect(api.requestHandoff).toHaveBeenLastCalledWith(1);
+      expect(api.requestHandoff).toHaveBeenLastCalledWith(
+        1,
+        expect.stringContaining('sisi la idea es transferir'),
+      );
       expect(intents.interpret).not.toHaveBeenCalled();
     });
 
@@ -4457,7 +4469,10 @@ describe('FlowService', () => {
 
       expect(stored?.step).not.toBe('IDENTIFY');
       expect(res.messages).toEqual([]);
-      expect(api.requestHandoff).toHaveBeenCalledWith(1);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Mandame el cupón de pago'),
+      );
     });
 
     it('still gives the tow truck number right away', async () => {
@@ -5108,6 +5123,202 @@ describe('FlowService', () => {
       expect(api.requestPolicyCancellation).toHaveBeenCalled();
       expect(body(baja)).toContain('fuera de horario');
       expect((stored as FlowState | null)?.step).toBe('CLIENT_MENU');
+    });
+  });
+
+  describe('arreglos de la revisión de chats del 27/10', () => {
+    const withModel: FlowContext = { ...leadCtx, phoneNumberId: 'P1' };
+    const client = {
+      id: 1,
+      firstName: 'GISELA',
+      lastName: 'PEREZ',
+      dni: '30123456',
+      email: '',
+      phone: null,
+      city: null,
+    } as unknown as FlowContext['client'];
+    const asClient: FlowContext = { ...withModel, client };
+    const text = (res: { messages: unknown[] }) => JSON.stringify(res.messages);
+    const dosPolizas = () =>
+      api.getPolizas.mockResolvedValue([
+        {
+          id: 833,
+          certificateNumber: '1741715',
+          riskType: 'auto',
+          vehicle: { licensePlate: 'ABC123', brand: 'FORD', model: 'RANGER' },
+        },
+        {
+          id: 900,
+          certificateNumber: '1741999',
+          riskType: 'moto',
+          vehicle: { licensePlate: 'A123BCD', brand: 'HONDA', model: 'WAVE' },
+        },
+      ]);
+
+    describe('una patente que no es de sus pólizas (#143)', () => {
+      it('en la lista de la baja va a la oficina con lo que pide', async () => {
+        dosPolizas();
+        intents.interpret.mockResolvedValue('baja');
+        await send({ text: 'hola' }, asClient);
+        await send(
+          { text: 'Vendí esa moto necesito dar de baja el seguro !!' },
+          asClient,
+        );
+        expect(stored?.step).toBe('BAJA_POLIZA');
+
+        const res = await send({ text: 'A300dpy' }, asClient);
+
+        expect(stored?.step).toBe('ASESOR_MOTIVO');
+        expect(text(res)).toContain('A300DPY');
+        expect(text(res)).not.toContain('Elegí la póliza');
+
+        await send(
+          { text: 'Es una Honda Wave a nombre de Pablo Acosta, la vendí' },
+          asClient,
+        );
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('A300DPY'),
+        );
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Honda Wave'),
+        );
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('baja'),
+        );
+      });
+
+      it('en la lista de la baja, una patente suya elige esa póliza', async () => {
+        dosPolizas();
+        intents.interpret.mockResolvedValue('baja');
+        await send({ text: 'hola' }, asClient);
+        await send({ text: 'quiero dar de baja una póliza' }, asClient);
+        expect(stored?.step).toBe('BAJA_POLIZA');
+
+        await send({ text: 'a123bcd' }, asClient);
+
+        expect(stored?.step).toBe('BAJA_CONFIRM');
+        expect(stored?.data.polizaId).toBe(900);
+      });
+
+      it('sola en el menú, se la pasa a la oficina con lo que escribe después', async () => {
+        dosPolizas();
+        await send({ text: 'hola' }, asClient);
+
+        const res = await send({ text: 'A300dpy' }, asClient);
+
+        expect(stored?.step).toBe('ASESOR_MOTIVO');
+        expect(text(res)).toContain('A300DPY');
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+
+        await send(
+          { text: 'Vendí esa moto necesito dar de baja el seguro !!' },
+          asClient,
+        );
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('A300DPY'),
+        );
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('dar de baja'),
+        );
+      });
+
+      it('sola en el menú, una patente suya no se pasa a la oficina', async () => {
+        dosPolizas();
+        await send({ text: 'hola' }, asClient);
+
+        const res = await send({ text: 'ABC 123' }, asClient);
+
+        expect(stored?.step).toBe('CLIENT_MENU');
+        expect(text(res)).toContain('RANGER');
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('una pregunta en el paso de fotos (#307)', () => {
+      it('se contesta y se vuelve a pedir la foto, sin perder el paso', async () => {
+        stored = takeOutDocsState(
+          { step: 'LLM_COTIZACION', data: {}, audience: 'lead' },
+          42,
+          { zeroKm: false },
+        );
+
+        const res = await send({ text: 'Que aseguradora es?' });
+
+        expect(res.handoff).toBe('faq');
+        expect(JSON.stringify(res.onScreen)).toContain('Mandame la *foto*');
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+        expect(stored?.data.leadId).toBe(42);
+
+        const plain = await send({ text: 'ahí va' });
+        expect(plain.handoff).toBeUndefined();
+        expect(text(plain)).toContain('Mandame la *foto*');
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      });
+
+      it('también en las fotos del vehículo y en las del siniestro', async () => {
+        stored = {
+          step: 'COT_DOC_FOTOS_VEHICULO',
+          data: { leadId: 42, zeroKm: false },
+          audience: 'lead',
+        };
+        const vehicle = await send({ text: '¿sirven fotos del celular?' });
+        expect(vehicle.handoff).toBe('faq');
+        expect(JSON.stringify(vehicle.onScreen)).toContain(
+          'fotos del vehículo',
+        );
+        expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+
+        stored = { step: 'SINIESTRO_FOTO_DANIO', data: { siniestroId: 99 } };
+        const claim = await send({ text: 'cuántas fotos hacen falta?' });
+        expect(claim.handoff).toBe('faq');
+        expect(JSON.stringify(claim.onScreen)).toContain('fotos');
+        expect(stored?.step).toBe('SINIESTRO_FOTO_DANIO');
+      });
+    });
+
+    describe('grúa de las motos (#188)', () => {
+      it('"¿tienen grúa las motos?" se contesta sin pedir el DNI', async () => {
+        intents.interpret.mockResolvedValue('cobertura');
+
+        const res = await send(
+          {
+            text: 'Buen día! Recordás si tienen grúa las motos con cobertura B',
+          },
+          withModel,
+        );
+
+        expect(stored?.step).not.toBe('IDENTIFY');
+        expect(text(res)).toContain('no incluyen grúa');
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+      });
+
+      it('un cliente que pregunta por la grúa de su moto también', async () => {
+        await send({ text: 'hola' }, asClient);
+        intents.interpret.mockResolvedValue('cobertura');
+
+        const res = await send({ text: 'mi moto tiene grúa?' }, asClient);
+
+        expect(text(res)).toContain('no incluyen grúa');
+        expect(text(res)).not.toContain('0800');
+      });
+
+      it('para un auto sigue dando el número', async () => {
+        await send({ text: 'hola' }, asClient);
+        intents.interpret.mockResolvedValue('grua');
+
+        const res = await send(
+          { text: 'necesito la grúa para el auto' },
+          asClient,
+        );
+
+        expect(text(res)).toContain('Auxilio / Grúa');
+        expect(text(res)).not.toContain('no incluyen grúa');
+      });
     });
   });
 });
