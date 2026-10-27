@@ -10,6 +10,7 @@ import {
   PHOTO_RECEIVED,
 } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
+import type { OrgProfile } from '../org-profile';
 import { OPT } from './flow.messages';
 import { IdentificationInterpreter } from './identification-interpreter.service';
 import { IntentInterpreter } from './intent-interpreter.service';
@@ -159,6 +160,88 @@ describe('FlowService', () => {
       ],
     }).compile();
     flow = module.get(FlowService);
+  });
+
+  describe('another organization', () => {
+    const norte: OrgProfile = {
+      orgName: 'Seguros Norte',
+      orgShortName: null,
+      orgLegalName: null,
+      towTruckPhone: '0800-111-2222',
+      claimsPhone: '0810-666-0302',
+      cashPaymentPlaces: 'Pago Fácil o Cobro Express',
+      transfer: null,
+    };
+    const norteCtx: FlowContext = {
+      ...leadCtx,
+      botName: null,
+      org: norte,
+      phoneNumberId: 'PN2',
+    };
+    const text = (res: { messages: unknown[] }) => JSON.stringify(res.messages);
+
+    it('greets with its own name and nothing of JPMG', async () => {
+      const res = await send(
+        { text: 'hola' },
+        { ...norteCtx, newSession: true },
+      );
+
+      expect(text(res)).toContain('Seguros Norte');
+      expect(text(res)).not.toMatch(/Pellegrini|JPMG|Nico/);
+    });
+
+    it('gives its own grúa number, not the one in the settings', async () => {
+      intents.interpret.mockResolvedValue('grua');
+
+      const res = await send({ text: 'Necesito una grúa urgente' }, norteCtx);
+
+      expect(text(res)).toContain('0800-111-2222');
+      expect(text(res)).not.toContain('0800-TOW');
+      expect(intents.interpret).toHaveBeenCalledWith(
+        expect.objectContaining({ orgName: 'Seguros Norte' }),
+      );
+    });
+
+    it('says the grúa number is being confirmed when it has none', async () => {
+      intents.interpret.mockResolvedValue('grua');
+
+      const res = await send(
+        { text: 'Necesito una grúa urgente' },
+        { ...norteCtx, org: { ...norte, towTruckPhone: null } },
+      );
+
+      expect(text(res)).toContain(
+        'Estamos confirmando el número de asistencia',
+      );
+    });
+
+    it('answers with its own hours', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' }, norteCtx);
+      await send({ text: '¿a qué hora abren?' }, norteCtx);
+
+      expect(api.getHours).toHaveBeenCalledWith('PN2');
+    });
+
+    it('refuses off-topic messages as itself', async () => {
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' }, norteCtx);
+      const res = await send(
+        { text: '¿cuál es la capital de Francia?' },
+        norteCtx,
+      );
+
+      expect(text(res)).toContain('soy el asistente de *Seguros Norte*');
+    });
+
+    it('keeps a chat without a profile on the built-in values', async () => {
+      intents.interpret.mockResolvedValue('grua');
+
+      const res = await send(
+        { text: 'Necesito una grúa urgente' },
+        { ...leadCtx, phoneNumberId: 'PN1' },
+      );
+
+      expect(text(res)).toContain('0800-TOW');
+    });
   });
 
   it.each(['Ya pagué, adjunto un comprobante', 'No se acreditó mi pago'])(

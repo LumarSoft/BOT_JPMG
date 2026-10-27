@@ -239,6 +239,59 @@ describe('WebhookService', () => {
     });
   });
 
+  it("speaks for the number's organization: its profile reaches the flow and the model", async () => {
+    const create = stubOpenAi();
+    api.getContext.mockResolvedValue({
+      systemPrompt: 'x',
+      llmEnabled: true,
+      botName: 'Sofi',
+      profile: {
+        orgName: 'Seguros Norte',
+        orgShortName: null,
+        orgLegalName: null,
+        towTruckPhone: '0800-111-2222',
+        claimsPhone: null,
+        cashPaymentPlaces: null,
+        transfer: null,
+      },
+    });
+    api.getConversation.mockResolvedValue({
+      conversationId: 1,
+      client: null,
+      newSession: false,
+      botPaused: false,
+      flowState: null,
+      messages: [],
+    });
+    api.saveMessage.mockResolvedValue({
+      id: 5,
+      createdAt: '2026-10-05T10:06:00.000Z',
+    });
+    flow.handle.mockResolvedValueOnce({
+      messages: [],
+      handoff: 'faq',
+      state: { step: 'LLM_FAQ', data: {} },
+    });
+
+    await service.handleMessage('5491155556666', '¿qué cubre?', 'P2', 'q-org');
+
+    const [[key, , ctx]] = flow.handle.mock.calls as Array<
+      [string, unknown, { org?: Record<string, unknown> }]
+    >;
+    expect(key).toBe('P2:5491155556666');
+    expect(ctx.org).toMatchObject({
+      orgName: 'Seguros Norte',
+      towTruckPhone: '0800-111-2222',
+      transfer: null,
+    });
+    const [[request]] = create.mock.calls as Array<
+      [{ messages: Array<{ role: string; content: string }> }]
+    >;
+    const system = request.messages[0].content;
+    expect(system).toContain('Sos *Sofi*, el asistente de *Seguros Norte*');
+    expect(system).not.toMatch(/Pellegrini|JPMG|TRUENO/);
+  });
+
   it('passes the stored message time to the flow and limits the quote model to the current quote', async () => {
     const create = stubOpenAi();
     api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
@@ -862,6 +915,7 @@ describe('WebhookService', () => {
             selected?: { codia: number; description: string };
           },
           knownGnc?: boolean,
+          phoneNumberId?: string,
         ) => Promise<string>;
       };
 
@@ -876,15 +930,21 @@ describe('WebhookService', () => {
         9,
         { ...memory, selected: memory.candidates[1] },
         false,
+        'P2',
       );
 
-      expect(api.quoteVehicle).toHaveBeenCalledWith('auto', {
-        brand: '12',
-        model: '120632',
-        manufactureYear: 2024,
-        postalCode: 2000,
-        hasGnc: false,
-      });
+      // Quoted for the organization of the number the chat came through.
+      expect(api.quoteVehicle).toHaveBeenCalledWith(
+        'auto',
+        {
+          brand: '12',
+          model: '120632',
+          manufactureYear: 2024,
+          postalCode: 2000,
+          hasGnc: false,
+        },
+        'P2',
+      );
     });
 
     it('alerts the office once when Triunfo does not answer and keeps attending', async () => {
@@ -1185,6 +1245,7 @@ describe('WebhookService', () => {
         expect(api.quoteVehicle).toHaveBeenCalledWith(
           'auto',
           expect.objectContaining({ zeroKm: true, hasGnc: true }),
+          undefined,
         );
       });
 

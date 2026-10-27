@@ -1,5 +1,6 @@
-import { attentionHoursOf } from './business';
+import { attentionHoursOf, TRIUNFO_TRANSFER } from './business';
 import { displayName } from '../flow/flow.messages';
+import { orgIdentity, type OrgProfile } from '../org-profile';
 
 /**
  * What the model writes at the end of an answer that points to a menu option:
@@ -22,6 +23,8 @@ export interface FocusedPromptOptions {
   /** Bot display name configured per producer (Producer.botName). Falls back to a
    * generic identity when empty. */
   botName?: string | null;
+  /** The organization the bot answers for: its name, claims line and payment data. */
+  org: OrgProfile;
   /** Optional extra persona/tone instructions per producer (Producer.systemPrompt). */
   producerPrompt?: string;
   /** General attention window (Producer.attentionHours); null → app default. */
@@ -59,12 +62,15 @@ function clientContext(
 }
 
 /** Builds the bot's identity line from the configured name, with a generic
- * fallback ("el asistente de JPMG") when no name is set. */
-function buildIdentity(botName?: string | null): string {
+ * fallback ("el asistente de <org>") when no name is set. */
+function buildIdentity(
+  botName: string | null | undefined,
+  org: OrgProfile,
+): string {
   const name = botName?.trim();
   const who = name
-    ? `Sos *${name}*, el asistente de *John Pellegrini Management Group SRL* (JPMG)`
-    : `Sos *el asistente de John Pellegrini Management Group SRL* (JPMG)`;
+    ? `Sos *${name}*, el asistente de ${orgIdentity(org)}`
+    : `Sos *el asistente de ${org.orgLegalName ?? org.orgName}*${org.orgShortName ? ` (${org.orgShortName})` : ''}`;
   return `${who}, una productora de seguros argentina que trabaja con Triunfo Seguros. Hablás como una persona del equipo: cercano, cálido y servicial, no como un robot.`;
 }
 
@@ -106,7 +112,7 @@ function extraPersona(producerPrompt?: string): string {
  */
 export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
   const identity =
-    buildIdentity(options.botName) +
+    buildIdentity(options.botName, options.org) +
     extraPersona(options.producerPrompt) +
     clientContext(options.client) +
     staffContext(options.staffNames, options.staffNotified);
@@ -175,7 +181,7 @@ GNC: esta pregunta existe únicamente para autos. El precio online no incluye el
  */
 export function buildFaqPrompt(options: FocusedPromptOptions): string {
   const identity =
-    buildIdentity(options.botName) +
+    buildIdentity(options.botName, options.org) +
     extraPersona(options.producerPrompt) +
     clientContext(options.client) +
     staffContext(options.staffNames, options.staffNotified);
@@ -198,8 +204,8 @@ ${catalogSection(options.catalog)}
 - Una cuota se paga hasta su vencimiento: esa es la fecha que vale para el cliente. Nunca hables de días de gracia ni de cobertura después del vencimiento.
 - No hay un día fijo de débito: depende de si es tarjeta de crédito, débito o CBU (no des ninguna fecha). Con débito automático y sin rechazo, el cliente no tiene que pagar nada a mano.
 - El monto de un vencimiento puede sumar la cuota y un endoso (un aumento o un adicional) con la misma fecha.
-- Teléfono de Triunfo para denuncias y asistencia: 0810-666-0302 (al entrar se elige la opción).
-- Formas de pago: débito automático con tarjeta de crédito o débito, o con CBU (con tarjeta la cuota sale un 5 % menos que en efectivo); transferencia a la cuenta de Triunfo (alias TRUENO.VUELO.DELTA, Banco Galicia), mandando el comprobante por este chat; en efectivo con el cupón en Rapipago, Pago Fácil o Santa Fe Servicios; o por Mercado Pago con el cupón o desde la app de Triunfo. Sin el cupón, la única forma es la transferencia; el cupón lo manda la oficina en el horario de atención. La transferencia es solo para pólizas vigentes: nunca pidas que pague deuda de una póliza anulada.
+- Teléfono de Triunfo para denuncias y asistencia: ${options.org.claimsPhone} (al entrar se elige la opción).
+- Formas de pago: débito automático con tarjeta de crédito o débito, o con CBU (con tarjeta la cuota sale un 5 % menos que en efectivo); ${transferFact(options.org)}, mandando el comprobante por este chat; en efectivo con el cupón en ${options.org.cashPaymentPlaces}; o por Mercado Pago con el cupón o desde la app de Triunfo. Sin el cupón, la única forma es la transferencia; el cupón lo manda la oficina en el horario de atención. La transferencia es solo para pólizas vigentes: nunca pidas que pague deuda de una póliza anulada.
 - "Sin forma de pago": la póliza quedó sin tarjeta ni cuenta para debitar; hay que pasar una tarjeta o un CBU, o pagar con cupón.
 - Si le robaron el vehículo: puede seguir pagando las cuotas mes a mes, o se le descuentan las pendientes del convenio que paga la compañía.
 - Al renovar, la cuota 1 es la primera de la póliza nueva; la que se cobró antes era la última de la anterior.
@@ -219,6 +225,22 @@ Tenés herramientas que hacen las cosas de verdad. Si la persona *pide* algo (au
 - No le pidas el DNI ni datos personales vos; eso lo maneja el menú. Pero si la persona te los manda, es normal: no le digas que no los comparta ni que es inseguro. Agradecé, preguntale en qué la ayudás y terminá con ${MENU_MARKER}.
 - No afirmes que registraste, enviaste o recibiste algo (un pedido, una foto, un archivo), ni prometas que vos, el sistema o la oficina lo van a hacer ("te envío", "te lo mando", "la oficina te va a enviar", "el sistema te va a pedir"): con texto no pasa nada. Lo único que hace cosas son las herramientas.
 - Nunca le pidas que escriba una frase para pedir algo (ej: "escribime 'quiero la documentación'"): si lo pide, llamá la herramienta.${onScreenSection(options.onScreen)}`;
+}
+
+/**
+ * The transfer, as the FAQ states it: "transferencia a la cuenta de Triunfo
+ * (alias …, Banco …)", or without an account the office passes the data.
+ */
+function transferFact(org: OrgProfile): string {
+  const t = org.transfer;
+  if (!t?.alias && !t?.cbu)
+    return 'transferencia con los datos que le pasa la oficina';
+  const isTriunfo =
+    t.alias === TRIUNFO_TRANSFER.alias || t.cbu === TRIUNFO_TRANSFER.cbu;
+  const account = [t.alias ? `alias ${t.alias}` : `CBU ${t.cbu}`, t.bank]
+    .filter(Boolean)
+    .join(', ');
+  return `transferencia a la cuenta${isTriunfo ? ' de Triunfo' : ''} (${account})`;
 }
 
 /**

@@ -45,7 +45,7 @@ El bot **no tiene base de datos propia**: todo estado (conversaciones, mensajes,
 | `WEBHOOK_VERIFY_TOKEN` | Token arbitrario para la verificación inicial del webhook por Meta |
 | `API_URL` | URL base de `john-api` (default `http://localhost:3001`) |
 | `BOT_SECRET` | Secreto compartido con `john-api` para los endpoints `/bot/*` (mismo valor en `api/.env`) |
-| `TOW_TRUCK_PHONE` | Opcional — número de grúa/auxilio que el bot informa en el menú |
+| `TOW_TRUCK_PHONE` | Opcional — grúa/auxilio solo cuando la API no manda perfil de la organización (el de cada org se carga en Admin → Configuración) |
 
 ## Convenciones TypeScript
 
@@ -56,6 +56,7 @@ El bot **no tiene base de datos propia**: todo estado (conversaciones, mensajes,
 ## Dónde tocar qué
 
 - **Prompt del bot**: `src/webhook/constants/prompts.ts` (`buildSystemPrompt`) — comportamiento, menús y reglas de la IA; el prefijo de identidad viene de `Producer.systemPrompt` en la API
+- **Datos de cada organización** (nombre, grúa, línea de denuncias, cuenta para transferir, dónde pagar en efectivo): `src/webhook/org-profile.ts`. Llegan en `profile` de `GET /bot/context/:phoneNumberId`; sin perfil se usan los valores de siempre de JPMG (`legacyOrgProfile`). Nunca escribir el nombre de una organización en el código: usar `OrgProfile`. Horarios y cotizaciones van por `/bot/numbers/:phoneNumberId/*` para que cada organización responda con los suyos.
 - **Tools de OpenAI**: `src/webhook/constants/tools.ts` — schemas de las funciones que el modelo puede invocar
 - **Cliente de john-api**: `src/api/api.service.ts` + tipos en `src/api/api.types.ts`
 - **Datos de la denuncia de siniestro**: `src/webhook/flow/siniestro-datos.ts` — lista que se le pide al cliente en un solo mensaje, qué es obligatorio, repreguntas y descripción final; el modelo la lee con `siniestro-extractor.service.ts` (si cambian los campos, actualizar también su esquema JSON)

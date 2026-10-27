@@ -144,3 +144,63 @@ describe('ApiService InfoAuto pagination', () => {
     ]);
   });
 });
+
+describe('ApiService per organization', () => {
+  const create = () => {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new ApiService(config);
+    const { http } = service as unknown as {
+      http: { get: jest.Mock; post: jest.Mock };
+    };
+    return { service, http };
+  };
+  const hours = (message: string) => ({
+    formatted: 'x',
+    isOpenNow: true,
+    todayClosure: null,
+    message,
+    closedNote: null,
+  });
+
+  it("asks the hours of the number's organization and keeps them apart", async () => {
+    const { service, http } = create();
+    http.get = jest.fn((path: string) =>
+      Promise.resolve({ data: hours(path) }),
+    );
+
+    expect((await service.getHours('PN1')).message).toBe(
+      '/bot/numbers/PN1/hours',
+    );
+    expect((await service.getHours('PN2')).message).toBe(
+      '/bot/numbers/PN2/hours',
+    );
+    expect((await service.getHours('PN1')).message).toBe(
+      '/bot/numbers/PN1/hours',
+    );
+    expect(http.get).toHaveBeenCalledTimes(2);
+    expect((await service.getHours()).message).toBe('/public/hours');
+  });
+
+  it("quotes on the number's organization", async () => {
+    const { service, http } = create();
+    http.post = jest.fn().mockResolvedValue({ data: { quoteNumber: '1' } });
+    const payload = {
+      brand: '12',
+      model: '120632',
+      manufactureYear: 2024,
+      postalCode: 2000,
+    };
+
+    await service.quoteVehicle('auto', payload, 'PN2');
+    await service.quoteVehicle('moto', payload);
+
+    expect(http.post).toHaveBeenNthCalledWith(
+      1,
+      '/bot/numbers/PN2/cotizador/auto',
+      payload,
+    );
+    expect(http.post).toHaveBeenNthCalledWith(2, '/cotizador/moto', payload);
+  });
+});

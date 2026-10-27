@@ -42,7 +42,7 @@ import {
   DOUBLE_CHARGE_RE,
   debitNotDone,
   transferOffer,
-  type TransferInfo,
+  type PaymentInfo,
   CLAIM_COPY_ID,
   CLAIM_COPY_RE,
   CLAIMS_PHONE_RE,
@@ -92,11 +92,8 @@ import type {
   ProductCatalogItem,
   ProductPlanSummary,
 } from '../../api/api.types';
-import {
-  attentionHoursOf,
-  TRIUNFO_CLAIMS_PHONE,
-  TRIUNFO_TRANSFER,
-} from '../constants/business';
+import { attentionHoursOf } from '../constants/business';
+import { legacyOrgProfile, type OrgProfile } from '../org-profile';
 import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
@@ -951,11 +948,9 @@ export class FlowService {
   /** Chats whose message this turn went to the person of the office. */
   private readonly personRelayed = new Set<string>();
 
-  private readonly towTruckPhone?: string;
-  /** The company's claims line, given when someone asks for it. */
-  private readonly claimsPhone?: string;
-  /** Where a customer can transfer an installment (empty = not offered). */
-  private readonly transfer: TransferInfo;
+  /** What the bot said before organizations had a profile (JPMG + settings):
+   * used only for a chat whose context brought no profile. */
+  private readonly legacyOrg: OrgProfile;
 
   constructor(
     private readonly api: ApiService,
@@ -965,17 +960,18 @@ export class FlowService {
     private readonly intents: IntentInterpreter,
     private readonly coverage: CoverageAnswerer,
   ) {
-    this.towTruckPhone = config.get<string>('TOW_TRUCK_PHONE')?.trim();
-    this.claimsPhone =
-      config.get<string>('CLAIMS_PHONE')?.trim() || TRIUNFO_CLAIMS_PHONE;
-    const setting = (name: string) =>
-      config.get<string>(name)?.trim() || undefined;
-    this.transfer = {
-      alias: setting('TRANSFER_ALIAS') ?? TRIUNFO_TRANSFER.alias,
-      cbu: setting('TRANSFER_CBU') ?? TRIUNFO_TRANSFER.cbu,
-      holder: setting('TRANSFER_HOLDER') ?? TRIUNFO_TRANSFER.holder,
-      bank: setting('TRANSFER_BANK') ?? TRIUNFO_TRANSFER.bank,
-    };
+    this.legacyOrg = legacyOrgProfile(config);
+  }
+
+  /** The organization this chat's number belongs to: its name, lines and payment data. */
+  private org(ctx: FlowContext): OrgProfile {
+    return ctx.org ?? this.legacyOrg;
+  }
+
+  /** How this organization's customers pay besides the automatic debit. */
+  private payment(ctx: FlowContext): PaymentInfo {
+    const org = this.org(ctx);
+    return { transfer: org.transfer, cashPlaces: org.cashPaymentPlaces };
   }
 
   /** Drops a conversation's flow state (used by /reset). */
@@ -1049,7 +1045,7 @@ export class FlowService {
     // the bot, and she was told. Never let it pass as if she were answering.
     if (asksIfTalkingTo(input.text, named))
       return this.prepend(
-        `No, por ahora hablás con *${ctx.botName || 'Nico'}*, el asistente de la oficina 🤖 Ya le avisé a ${named} que le escribiste: te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).`,
+        `No, por ahora hablás con *${ctx.botName || 'el asistente'}*, el asistente de la oficina 🤖 Ya le avisé a ${named} que le escribiste: te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).`,
         { ...result, staffNotified: named },
       );
     return withStaffNotice(result, named);
@@ -1093,7 +1089,7 @@ export class FlowService {
               kind: 'text',
               body:
                 `Le pasé tu consulta a la oficina ✍️ Un asesor te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-                (await this.closedNote()) +
+                (await this.closedNote(ctx)) +
                 '\n\nMientras, si querés, seguimos con la cotización.',
             },
           ],
@@ -1258,7 +1254,7 @@ export class FlowService {
       this.isHoursQuestion(input.text) &&
       !this.isCapturingData(existing.state.step)
     ) {
-      return this.answerHours();
+      return this.answerHours(ctx);
     }
 
     // Hard topic guard (deterministic, NO LLM): if the user clearly asks about
@@ -1369,7 +1365,7 @@ export class FlowService {
     const opener =
       personRecently || this.repliedMomentsAgo(ctx)
         ? null
-        : openingLine(intro, ctx.botName);
+        : openingLine(intro, ctx.botName, this.org(ctx));
     // Only a plate or a DNI ("ZZX987"): who they are, so identify them.
     const typedId = sel ? null : bareIdentification(input.text);
     if (typedId)
@@ -1449,7 +1445,7 @@ export class FlowService {
     return this.rememberGreeting(
       key,
       input.text,
-      { messages: [welcomeMenu(undefined, ctx.botName, intro)] },
+      { messages: [welcomeMenu(undefined, ctx.botName, intro, this.org(ctx))] },
       bareGreeting,
     );
   }
@@ -1522,7 +1518,7 @@ export class FlowService {
       case 'SINIESTRO_TERCERO_CARNET':
         return this.handleSinTerceroCarnet(input, key);
       case 'SINIESTRO_FOTO_DANIO':
-        return this.handleSinFotoDanio(input, key);
+        return this.handleSinFotoDanio(input, key, ctx);
       case 'DOC_POLIZA':
         return this.handleDocPoliza(state, input, ctx, key);
       case 'DOC_TYPE':
@@ -1689,7 +1685,7 @@ export class FlowService {
             kind: 'text',
             body: 'Claro, con gusto te ayudo.',
           },
-          welcomeMenu(undefined, ctx.botName, 'none'),
+          welcomeMenu(undefined, ctx.botName, 'none', this.org(ctx)),
         ],
       };
     }
@@ -1756,6 +1752,7 @@ export class FlowService {
     try {
       const intent = await this.intents.interpret({
         text: input.text,
+        orgName: this.org(ctx).orgName,
         phoneNumberId: ctx.phoneNumberId,
         identifiedClient: !!ctx.client,
         lastHumanReply: reply,
@@ -1839,7 +1836,7 @@ export class FlowService {
         await this.claimCopyRequest(input.text, ctx, key),
       );
     if (CLAIMS_PHONE_RE.test(said))
-      return this.withOpener(opener, this.claimsPhoneReply(key));
+      return this.withOpener(opener, this.claimsPhoneReply(key, ctx));
     switch (intent) {
       case null:
       case 'saludo':
@@ -1920,7 +1917,7 @@ export class FlowService {
         );
       case 'grua':
         return this.withOpener(opener, {
-          messages: [{ kind: 'text', body: this.gruaText() }],
+          messages: [{ kind: 'text', body: this.gruaText(ctx) }],
         });
       case 'asesor':
         return this.withOpener(
@@ -2114,7 +2111,7 @@ export class FlowService {
           kind: 'text',
           body:
             `Listo, ya le avisé a la oficina 🙌 Un asesor te contacta por este chat (${hours}).` +
-            (await this.closedNote()) +
+            (await this.closedNote(ctx)) +
             '\n\nPara que llegue con todo, contame brevemente el motivo.',
         },
       ],
@@ -2213,7 +2210,7 @@ export class FlowService {
       kind: 'text' as const,
       body:
         `Listo, tomé nota ✍️. Un asesor te va a contactar dentro del horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
-        (await this.closedNote()),
+        (await this.closedNote(ctx)),
     };
     // Someone who asked for a person on their first message never said, so
     // no menu follows.
@@ -2248,7 +2245,7 @@ export class FlowService {
     // customer writing four lines to Mili opened four "Pedido de asesor".
     await this.api.requestHandoff(ctx.conversationId).catch(() => undefined);
     this.personRelayed.add(key);
-    const closed = await this.closedNote();
+    const closed = await this.closedNote(ctx);
     if (!closed) return { messages: [] };
     return {
       messages: [
@@ -2377,7 +2374,7 @@ export class FlowService {
         );
       case OPT.grua:
         return {
-          messages: [{ kind: 'text', body: this.gruaText() }, clientMenu()],
+          messages: [{ kind: 'text', body: this.gruaText(ctx) }, clientMenu()],
         };
       case OPT.cobertura:
         return this.guard(ctx, key, 'cobertura', {}, input.text);
@@ -2836,7 +2833,7 @@ export class FlowService {
           question ? { lastQuestion: question } : {},
         );
         const answer = question
-          ? paymentAnswer(estado, question, this.transfer)
+          ? paymentAnswer(estado, question, this.payment(ctx))
           : null;
         // "Un asesor te va a contactar" about a rejected debit: now the office
         // actually hears about it (the API keeps one alert per chat and matter).
@@ -2850,7 +2847,7 @@ export class FlowService {
         // what the office sends with the coupon (John, 20/10).
         const offer =
           rejected.length || notDone.length
-            ? transferOffer([...rejected, ...notDone], this.transfer, true)
+            ? transferOffer([...rejected, ...notDone], this.payment(ctx), true)
             : null;
         const sentTransfer = offer
           ? ' Se le pasaron los datos para transferir: si manda el comprobante, aplicar el pago.'
@@ -2893,7 +2890,7 @@ export class FlowService {
                   : '') +
                 formatEstadoCuenta(estado, { debitFailed }) +
                 (rejected.length || notDone.length || doubleCharge
-                  ? await this.closedNote()
+                  ? await this.closedNote(ctx)
                   : '') +
                 (answer ? `\n\n${answer}` : ''),
             },
@@ -2942,7 +2939,7 @@ export class FlowService {
                 kind: 'text',
                 body:
                   `No tengo denuncias tuyas registradas, así que le pasé tu consulta a la oficina para que te responda por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-                  (await this.closedNote()) +
+                  (await this.closedNote(ctx)) +
                   '\n\nSi querés hacer la denuncia ahora, elegí *Siniestros* y después *Denuncia nueva*.',
               },
               clientMenu(),
@@ -3250,7 +3247,7 @@ export class FlowService {
           (sentNote ? `${sentNote}.\n\n` : '') +
           `${papers} te los manda la oficina por este chat 🙌 Ya les pasé tu pedido para ${label}. ` +
           `Te los envían en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
-          (await this.closedNote()),
+          (await this.closedNote(ctx)),
       },
       ...(offer ? [{ kind: 'text' as const, body: offer }] : []),
     ];
@@ -3264,14 +3261,15 @@ export class FlowService {
     ctx: FlowContext,
     debitFailed: boolean,
   ): Promise<string | null> {
-    if (!this.transfer.alias && !this.transfer.cbu) return null;
+    const payment = this.payment(ctx);
+    if (!payment.transfer?.alias && !payment.transfer?.cbu) return null;
     const ids = new Set(polizas.map((p) => p.id));
     const estado = await this.api
       .getEstadoCuenta(ctx.conversationId)
       .catch((): EstadoCuentaPoliza[] => []);
     return transferOffer(
       estado.filter((p) => ids.has(p.id)),
-      this.transfer,
+      payment,
       debitFailed,
     );
   }
@@ -3334,7 +3332,7 @@ export class FlowService {
           body:
             `Ya le pasé a la oficina tu pedido de ${requested.what} de ${requested.label} 👍 ` +
             `Te los mandan por este chat en el horario de atención (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()) +
+            (await this.closedNote(ctx)) +
             '\n\nSi necesitás otra cosa, escribí *menú*.',
         },
       ],
@@ -3465,7 +3463,7 @@ export class FlowService {
           kind: 'text',
           body:
             `Registré tu solicitud de baja de la póliza *${poliza.certificateNumber}* (motivo: ${reason}). La oficina recibió la notificación y te confirmará la gestión por este chat. La póliza todavía no fue dada de baja.` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         clientMenu(),
       ],
@@ -3484,7 +3482,7 @@ export class FlowService {
       const said = fold(input.text);
       if (CLAIM_COPY_RE.test(said))
         return this.claimCopyRequest(input.text, ctx, key);
-      if (CLAIMS_PHONE_RE.test(said)) return this.claimsPhoneReply(key);
+      if (CLAIMS_PHONE_RE.test(said)) return this.claimsPhoneReply(key, ctx);
     }
     const opt = input.selectionId ?? this.matchSiniestroIntent(input.text);
     // A DNI typed on this menu is kept for when they pick an option.
@@ -3644,7 +3642,7 @@ export class FlowService {
             kind: 'text',
             body:
               `${body} Le pasé tu consulta a la oficina para que te lo confirme por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-              (await this.closedNote()),
+              (await this.closedNote(ctx)),
           },
           claimOrAdvisorButtons(),
         ],
@@ -3665,6 +3663,7 @@ export class FlowService {
       const answer = await this.coverage.answer({
         question,
         poliza,
+        orgName: this.org(ctx).orgName,
         phoneNumberId: ctx.phoneNumberId,
       });
       if (answer.certeza === 'no_figura') return askOffice(answer.respuesta);
@@ -4472,6 +4471,7 @@ export class FlowService {
   private async handleSinFotoDanio(
     input: UserInput,
     key: string,
+    ctx: FlowContext,
   ): Promise<FlowResult> {
     // A photo arrived → attach it (done by the media handler) and stay here so the
     // user can keep sending more of the incident.
@@ -4488,7 +4488,7 @@ export class FlowService {
     }
     // "listo" / "no tengo" → close the claim capture.
     if (!input.selectionId && this.isPhotoSkip(input.text)) {
-      return this.finishSiniestroPhotos(key);
+      return this.finishSiniestroPhotos(key, ctx);
     }
     return {
       messages: [
@@ -4596,12 +4596,15 @@ export class FlowService {
     return this.prepend(
       '¡Listo! 🙌 Ya tenemos todo para tu contratación. Un asesor te contacta ' +
         `para terminarla (${attentionHoursOf(ctx.attentionHours)}).` +
-        (await this.closedNote()),
+        (await this.closedNote(ctx)),
       this.menuAfterRequest(key, ctx),
     );
   }
 
-  private async finishSiniestroPhotos(key: string): Promise<FlowResult> {
+  private async finishSiniestroPhotos(
+    key: string,
+    ctx: FlowContext,
+  ): Promise<FlowResult> {
     this.setState(key, 'CLIENT_MENU');
     // Outside office hours "a la brevedad" promised what nobody could do
     // until the next morning: the closed note says when.
@@ -4611,7 +4614,7 @@ export class FlowService {
           kind: 'text',
           body:
             '¡Listo! 🙌 Sumé todo a tu denuncia. Un asesor le va a dar seguimiento y te escribe por este chat.' +
-            (await this.closedNote()) +
+            (await this.closedNote(ctx)) +
             '\n\n¿Necesitás algo más?',
         },
         clientMenu(),
@@ -4697,7 +4700,7 @@ export class FlowService {
             body:
               'No tengo los documentos de esa póliza para enviarte ahora. Ya le pasé el pedido a un asesor para que te los mande por este chat ' +
               `(${attentionHoursOf(ctx.attentionHours)}).` +
-              (await this.closedNote()),
+              (await this.closedNote(ctx)),
           },
           clientMenu(),
         ],
@@ -4928,7 +4931,7 @@ export class FlowService {
       lines.push(
         `No pude bajar ${joinNames(failed.map((d) => `*${d.name}*`))} ahora. Ya le pasé el pedido a la oficina para que te lo mande por este chat ` +
           `(${attentionHoursOf(ctx.attentionHours)}).` +
-          (await this.closedNote()),
+          (await this.closedNote(ctx)),
       );
     }
 
@@ -5025,7 +5028,7 @@ export class FlowService {
           kind: 'text',
           body:
             `¡Gracias! Tomé nota ✍️. Un representante de ventas te va a contactar a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         leadMenu(),
       ],
@@ -5475,7 +5478,7 @@ export class FlowService {
     return this.prepend(
       `✅ ¡Listo! Registré tu pedido de cotización${planLine}. ` +
         `Un asesor te contacta a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
-        (await this.closedNote()),
+        (await this.closedNote(ctx)),
       this.menuAfterRequest(key, ctx),
     );
   }
@@ -5862,7 +5865,7 @@ export class FlowService {
           kind: 'text',
           body:
             `Le pasé tu consulta a la persona de la oficina que te venía atendiendo 🙌 Te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()) +
+            (await this.closedNote(ctx)) +
             '\n\nSi necesitás otra cosa, escribí *menú*.',
         },
       ],
@@ -5891,7 +5894,7 @@ export class FlowService {
           kind: 'text',
           body:
             `Los seguros de accidentes personales, las nóminas y las pólizas de otras compañías los maneja directamente la oficina, así que ya le pasé tu pedido 🙌 Te responden por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         ...menu,
       ],
@@ -5928,7 +5931,7 @@ export class FlowService {
           kind: 'text',
           body:
             `Listo, le pasé a la oficina tu pedido para cambiar la forma de pago 🙌 Te escriben por este chat para pedirte los datos de la tarjeta o el CBU (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         clientMenu(),
       ],
@@ -6036,7 +6039,9 @@ export class FlowService {
     // Answered to a greeting: they never said whether they are a client.
     if (state.data.fromGreeting) {
       this.setState(key, 'ROOT');
-      result = { messages: [welcomeMenu(undefined, ctx.botName, 'none')] };
+      result = {
+        messages: [welcomeMenu(undefined, ctx.botName, 'none', this.org(ctx))],
+      };
     } else result = this.askDniInstead(state, key, 'Dale.');
     // Asked again after "Sí, soy cliente", two people said "No" twice.
     const entry = this.states.get(key);
@@ -6074,7 +6079,9 @@ export class FlowService {
     }
     this.setState(key, 'ROOT');
     // Shown again later in the chat: the bot already introduced itself.
-    return { messages: [welcomeMenu(undefined, ctx.botName, 'none')] };
+    return {
+      messages: [welcomeMenu(undefined, ctx.botName, 'none', this.org(ctx))],
+    };
   }
 
   /**
@@ -6101,7 +6108,7 @@ export class FlowService {
 
 ` +
             `Ya le avisé a un asesor para que revise tu caso y te contacte a la brevedad (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         clientMenu(),
       ],
@@ -6127,7 +6134,7 @@ export class FlowService {
       kind: 'text' as const,
       body:
         `¡Gracias! 🙌 Le pasé el comprobante a la oficina para que registre el pago. Si falta algo, te escriben por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-        (await this.closedNote()),
+        (await this.closedNote(ctx)),
     };
     const audience = this.backToMenuState(key, ctx);
     if (audience === 'lead') return { messages: [note, leadMenu()] };
@@ -6176,7 +6183,7 @@ export class FlowService {
           body:
             'No encontré pólizas vigentes a tu nombre. Puede que esté vencida o suspendida, o a nombre de otra persona: ya le pasé tu consulta a la oficina para que la revise y te escriba por este chat ' +
             `(${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         clientMenu(),
       ],
@@ -6194,14 +6201,15 @@ export class FlowService {
    * "¿Cuál es el 0800 para denunciar?" (#148 got the claim checklist instead).
    * The company's line when it is configured; the claim can be made here too.
    */
-  private claimsPhoneReply(key: string): FlowResult {
+  private claimsPhoneReply(key: string, ctx: FlowContext): FlowResult {
     this.setState(key, 'SINIESTRO_TYPE', {}, 'client');
+    const { claimsPhone } = this.org(ctx);
     return {
       messages: [
         {
           kind: 'text',
-          body: this.claimsPhone
-            ? `📞 Para denunciar por teléfono a Triunfo Seguros: *${this.claimsPhone}* (es el mismo de asistencia: al entrar, elegí la opción de siniestros).\nTambién la podés hacer por acá y la oficina la carga en la compañía.`
+          body: claimsPhone
+            ? `📞 Para denunciar por teléfono a Triunfo Seguros: *${claimsPhone}* (es el mismo de asistencia: al entrar, elegí la opción de siniestros).\nTambién la podés hacer por acá y la oficina la carga en la compañía.`
             : 'La denuncia la podés hacer por acá: la oficina la carga en Triunfo Seguros y te pasa el número de siniestro.',
         },
         siniestroTypeMenu(),
@@ -6233,16 +6241,17 @@ export class FlowService {
           kind: 'text',
           body:
             `La copia de la denuncia te la manda la oficina por este chat: ya les pasé tu pedido 🙌 (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote()),
+            (await this.closedNote(ctx)),
         },
         ...menu,
       ],
     };
   }
 
-  private gruaText(): string {
-    return this.towTruckPhone
-      ? `🆘 *Auxilio / Grúa*\nLlamá directo al ${this.towTruckPhone}, disponible las 24 hs.`
+  private gruaText(ctx: FlowContext): string {
+    const { towTruckPhone } = this.org(ctx);
+    return towTruckPhone
+      ? `🆘 *Auxilio / Grúa*\nLlamá directo al ${towTruckPhone}, disponible las 24 hs.`
       : '🆘 *Auxilio / Grúa*\nEstamos confirmando el número de asistencia. Mientras tanto, escribí *asesor* y te ayudamos.';
   }
 
@@ -6302,11 +6311,12 @@ export class FlowService {
   /** Fixed refusal for off-domain messages + the current menu (no LLM, no cost). */
   private offTopicReply(key: string, ctx: FlowContext): FlowResult {
     const menu = this.toMainMenu(key, ctx);
+    const org = this.org(ctx);
     return {
       messages: [
         {
           kind: 'text',
-          body: 'Disculpá, soy el asistente de *JPMG* y solo puedo ayudarte con *seguros* y trámites de la productora 🙂. ¿Te doy una mano con eso?',
+          body: `Disculpá, soy el asistente de *${org.orgShortName ?? org.orgName}* y solo puedo ayudarte con *seguros* y trámites de la productora 🙂. ¿Te doy una mano con eso?`,
         },
         ...menu.messages,
       ],
@@ -6363,10 +6373,10 @@ export class FlowService {
     );
   }
 
-  /** Deterministic hours answer (no LLM): the ready message from /public/hours. */
-  private async answerHours(): Promise<FlowResult> {
+  /** Deterministic hours answer (no LLM): the ready message of the organization's hours. */
+  private async answerHours(ctx: FlowContext): Promise<FlowResult> {
     try {
-      const status = await this.api.getHours();
+      const status = await this.api.getHours(ctx.phoneNumberId);
       return { messages: [{ kind: 'text', body: status.message }] };
     } catch {
       return {
@@ -6385,9 +6395,9 @@ export class FlowService {
    * so it sets the right expectation ("te respondemos al reabrir"). Empty when
    * open or when the status can't be fetched.
    */
-  private async closedNote(): Promise<string> {
+  private async closedNote(ctx: FlowContext): Promise<string> {
     try {
-      const status = await this.api.getHours();
+      const status = await this.api.getHours(ctx.phoneNumberId);
       return status.closedNote ? `\n${status.closedNote}` : '';
     } catch {
       return '';

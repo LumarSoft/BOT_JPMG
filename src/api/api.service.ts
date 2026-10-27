@@ -57,7 +57,11 @@ export class ApiService {
   private catalogCache?: { items: ProductCatalogItem[]; fetchedAt: number };
 
   /** In-memory cache of the live hours status (short TTL — see HOURS_TTL_MS). */
-  private hoursCache?: { status: HoursStatus; fetchedAt: number };
+  /** Last hours per number ('' = the default organization's public hours). */
+  private readonly hoursCache = new Map<
+    string,
+    { status: HoursStatus; fetchedAt: number }
+  >();
 
   /**
    * InfoAuto catalog pages (brands, lines, versions) by path + query. The
@@ -487,20 +491,24 @@ export class ApiService {
 
   /**
    * Live business-hours status (formatted week + open-now + closure), computed by
-   * the API from the configured schedule. Briefly cached so a burst of messages
-   * doesn't refetch; on error we serve the last good copy when we have one.
+   * the API from the configured schedule of the number's organization (without
+   * a number, the default organization's public hours). Briefly cached per
+   * number so a burst of messages doesn't refetch; on error we serve the last
+   * good copy when we have one.
    */
-  async getHours(): Promise<HoursStatus> {
+  async getHours(phoneNumberId?: string): Promise<HoursStatus> {
+    const key = phoneNumberId ?? '';
+    const cached = this.hoursCache.get(key);
     const now = Date.now();
-    if (this.hoursCache && now - this.hoursCache.fetchedAt < HOURS_TTL_MS) {
-      return this.hoursCache.status;
-    }
+    if (cached && now - cached.fetchedAt < HOURS_TTL_MS) return cached.status;
     try {
-      const { data } = await this.http.get<HoursStatus>('/public/hours');
-      this.hoursCache = { status: data, fetchedAt: now };
+      const { data } = await this.http.get<HoursStatus>(
+        phoneNumberId ? `/bot/numbers/${phoneNumberId}/hours` : '/public/hours',
+      );
+      this.hoursCache.set(key, { status: data, fetchedAt: now });
       return data;
     } catch (error) {
-      if (this.hoursCache) return this.hoursCache.status;
+      if (cached) return cached.status;
       throw error;
     }
   }
@@ -624,6 +632,11 @@ export class ApiService {
     return this.getAllInfoAutoPages<InfoAutoModel>(path, query);
   }
 
+  /**
+   * A real Triunfo quote for the organization of the number the chat came
+   * through, with that organization's Triunfo account. Without a number it is
+   * the default organization's, like a quote from the public web.
+   */
   async quoteVehicle(
     vehicleType: VehicleTypeParam,
     payload: {
@@ -634,9 +647,12 @@ export class ApiService {
       zeroKm?: boolean;
       hasGnc?: boolean;
     },
+    phoneNumberId?: string,
   ): Promise<QuoteResult> {
     const { data } = await this.http.post<QuoteResult>(
-      `/cotizador/${vehicleType}`,
+      phoneNumberId
+        ? `/bot/numbers/${phoneNumberId}/cotizador/${vehicleType}`
+        : `/cotizador/${vehicleType}`,
       payload,
     );
     return data;

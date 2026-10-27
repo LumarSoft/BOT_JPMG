@@ -4,7 +4,7 @@ import {
   displayName,
   formatEstadoCuenta,
   gncAnswer,
-  paymentAnswer,
+  paymentAnswer as answerPayment,
   gncButtons,
   leadMenu,
   polizaPicker,
@@ -18,8 +18,57 @@ import {
   docPicker,
   formatSiniestros,
   polizaTitles,
-  transferOffer,
+  transferOffer as offerTransfer,
+  botIntro,
+  openingLine,
+  welcomeMenu,
+  type TransferInfo,
 } from './flow.messages';
+
+// JPMG's cash places: what every existing expectation below was written for.
+const JPMG_CASH = 'Rapipago, Pago Fácil o Santa Fe Servicios';
+const paymentAnswer = (
+  polizas: EstadoCuentaPoliza[],
+  question: string,
+  transfer?: TransferInfo,
+) => answerPayment(polizas, question, { transfer, cashPlaces: JPMG_CASH });
+const transferOffer = (
+  polizas: EstadoCuentaPoliza[],
+  transfer: TransferInfo,
+  debitFailed?: boolean,
+) => offerTransfer(polizas, { transfer, cashPlaces: JPMG_CASH }, debitFailed);
+
+describe('bot identity per organization', () => {
+  const jpmg = {
+    orgName: 'John Pellegrini Management Group',
+    orgShortName: 'JPMG',
+  };
+  const norte = { orgName: 'Seguros Norte', orgShortName: null };
+
+  it('keeps JPMG introducing itself exactly as before', () => {
+    expect(botIntro('NICO', jpmg)).toBe(
+      'Soy *NICO*, el asistente de *John Pellegrini Management Group*',
+    );
+    expect(botIntro(null, jpmg)).toBe(
+      'Soy *el asistente de John Pellegrini Management Group* (JPMG)',
+    );
+  });
+
+  it("introduces another organization's bot with that organization's name", () => {
+    expect(botIntro('Sofi', norte)).toBe(
+      'Soy *Sofi*, el asistente de *Seguros Norte*',
+    );
+    expect(botIntro('', norte)).toBe('Soy *el asistente de Seguros Norte*');
+    expect(openingLine('full', null, norte)).toBe(
+      '¡Hola! Soy *el asistente de Seguros Norte* 👋',
+    );
+    const welcome = welcomeMenu(undefined, 'Sofi', 'full', norte);
+    expect(welcome.body).toContain(
+      'Soy *Sofi*, el asistente de *Seguros Norte*',
+    );
+    expect(welcome.body).not.toMatch(/Pellegrini|JPMG/);
+  });
+});
 
 describe('leadMenu', () => {
   it('does not introduce the bot a second time after the welcome', () => {
@@ -668,6 +717,54 @@ describe('claims', () => {
 
   it('does not say a claim made with the office was lost', () => {
     expect(formatSiniestros([])).toContain('Si la hiciste con la oficina');
+  });
+});
+
+describe('payment copy per organization', () => {
+  const debiting: EstadoCuentaPoliza = {
+    id: 1,
+    certificateNumber: '1000001',
+    riskType: 'auto',
+    lastMovement: 'REFACTURACION',
+    paymentMethod: 'Convenio',
+    vehicle: { licensePlate: 'AB123CD', brand: 'FIAT', model: 'PALIO' },
+    paidInstallments: 1,
+    unpaidInstallments: [
+      {
+        number: 2,
+        amount: '1000',
+        dueDate: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+        status: 'pending',
+      },
+    ],
+    hasRejectedInstallments: false,
+  };
+
+  it("names the organization's own cash places and account", () => {
+    const payment = {
+      transfer: { alias: 'NORTE.PAGOS', bank: 'Banco Macro' },
+      cashPlaces: 'Pago Fácil o Cobro Express',
+    };
+    const methods = answerPayment([debiting], '¿cómo puedo pagar?', payment);
+    expect(methods).toContain(
+      'En efectivo con el cupón, en Pago Fácil o Cobro Express.',
+    );
+    expect(methods).toContain('NORTE.PAGOS');
+    expect(methods).not.toContain('Santa Fe Servicios');
+
+    const offer = offerTransfer([debiting], payment, true);
+    expect(offer).toContain(
+      'Para pagar en Pago Fácil o Cobro Express, la oficina',
+    );
+    expect(offer).not.toContain('TRUENO');
+  });
+
+  it('leaves the account to the office when the organization gave none', () => {
+    const payment = { transfer: null, cashPlaces: 'Rapipago o Pago Fácil' };
+    expect(answerPayment([debiting], '¿cómo puedo pagar?', payment)).toContain(
+      'Transferencia: la oficina te pasa los datos',
+    );
+    expect(offerTransfer([debiting], payment, true)).toBeNull();
   });
 });
 

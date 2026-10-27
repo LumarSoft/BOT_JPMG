@@ -24,7 +24,9 @@ const schema = {
   },
 };
 
-export const COVERAGE_PROMPT = `Respondés por WhatsApp si la póliza de un cliente de John Pellegrini Management Group (productora de seguros que trabaja con Triunfo Seguros) cubre lo que pregunta. Usá SOLO el detalle de la póliza que te paso: es lo que tiene contratado.
+/** The instructions, naming the organization whose customer asks. */
+export const coveragePrompt = (orgName: string) =>
+  `Respondés por WhatsApp si la póliza de un cliente de ${orgName} (productora de seguros que trabaja con Triunfo Seguros) cubre lo que pregunta. Usá SOLO el detalle de la póliza que te paso: es lo que tiene contratado.
 Reglas:
 - Empezá por la respuesta: "Sí, …", "No, …" o "No figura en el detalle de tu póliza".
 - Si cubre, decí con qué línea de la cobertura y el tope o la suma asegurada si los tenés. Mencioná la franquicia solo si el dato "franquicia" viene cargado; si no viene, no digas nada de franquicia.
@@ -111,6 +113,8 @@ export class CoverageAnswerer {
   async answer(input: {
     question: string;
     poliza: PolizaSummary;
+    /** How the organization is called ("John Pellegrini Management Group"). */
+    orgName: string;
     phoneNumberId: string;
   }): Promise<CoverageAnswer> {
     const completion = await this.openai.chat.completions.create({
@@ -122,7 +126,7 @@ export class CoverageAnswerer {
         json_schema: { name: 'coverage_answer', strict: true, schema },
       },
       messages: [
-        { role: 'system', content: COVERAGE_PROMPT },
+        { role: 'system', content: coveragePrompt(input.orgName) },
         {
           role: 'user',
           content: JSON.stringify({

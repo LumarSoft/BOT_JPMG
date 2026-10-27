@@ -381,15 +381,24 @@ export function returningGreeting(
 
 // ─── Menus ──────────────────────────────────────────────────
 
+/** How the bot names the organization it answers for (its bot profile). */
+export interface OrgNames {
+  orgName: string;
+  orgShortName: string | null;
+}
+
 /**
  * How the bot introduces itself. Uses the per-producer configured name
  * (Producer.botName) and falls back to a generic identity when none is set.
  */
-export function botIntro(botName?: string | null): string {
+export function botIntro(
+  botName: string | null | undefined,
+  org: OrgNames,
+): string {
   const name = botName?.trim();
   return name
-    ? `Soy *${name}*, el asistente de *John Pellegrini Management Group*`
-    : `Soy *el asistente de John Pellegrini Management Group* (JPMG)`;
+    ? `Soy *${name}*, el asistente de *${org.orgName}*`
+    : `Soy *el asistente de ${org.orgName}*${org.orgShortName ? ` (${org.orgShortName})` : ''}`;
 }
 
 /**
@@ -403,23 +412,25 @@ export type WelcomeIntro = 'full' | 'returning' | 'none';
 /** One-line opener for a reply that already answers the first message. */
 export function openingLine(
   intro: WelcomeIntro,
-  botName?: string | null,
+  botName: string | null | undefined,
+  org: OrgNames,
 ): string | null {
-  if (intro === 'full') return `¡Hola! ${botIntro(botName)} 👋`;
+  if (intro === 'full') return `¡Hola! ${botIntro(botName, org)} 👋`;
   if (intro === 'returning') return '¡Hola de nuevo! 👋';
   return null;
 }
 
 export function welcomeMenu(
-  firstName?: string,
-  botName?: string | null,
-  intro: WelcomeIntro = 'full',
+  firstName: string | undefined,
+  botName: string | null | undefined,
+  intro: WelcomeIntro,
+  org: OrgNames,
 ): OutgoingMessage {
   const name = displayName(firstName);
   const hi = name ? `¡Hola, ${name}! ` : '¡Hola! ';
   const body =
     intro === 'full'
-      ? `${hi}${botIntro(botName)} 👋 Estoy para darte una mano. Para arrancar, decime: ¿ya sos cliente nuestro?`
+      ? `${hi}${botIntro(botName, org)} 👋 Estoy para darte una mano. Para arrancar, decime: ¿ya sos cliente nuestro?`
       : intro === 'returning'
         ? '¡Hola de nuevo! 👋 Para arrancar, decime: ¿ya sos cliente nuestro?'
         : 'Para ayudarte, decime: ¿ya sos cliente nuestro?';
@@ -1235,8 +1246,16 @@ export interface TransferInfo {
   bank?: string;
 }
 
-const hasTransfer = (t?: TransferInfo): t is TransferInfo =>
+const hasTransfer = (t?: TransferInfo | null): t is TransferInfo =>
   !!(t?.alias || t?.cbu);
+
+/** How the organization's customers pay besides the automatic debit (bot profile). */
+export interface PaymentInfo {
+  /** The account an installment can be transferred to; none → the office passes the data. */
+  transfer?: TransferInfo | null;
+  /** Where cash is paid with the coupon: "Rapipago, Pago Fácil o Santa Fe Servicios". */
+  cashPlaces: string;
+}
 
 /** "Alias: x · CBU: y · Titular: z" as WhatsApp lines. */
 export function transferLines(t: TransferInfo): string {
@@ -1253,16 +1272,18 @@ export function transferLines(t: TransferInfo): string {
 /**
  * How to pay, as John put it (20/10): Rapipago, Pago Fácil, Santa Fe
  * Servicios and Mercado Pago all need the coupon (its barcode) or Triunfo's
- * app; what works without it is a transfer.
+ * app; what works without it is a transfer. The cash places and the account
+ * are each organization's.
  */
-function payMethodsText(transfer?: TransferInfo): string {
+function payMethodsText(payment: PaymentInfo): string {
+  const { transfer } = payment;
   return (
     '📌 *Formas de pago:*\n' +
     '• Débito automático con tarjeta de crédito o débito, o con CBU: la cuota sale un 5 % menos que en efectivo.\n' +
     (hasTransfer(transfer)
       ? `• Transferencia, mandando el comprobante por acá:\n${transferLines(transfer)}\n`
       : '• Transferencia: la oficina te pasa los datos y aplica el pago con el comprobante.\n') +
-    '• En efectivo con el cupón, en Rapipago, Pago Fácil o Santa Fe Servicios.\n' +
+    `• En efectivo con el cupón, en ${payment.cashPlaces}.\n` +
     '• Por Mercado Pago con el cupón, o desde la app de Triunfo.\n' +
     'Si necesitás el cupón, pedilo abajo en *Pedir cupón de pago*.'
   );
@@ -1335,7 +1356,7 @@ function renewalAnswer(polizas: EstadoCuentaPoliza[]): string | null {
 export function paymentAnswer(
   polizas: EstadoCuentaPoliza[],
   question: string,
-  transfer?: TransferInfo,
+  payment: PaymentInfo,
 ): string | null {
   if (polizas.length === 0) return null;
   const t = fold(question);
@@ -1350,7 +1371,7 @@ export function paymentAnswer(
   if (PAY_DEADLINE_RE.test(t)) return deadlineAnswer(polizas);
   if (CARD_VS_CASH_RE.test(t)) return CARD_VS_CASH_TEXT;
   if (PAY_METHODS_RE.test(t) || /\btransfer/.test(t))
-    return payMethodsText(transfer);
+    return payMethodsText(payment);
   return null;
 }
 
@@ -1364,9 +1385,10 @@ export function paymentAnswer(
  */
 export function transferOffer(
   polizas: EstadoCuentaPoliza[],
-  transfer: TransferInfo | undefined,
+  payment: PaymentInfo,
   debitFailed = false,
 ): string | null {
+  const { transfer } = payment;
   if (!hasTransfer(transfer)) return null;
   const lines: string[] = [];
   const waiting: string[] = [];
@@ -1385,7 +1407,7 @@ export function transferOffer(
   const parts: string[] = [];
   if (lines.length)
     parts.push(
-      `💸 Si querés pagarla ya, podés transferir:\n${lines.join('\n')}\n\n${transferLines(transfer)}\n\nCuando transfieras, mandame el comprobante por acá y la oficina lo aplica. Para pagar en Rapipago, Pago Fácil o Santa Fe Servicios, la oficina te manda el cupón en el horario de atención.`,
+      `💸 Si querés pagarla ya, podés transferir:\n${lines.join('\n')}\n\n${transferLines(transfer)}\n\nCuando transfieras, mandame el comprobante por acá y la oficina lo aplica. Para pagar en ${payment.cashPlaces}, la oficina te manda el cupón en el horario de atención.`,
     );
   if (waiting.length)
     parts.push(

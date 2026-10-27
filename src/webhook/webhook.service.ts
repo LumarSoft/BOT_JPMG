@@ -61,6 +61,11 @@ import {
 } from './audio-transcriber.service';
 import { fold } from './text';
 import {
+  legacyOrgProfile,
+  resolveOrgProfile,
+  type OrgProfile,
+} from './org-profile';
+import {
   DEFAULT_ATTENTION_HOURS,
   DEFAULT_OPENAI_MODEL,
   renderCatalogForPrompt,
@@ -435,6 +440,8 @@ export class WebhookService {
   private readonly openai: OpenAI;
   private readonly autoReplyEnabled: boolean;
   private readonly model: string;
+  /** What the bot said before organizations had a profile (JPMG + settings). */
+  private readonly legacyOrg: OrgProfile;
   private readonly priceInPer1M: number;
   private readonly priceOutPer1M: number;
 
@@ -494,6 +501,12 @@ export class WebhookService {
     // automated replies until smoke tests are complete.
     this.autoReplyEnabled =
       this.config.get<string>('BOT_AUTOREPLY_ENABLED') !== 'false';
+    this.legacyOrg = legacyOrgProfile(this.config);
+  }
+
+  /** The organization behind a number's context, with the bot's built-in values as fallback. */
+  private orgOf(context: BotContext): OrgProfile {
+    return resolveOrgProfile(context.profile, this.legacyOrg);
   }
 
   /**
@@ -831,6 +844,7 @@ export class WebhookService {
       newSession: conversation.newSession ?? false,
       botName: context.botName,
       attentionHours: context.attentionHours,
+      org: this.orgOf(context),
       flowState: this.parseFlowState(conversation.flowState),
       phoneNumberId,
       llmEnabled: context.llmEnabled,
@@ -1495,6 +1509,8 @@ export class WebhookService {
           newSession: false,
           botName: context.botName,
           attentionHours: context.attentionHours,
+          org: this.orgOf(context),
+          phoneNumberId,
           flowState,
         },
       );
@@ -2189,6 +2205,7 @@ export class WebhookService {
       handoff === 'cotizacion'
         ? buildCotizacionPrompt({
             botName: context.botName,
+            org: this.orgOf(context),
             producerPrompt: context.systemPrompt,
             attentionHours: context.attentionHours,
             today,
@@ -2199,6 +2216,7 @@ export class WebhookService {
           })
         : buildFaqPrompt({
             botName: context.botName,
+            org: this.orgOf(context),
             producerPrompt: context.systemPrompt,
             attentionHours: context.attentionHours,
             today,
@@ -2337,6 +2355,7 @@ export class WebhookService {
                 conversation.conversationId,
                 quoteVehicleMemory,
                 knownGnc,
+                phoneNumberId,
               );
             }
             // One request per turn even if the model repeats the call.
@@ -2715,6 +2734,8 @@ export class WebhookService {
     conversationId: number,
     rememberedVehicle?: QuoteVehicleMemory,
     knownGnc?: boolean,
+    /** Number the chat came through: the quote is its organization's. */
+    phoneNumberId?: string,
   ): Promise<string> {
     let args: Record<string, unknown>;
     try {
@@ -2830,16 +2851,20 @@ export class WebhookService {
           const brandFromCodia = Math.floor(codiaNum / 10000);
           let quote: Awaited<ReturnType<ApiService['quoteVehicle']>>;
           try {
-            quote = await this.api.quoteVehicle(vehicleType, {
-              brand: String(brandFromCodia),
-              model: String(codiaNum),
-              manufactureYear: Number(args.manufactureYear),
-              postalCode: Number(args.postalCode),
-              ...(args.isZeroKm === true ? { zeroKm: true } : {}),
-              ...(vehicleType === 'auto' && knownGnc !== undefined
-                ? { hasGnc: knownGnc }
-                : {}),
-            });
+            quote = await this.api.quoteVehicle(
+              vehicleType,
+              {
+                brand: String(brandFromCodia),
+                model: String(codiaNum),
+                manufactureYear: Number(args.manufactureYear),
+                postalCode: Number(args.postalCode),
+                ...(args.isZeroKm === true ? { zeroKm: true } : {}),
+                ...(vehicleType === 'auto' && knownGnc !== undefined
+                  ? { hasGnc: knownGnc }
+                  : {}),
+              },
+              phoneNumberId,
+            );
           } catch (error) {
             if (!isQuoteServiceFailure(error)) {
               // The version is ours to find, not the client's to fix: on 14/10

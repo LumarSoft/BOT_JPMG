@@ -33,7 +33,9 @@ const schema = {
   },
 };
 
-export const INTENT_PROMPT = `Clasificás el mensaje con el que una persona le escribe al WhatsApp de John Pellegrini Management Group, una productora de seguros argentina que trabaja con Triunfo Seguros. Puede ser texto o la transcripción de un audio, con errores.
+/** The classifier's instructions, naming the organization the person writes to. */
+export const intentPrompt = (orgName: string) =>
+  `Clasificás el mensaje con el que una persona le escribe al WhatsApp de ${orgName}, una productora de seguros argentina que trabaja con Triunfo Seguros. Puede ser texto o la transcripción de un audio, con errores.
 Devolvé UNA intención:
 - saludo: solo saluda o se presenta, sin pedir nada ("hola", "buen día, soy Juan", "hola john").
 - cotizar: quiere cotizar, contratar o asegurar algo nuevo, o saber cuánto sale un seguro. También si tiene el seguro en otra compañía y quiere pasarse con nosotros ("quiero cambiar el seguro y poner el de ustedes", "sacarlo de la otra compañía"): eso es cotizar, no baja. Pedir "la póliza", "una póliza", "otra póliza" o la póliza de otra patente u otro DNI NO es cotizar: es documentos (quiere el papel de una póliza que ya tiene), salvo que diga que quiere sacar o contratar una nueva.
@@ -79,6 +81,8 @@ export class IntentInterpreter {
 
   async interpret(input: {
     text: string;
+    /** How the organization is called ("John Pellegrini Management Group"). */
+    orgName: string;
     phoneNumberId: string;
     identifiedClient: boolean;
     lastHumanReply?: { content: string; minutesAgo: number } | null;
@@ -92,7 +96,7 @@ export class IntentInterpreter {
         json_schema: { name: 'opening_intent', strict: true, schema },
       },
       messages: [
-        { role: 'system', content: INTENT_PROMPT },
+        { role: 'system', content: intentPrompt(input.orgName) },
         {
           role: 'user',
           content: JSON.stringify({

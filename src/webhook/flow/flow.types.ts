@@ -3,6 +3,7 @@ import type {
   HumanReply,
   PhoneMatch,
 } from '../../api/api.types';
+import type { OrgProfile } from '../org-profile';
 
 /**
  * Conversation steps driven by the state machine. The model interprets
@@ -148,6 +149,9 @@ export interface FlowContext {
   botName: string | null;
   /** General attention window (Producer.attentionHours); null → app default. */
   attentionHours: string | null;
+  /** The organization of the number: its name, grúa/claims lines and payment
+   * data. Absent → the bot's built-in values (JPMG and its settings). */
+  org?: OrgProfile;
   /** Meta number the chat came through (OpenAI usage is billed per number). */
   phoneNumberId?: string;
   /** False when the number is over its monthly LLM budget. */

@@ -16,6 +16,28 @@ export interface BotContext {
   /** False when the number is over its monthly budget — the bot must skip the
    *  paid LLM and rely on the deterministic flows only. Absent on older APIs. */
   llmEnabled?: boolean;
+  /** The organization's own name, grúa/claims lines and payment data. Null or
+   *  absent (older API, default org without a saved profile) → the bot keeps
+   *  its built-in values. */
+  profile?: BotOrgProfile | null;
+}
+
+/** Per-organization bot profile, as GET /bot/context sends it. */
+export interface BotOrgProfile {
+  orgName: string;
+  orgShortName: string | null;
+  orgLegalName: string | null;
+  towTruckPhone: string | null;
+  /** Null → Triunfo's claims line. */
+  claimsPhone: string | null;
+  /** Null → "Rapipago o Pago Fácil". */
+  cashPaymentPlaces: string | null;
+  transfer: {
+    alias: string | null;
+    cbu: string | null;
+    holder: string | null;
+    bank: string | null;
+  } | null;
 }
 
 export interface ClientSummary {
