@@ -195,10 +195,13 @@ const PAYMENT_CERTIFICATE_RE = /\b(?:constancia|certificado) de pago\b/;
  * Changing how the policy is paid: "quitar el débito automático, lo pago yo",
  * "pasarla a cupón", "cambiar la forma de pago". The office asks for the card
  * or CBU itself; #259 got "tomé nota" and once only the account status.
- * Folded.
+ * Not a cancellation that mentions the debit ("dar de baja la póliza que pago
+ * con débito"), a question about it ("¿me van a sacar el débito?"), paying an
+ * installment ("cancelar la cuota del débito") or asking how to pay ("¿lo
+ * puedo pagar con efectivo?"). Folded.
  */
 const PAYMENT_CHANGE_RE =
-  /\b(?:quitar|sacar|dar de baja|cancelar|desadherir|anular|suspender)(?:me|lo|la|le)?\b[^.?]{0,25}\bdebito\b|\b(?:cambiar|modificar)(?:le)?\b[^.?]{0,15}\b(?:forma|medio|metodo) de pago\b|\b(?:pasar(?:me|lo|la)?|pagar(?:lo|la)?) (?:a|con) (?:cupon|cuponera|efectivo)\b|\badherir(?:me|lo|la)? al debito\b/;
+  /(?<!\b(?:van|va|vas|iban|iba) a )\b(?:quitar|sacar|dar de baja|cancelar|desadherir|anular|suspender)(?:me|lo|la|le)?\b(?:(?!\b(?:poliza|seguro|cuotas?|deuda)\b)[^.?]){0,25}\bdebito\b|\b(?:cambiar|modificar)(?:le)?\b[^.?]{0,15}\b(?:forma|medio|metodo) de pago\b|\bpasar(?:me|lo|la)? (?:a|con) (?:cupon|cuponera|efectivo)\b|\b(?:quiero|quisiera|prefiero|preferiria|me gustaria|necesito) pagar(?:lo|la|las)? (?:a|con) (?:cupon|cuponera|efectivo)\b|\badherir(?:me|lo|la)? al debito\b/;
 
 /** Triunfo codes of the documents the bot asks for by name (see the API's document-types). */
 const DOC_CODE = {
@@ -585,6 +588,26 @@ const QUOTE_INTENT_RE =
  */
 const NEW_VEHICLE_QUOTE_RE =
   /\b(?:poner|sacar|hacer|contratar|tener)(?:le|lo|la)?\b[^.?]{0,20}\bseguro\b[^.?]{0,15}\b(?:a|para|de) (?:otr[oa]|un[oa]?|mi|el|la) (?:nuev[oa] )?(?:auto|moto|vehiculo|camioneta|coche)\b/;
+
+/**
+ * Taking the insurance off a vehicle they have ("sacarle el seguro a la moto,
+ * la vendí"): that is a cancellation, not a quote, however much it looks like
+ * "sacar un seguro para la moto". Folded.
+ */
+const REMOVE_INSURANCE_RE =
+  /\bsacar(?:le|lo|la)?\b[^.?]{0,10}\bel seguro\b[^.?]{0,10}\b(?:a|de) (?:la|el|mi|los|las|est[ae]|es[ae])\b/;
+
+const asksNewVehicleQuote = (folded: string): boolean =>
+  NEW_VEHICLE_QUOTE_RE.test(folded) && !REMOVE_INSURANCE_RE.test(folded);
+
+/** Whether `text` has `term` as a whole word: letters and digits bound it. */
+function hasWord(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,
+    'u',
+  ).test(text);
+}
 
 /**
  * Someone insured elsewhere who wants to come over ("quiero pasar el seguro
@@ -2270,9 +2293,11 @@ export class FlowService {
       return this.paymentChangeRequest(ctx, key, input.text);
     // "No, la del Mercosur no, la cédula para circular", right after the
     // tarjeta verde: the same paper, so it is said instead of sent again.
+    // "No, la del Mercosur no, el certificado" names another paper: sent.
     if (
       typed &&
       NOT_MERCOSUR_RE.test(fold(input.text)) &&
+      wantedDocs(input.text).every((code) => code === DOC_CODE.tarjeta) &&
       (
         (this.load(key)?.state.data.sentDocs as string[] | undefined) ?? []
       ).includes(DOC_CODE.tarjeta)
@@ -4607,7 +4632,7 @@ export class FlowService {
     if (other) return other;
     if (!input.selectionId && CLAIM_COPY_RE.test(fold(input.text)))
       return this.claimCopyRequest(input.text, ctx, key);
-    if (!input.selectionId && NEW_VEHICLE_QUOTE_RE.test(fold(input.text)))
+    if (!input.selectionId && asksNewVehicleQuote(fold(input.text)))
       return this.enterCotizar(input, ctx, key);
     let polizaId = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
 
@@ -4738,7 +4763,7 @@ export class FlowService {
               debitFailed: DEBIT_FAILED_RE.test(t),
             })
           : this.guard(ctx, key, 'cupones', {}, input.text);
-      if (QUOTE_INTENT_RE.test(t) || NEW_VEHICLE_QUOTE_RE.test(t))
+      if (QUOTE_INTENT_RE.test(t) || asksNewVehicleQuote(t))
         return this.enterCotizar(input, ctx, key);
       if (OTHER_POLICY_RE.test(t)) return this.otherPolicyDocs(state, key);
     }
@@ -6507,7 +6532,8 @@ export class FlowService {
       const terms = [v.brand, v.model]
         .filter(Boolean)
         .map((s) => s!.toLowerCase());
-      if (terms.some((term) => term.length > 2 && t.includes(term))) return p;
+      // As whole words: a "208" inside a phone number picked the Peugeot.
+      if (terms.some((term) => term.length > 2 && hasWord(t, term))) return p;
     }
 
     return null;

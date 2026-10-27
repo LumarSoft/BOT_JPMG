@@ -2892,6 +2892,141 @@ describe('FlowService', () => {
       });
     });
 
+    describe('lo que no es: falsos positivos de esos arreglos (revisión 27/10)', () => {
+      const dosPolizas = (auto: { brand: string; model: string }) =>
+        api.getPolizas.mockResolvedValue([
+          {
+            id: 833,
+            certificateNumber: '1741715',
+            riskType: 'auto',
+            vehicle: { licensePlate: 'ABC123', ...auto },
+          },
+          {
+            id: 900,
+            certificateNumber: '1741999',
+            riskType: 'moto',
+            vehicle: { licensePlate: 'A123BCD', brand: 'HONDA', model: 'WAVE' },
+          },
+        ]);
+      it.each([
+        'quiero dar de baja la póliza que pago con débito',
+        'Quiero dar de baja el seguro del auto con débito',
+      ])('"%s" es una baja, no un cambio de forma de pago', async (text) => {
+        await send({ text: 'hola' }, clientCtx);
+        await send({ text }, clientCtx);
+
+        expect(stored?.step).toBe('BAJA_CONFIRM');
+        expect(api.requestHandoff).not.toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Quiere cambiar la forma de pago'),
+        );
+      });
+
+      it('la baja con "débito" como primer mensaje también es una baja', async () => {
+        await send(
+          { text: 'Hola, quiero dar de baja la póliza que pago con débito' },
+          clientCtx,
+        );
+
+        expect(stored?.step).toBe('BAJA_CONFIRM');
+        expect(api.requestHandoff).not.toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Quiere cambiar la forma de pago'),
+        );
+      });
+
+      it.each([
+        '¿me van a sacar el débito este mes?',
+        'quiero cancelar la cuota del débito que me quedó',
+        'lo puedo pagar con efectivo en rapipago?',
+      ])('"%s" no es un cambio de forma de pago', async (text) => {
+        await send({ text: 'hola' }, clientCtx);
+        await send({ text }, clientCtx);
+
+        expect(api.requestHandoff).not.toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Quiere cambiar la forma de pago'),
+        );
+      });
+
+      it('"no quiero más el débito, quiero pagar con cupón" sí lo es', async () => {
+        await send({ text: 'hola' }, clientCtx);
+        await send(
+          { text: 'no quiero más el débito, quiero pagar con cupón' },
+          clientCtx,
+        );
+
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Quiere cambiar la forma de pago'),
+        );
+      });
+
+      it.each([
+        ['No, la del Mercosur no, el certificado de cobertura', '1000'],
+        ['no la del mercosur no, la constancia de pago', '1040'],
+      ])(
+        '"%s" después de la tarjeta manda ese papel, sin la explicación (#220)',
+        async (text, code) => {
+          api.getDocumentos.mockResolvedValue(papers);
+          await send({ text: 'hola' }, clientCtx);
+          await send(
+            { text: 'me mandás la tarjeta verde del auto?' },
+            clientCtx,
+          );
+          const res = await send({ text }, clientCtx);
+
+          expect(api.getDocumentoPdf).toHaveBeenLastCalledWith(1, 833, code);
+          expect(JSON.stringify(res.messages)).not.toContain(
+            'Registro del Automotor',
+          );
+        },
+      );
+
+      it.each([
+        ['en la lista de papeles', false],
+        ['al elegir la póliza', true],
+      ])(
+        '"sacarle el seguro a la moto porque la vendí" %s no cotiza (#261)',
+        async (_where, twoPolicies) => {
+          if (twoPolicies) dosPolizas({ brand: 'CHEVROLET', model: 'CORSA' });
+          api.getDocumentos.mockResolvedValue(papers);
+          await send({ text: 'hola' }, clientCtx);
+          await send({ selectionId: OPT.documentos, text: '' }, clientCtx);
+          await send(
+            { text: 'quiero sacarle el seguro a la moto porque la vendí' },
+            clientCtx,
+          );
+
+          expect(stored?.step).not.toMatch(/^COT|^LLM_COTIZACION/);
+        },
+      );
+
+      it('un celular que contiene el modelo no elige la póliza (#258)', async () => {
+        dosPolizas({ brand: 'PEUGEOT', model: '208' });
+        api.getDocumentos.mockResolvedValue(papers);
+        await send({ text: 'hola' }, clientCtx);
+        const res = await send(
+          {
+            text: 'necesito la tarjeta verde, cualquier cosa mi celular es 3412089999',
+          },
+          clientCtx,
+        );
+
+        expect(api.getDocumentoPdf).not.toHaveBeenCalled();
+        expect(JSON.stringify(res.messages)).toContain('De qué póliza');
+      });
+
+      it('el modelo como palabra sí elige la póliza (#258)', async () => {
+        dosPolizas({ brand: 'PEUGEOT', model: '208' });
+        api.getDocumentos.mockResolvedValue(papers);
+        await send({ text: 'hola' }, clientCtx);
+        await send({ text: 'necesito la tarjeta verde del 208' }, clientCtx);
+
+        expect(api.getDocumentoPdf).toHaveBeenCalledWith(1, 833, '1050');
+      });
+    });
+
     it('elige el documento escrito con otras palabras', async () => {
       api.getDocumentos.mockResolvedValue(papers);
       await send({ text: 'hola' }, clientCtx);
