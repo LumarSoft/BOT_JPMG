@@ -100,14 +100,15 @@ describe('answeringAPerson across sessions', () => {
     createdAt: new Date(now - hoursAgo * 3_600_000).toISOString(),
   });
 
-  it('treats a fresh session as an answer to a person who wrote a few hours ago', () => {
-    expect(answeringAPerson([], reply(3), now)).toBe(true);
-    expect(closesHumanConversation('Dale, gracias 😘', [], reply(3))).toBe(
-      answeringAPerson([], reply(3)),
+  it('treats a fresh session as an answer to a person who wrote within two hours', () => {
+    expect(answeringAPerson([], reply(1.5), now)).toBe(true);
+    expect(closesHumanConversation('Dale, gracias 😘', [], reply(1.5))).toBe(
+      answeringAPerson([], reply(1.5)),
     );
   });
 
-  it('stops once the person wrote more than half a day ago', () => {
+  it('stops once the person wrote more than two hours ago (28/10)', () => {
+    expect(answeringAPerson([], reply(2.1), now)).toBe(false);
     expect(answeringAPerson([], reply(13), now)).toBe(false);
   });
 

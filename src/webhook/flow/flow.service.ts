@@ -95,7 +95,7 @@ import type {
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
 import { legacyOrgProfile, type OrgProfile } from '../org-profile';
-import { isCloser, recentHumanReply } from '../closers';
+import { HUMAN_FOLLOWUP_MS, isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 import {
@@ -284,12 +284,13 @@ const HOW_TO_PAY_RE = /\?|\b(?:como|donde|cuando|cuanto|puedo|tengo que)\b/;
 const MID_CONVERSATION_MS = 10 * 60_000;
 
 /**
- * A person from the office wrote to this chat this recently: a customer coming
- * back about it the next morning ("¿ya está hecha la denuncia?") is following
- * that up, not starting over. A claim taken by hand one afternoon was asked
- * about at 9 the next day, and the bot answered "¿ya sos cliente?" and the DNI.
+ * A person from the office wrote to this chat this recently: what the customer
+ * writes is following that up, not starting over. The same two hours the bot
+ * keeps out of a chat answered by hand (HUMAN_FOLLOWUP_MS); after that the bot
+ * attends as usual. Three days (26/10) left a chat answered from the app with
+ * nothing but "le pasé tu consulta a la oficina" (28/10).
  */
-const OFFICE_THREAD_MS = 72 * 60 * 60_000;
+const OFFICE_THREAD_MS = HUMAN_FOLLOWUP_MS;
 
 /**
  * Policies the bot can't see: accidentes personales and the nómina of drivers
@@ -1427,8 +1428,8 @@ export class FlowService {
       if (routed) return routed;
     }
     // Only a greeting is left here (anything else was routed above). Someone
-    // the office was attending in the last days: "¿ya sos cliente?" read as if
-    // nobody knew them.
+    // the office was attending in the last hours: "¿ya sos cliente?" read as
+    // if nobody knew them.
     if (!sel && ctx.officeThread && !personRecently) {
       this.setState(key, 'ROOT', { officeGreeted: true });
       return this.rememberGreeting(
@@ -1815,9 +1816,9 @@ export class FlowService {
       this.answeringOffice(ctx) &&
       !/\bgrua\b|\bauxilio\b|\bremolque\b/.test(fold(input.text))
     ) {
-      // In the last hours the person is still at it: the chat is flagged and
-      // the bot keeps quiet while the office is open. Days later, the
-      // customer hears that it was passed on.
+      // The person is still at it: the chat is flagged and the bot keeps
+      // quiet while the office is open. Otherwise the customer hears that it
+      // was passed on.
       if (ctx.answeringPerson) {
         const followed = await this.personFollowUp(input, ctx, key);
         if (followed) return followed;
@@ -2260,8 +2261,8 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult | null> {
-    // Days later the person is no longer in the middle of it: the customer
-    // hears that it was passed on.
+    // The person is no longer in the middle of it: the customer hears that
+    // it was passed on.
     // Or right after the bot offered to pass on what they were talking about.
     if (!ctx.answeringPerson)
       return this.answeringOffice(ctx) ||
@@ -5884,8 +5885,8 @@ export class FlowService {
   }
 
   /**
-   * A person from the office wrote here in the last days and the bot has not
-   * said anything since: what the customer writes now goes on with that.
+   * A person from the office wrote here in the last two hours and the bot has
+   * not said anything since: what the customer writes now goes on with that.
    */
   private answeringOffice(ctx: FlowContext): boolean {
     return (
@@ -5914,7 +5915,7 @@ export class FlowService {
 
   /**
    * The customer asks about something a person from the office was handling
-   * in this chat in the last days. That person gets it with the customer's
+   * in this chat in the last hours. That person gets it with the customer's
    * words, and the customer hears so — instead of the DNI and "no tenés
    * denuncias" for a claim the office took by hand.
    */

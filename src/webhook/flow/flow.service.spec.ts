@@ -4484,24 +4484,24 @@ describe('FlowService', () => {
       expect(JSON.stringify(res.messages)).toContain('Auxilio / Grúa');
     });
 
-    it('a day later, passes the reply on to the office instead of the account status', async () => {
-      // #242: the office sent the coupon for a rejected debit; the next day
-      // the customer asked "¿este no se realizó por débito automático?" and
-      // the bot, reading "pagos", showed the installment as "en proceso".
+    it('within two hours, passes the reply on to the office instead of the account status', async () => {
+      // #242: the office sent the coupon for a rejected debit; the customer
+      // asked "¿este no se realizó por débito automático?" and the bot,
+      // reading "pagos", showed the installment as "en proceso".
       intents.interpret.mockResolvedValue('pagos');
-      const dayAgo = {
+      const earlier = {
         ...ctx,
         answeringPerson: false,
         botSpoke: false,
         lastHumanReply: {
           content: 'Te envío el cupón de la póliza que no pudieron debitarte',
-          createdAt: new Date(Date.now() - 27 * 3_600_000).toISOString(),
+          createdAt: new Date(Date.now() - 90 * 60_000).toISOString(),
         },
       };
 
       const res = await send(
         { text: 'Buenas tardes, ¿este no se realizó por débito automático?' },
-        dayAgo,
+        earlier,
       );
 
       const text = JSON.stringify(res.messages);
@@ -4512,6 +4512,28 @@ describe('FlowService', () => {
         expect.stringContaining('no se realizó por débito automático'),
       );
       expect(intents.interpret).not.toHaveBeenCalled();
+    });
+
+    it('past two hours, attends the question itself instead of passing it on (28/10)', async () => {
+      // A chat answered by hand from the app at 14:06 got nothing but "le
+      // pasé tu consulta a la oficina" from the bot for three days.
+      intents.interpret.mockResolvedValue('pagos');
+      const later = {
+        ...ctx,
+        answeringPerson: false,
+        botSpoke: false,
+        lastHumanReply: {
+          content: 'Te envío el cupón de la póliza que no pudieron debitarte',
+          createdAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+        },
+      };
+
+      const res = await send({ text: '¿Cuánto debo de la póliza?' }, later);
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.messages)).not.toContain('te venía atendiendo');
+      expect(intents.interpret).toHaveBeenCalled();
+      expect(stored?.step).toBe('IDENTIFY');
     });
   });
 
@@ -4890,16 +4912,16 @@ describe('FlowService', () => {
         // In a real run the model read "Hola buen dia" as following up what the
         // office said, and the greeting reached the office as a request.
         intents.interpret.mockResolvedValue(intent);
-        const officeYesterday: FlowContext = {
+        const officeEarlier: FlowContext = {
           ...withModel,
           lastHumanReply: {
             content: 'Y necesito foto de tu carnet de ambos lados',
-            createdAt: new Date(Date.now() - 19 * 3_600_000).toISOString(),
+            createdAt: new Date(Date.now() - 90 * 60_000).toISOString(),
           },
           answeringPerson: false,
         };
 
-        const hello = await send({ text: 'Hola buen dia' }, officeYesterday);
+        const hello = await send({ text: 'Hola buen dia' }, officeEarlier);
         expect(api.requestHandoff).not.toHaveBeenCalled();
         expect(intents.interpret).not.toHaveBeenCalled();
         expect(JSON.stringify(hello.messages)).toContain(

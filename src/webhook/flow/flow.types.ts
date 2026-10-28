@@ -72,7 +72,7 @@ export interface FlowState {
    * the bot never re-asks "¿sos cliente?" on a menu return or a flow switch once
    * the user already answered. Independent of DB identification (clientId). */
   audience?: 'client' | 'lead';
-  /** A person from the office handled this chat in the last days (see
+  /** A person from the office handled this chat in the last hours (see
    * OFFICE_THREAD_MS): kept for the session, since the API stops reporting
    * that person's reply once the bot answers. */
   officeThread?: boolean;
@@ -160,7 +160,7 @@ export interface FlowContext {
   history?: Array<{ role: string; content: string }>;
   /** When the API stored the message being handled (ISO). */
   inboundAt?: string;
-  /** Last thing a person from the office wrote here within 72 h, any session,
+  /** Last thing a person from the office wrote here within 2 h, any session,
    * unless the bot spoke after it. */
   lastHumanReply?: HumanReply | null;
   /** When this number last talked to us before this message (ISO), any session. */
@@ -176,7 +176,7 @@ export interface FlowContext {
   contactName?: string | null;
   /** Unidentified, but this number is one client's phone: "¿hablo con Juan?". */
   phoneMatch?: PhoneMatch | null;
-  /** A person from the office handled this chat in the last days. Set by the
+  /** A person from the office handled this chat in the last hours. Set by the
    * flow itself from `lastHumanReply` and the session's state. */
   officeThread?: boolean;
   /** The bot already replied in this session. */

@@ -166,10 +166,13 @@ export function lastSpeakerIsHuman(messages: ConversationMessage[]): boolean {
 
 /**
  * How long after a person from the office wrote that the customer is still
- * taken to be answering that person. A session lasts minutes, so "dale, cuando
- * llegue a casa me fijo" a couple of hours later opens a fresh one.
+ * taken to be answering that person, and the bot keeps out of the chat. A
+ * session lasts minutes, so "dale, cuando llegue a casa me fijo" an hour later
+ * opens a fresh one. Two hours: with half a day (and three days for a
+ * follow-up), a chat answered by hand from the app at 14:06 got nothing from
+ * the bot for the rest of the day (28/10).
  */
-export const HUMAN_FOLLOWUP_MS = 12 * 60 * 60_000;
+export const HUMAN_FOLLOWUP_MS = 2 * 60 * 60_000;
 
 /** Whether a person from the office wrote to this chat within the follow-up window. */
 export function recentHumanReply(
