@@ -292,6 +292,108 @@ describe('WebhookService', () => {
     expect(system).not.toMatch(/Pellegrini|JPMG|TRUENO/);
   });
 
+  it("closes a quote with the organization's line when it configured one", async () => {
+    const create = stubOpenAi();
+    create
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-quote',
+                  type: 'function',
+                  function: {
+                    name: 'quote_vehicle',
+                    arguments: JSON.stringify({
+                      vehicleType: 'auto',
+                      codia: 120632,
+                      manufactureYear: 2020,
+                      postalCode: 2000,
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [
+          { message: { content: 'Te paso los precios 🚗', tool_calls: [] } },
+        ],
+      });
+    api.getContext.mockResolvedValue({
+      systemPrompt: 'x',
+      llmEnabled: true,
+      botName: 'Sofi',
+      profile: {
+        orgName: 'Seguros Norte',
+        orgShortName: null,
+        orgLegalName: null,
+        towTruckPhone: null,
+        claimsPhone: null,
+        cashPaymentPlaces: null,
+        transfer: null,
+        quoteClosingNote:
+          'Un asesor seguro te va a poder mejorar el precio con una bonificación',
+      },
+    });
+    api.getConversation.mockResolvedValue({
+      conversationId: 1,
+      client: null,
+      newSession: false,
+      botPaused: false,
+      flowState: null,
+      messages: [],
+    });
+    api.saveMessage.mockResolvedValue({
+      id: 5,
+      createdAt: '2026-10-28T13:00:00.000Z',
+    });
+    api.quoteVehicle.mockResolvedValue({
+      quoteNumber: '1',
+      validUntil: '2026-11-11',
+      vehicleValue: '5000000',
+      messages: [],
+      coverages: [
+        {
+          code: 'A',
+          name: 'Responsabilidad Civil',
+          paymentOptions: [
+            {
+              code: '1',
+              name: 'Débito Automático',
+              premium: 67825,
+              installmentValue: 67825,
+              installments: 1,
+            },
+          ],
+        },
+      ],
+    });
+    flow.handle.mockResolvedValueOnce({
+      messages: [],
+      handoff: 'cotizacion',
+      state: { step: 'LLM_COTIZACION', data: { vehiculo: 'auto' } },
+    });
+
+    await service.handleMessage(
+      '5491155556666',
+      'corsa 2020 sin gnc, cp 2000',
+      'P2',
+      'q-closing',
+    );
+
+    expect(api.quoteVehicle).toHaveBeenCalled();
+    expect(meta.sendText).toHaveBeenCalledWith(
+      '5491155556666',
+      'Te paso los precios 🚗\n\nUn asesor seguro te va a poder mejorar el precio con una bonificación',
+      'P2',
+    );
+  });
+
   it('passes the stored message time to the flow and limits the quote model to the current quote', async () => {
     const create = stubOpenAi();
     api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });

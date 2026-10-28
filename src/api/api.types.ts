@@ -38,6 +38,8 @@ export interface BotOrgProfile {
     holder: string | null;
     bank: string | null;
   } | null;
+  /** The last line of every quote the bot gives; null = none. Absent on older APIs. */
+  quoteClosingNote?: string | null;
 }
 
 export interface ClientSummary {

@@ -171,6 +171,7 @@ describe('FlowService', () => {
       claimsPhone: '0810-666-0302',
       cashPaymentPlaces: 'Pago Fácil o Cobro Express',
       transfer: null,
+      quoteClosingNote: null,
     };
     const norteCtx: FlowContext = {
       ...leadCtx,

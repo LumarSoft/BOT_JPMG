@@ -22,6 +22,12 @@ export interface OrgProfile {
   cashPaymentPlaces: string;
   /** Null: no account is given, the office passes the data. */
   transfer: TransferInfo | null;
+  /**
+   * What the bot adds as the last line of every quote it gives ("Un asesor
+   * seguro te va a poder mejorar el precio con una bonificación"). Null: the
+   * quote ends as the model wrote it.
+   */
+  quoteClosingNote: string | null;
 }
 
 /** Where a Triunfo coupon is paid in cash when the organization did not say. */
@@ -49,6 +55,7 @@ export function legacyOrgProfile(config: ConfigService): OrgProfile {
       holder: setting('TRANSFER_HOLDER') ?? TRIUNFO_TRANSFER.holder,
       bank: setting('TRANSFER_BANK') ?? TRIUNFO_TRANSFER.bank,
     },
+    quoteClosingNote: null,
   };
 }
 
@@ -79,6 +86,7 @@ export function resolveOrgProfile(
             bank: t.bank ?? undefined,
           }
         : null,
+    quoteClosingNote: profile.quoteClosingNote?.trim() || null,
   };
 }
 

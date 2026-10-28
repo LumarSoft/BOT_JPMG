@@ -54,6 +54,7 @@ describe('org profile', () => {
       claimsPhone: TRIUNFO_CLAIMS_PHONE,
       cashPaymentPlaces: DEFAULT_CASH_PAYMENT_PLACES,
       transfer: null,
+      quoteClosingNote: null,
     });
     expect(orgIdentity(org)).toBe('*Seguros Norte*');
   });

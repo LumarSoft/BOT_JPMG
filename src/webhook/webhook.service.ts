@@ -66,6 +66,10 @@ import {
   type OrgProfile,
 } from './org-profile';
 import {
+  quoteReturnedPrices,
+  withQuoteClosingNote,
+} from './quote-closing-note';
+import {
   DEFAULT_ATTENTION_HOURS,
   DEFAULT_OPENAI_MODEL,
   renderCatalogForPrompt,
@@ -2226,11 +2230,12 @@ export class WebhookService {
         ? { ...memory, hasGnc: knownGnc }
         : memory;
     quoteVehicleMemory = withGnc(quoteVehicleMemory);
+    const org = this.orgOf(context);
     const baseSystem =
       handoff === 'cotizacion'
         ? buildCotizacionPrompt({
             botName: context.botName,
-            org: this.orgOf(context),
+            org,
             producerPrompt: context.systemPrompt,
             attentionHours: context.attentionHours,
             today,
@@ -2241,7 +2246,7 @@ export class WebhookService {
           })
         : buildFaqPrompt({
             botName: context.botName,
-            org: this.orgOf(context),
+            org,
             producerPrompt: context.systemPrompt,
             attentionHours: context.attentionHours,
             today,
@@ -2286,6 +2291,9 @@ export class WebhookService {
     // Set when the model calls request_coverage (the customer chose a coverage).
     let coverageLeadId: number | undefined;
     let takeOutDocs: TakeOutDocs = {};
+    // True once quote_vehicle gave the customer prices: the organization's
+    // closing line (if any) goes under the model's reply.
+    let quotedWithPrices = false;
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -2327,7 +2335,9 @@ export class WebhookService {
             `[4/5] Modelo respondió con texto final en ronda ${round + 1}`,
           );
           return {
-            text: message.content ?? FALLBACK_REPLY,
+            text: message.content
+              ? withQuoteClosingNote(message.content, org, quotedWithPrices)
+              : FALLBACK_REPLY,
             coverageLeadId,
             takeOutDocs,
             quoteVehicleMemory,
@@ -2438,6 +2448,7 @@ export class WebhookService {
               toolCall.function.arguments,
               results[i],
             );
+            if (quoteReturnedPrices(results[i])) quotedWithPrices = true;
           }
         });
       }
@@ -2464,7 +2475,7 @@ export class WebhookService {
           false,
         );
         return {
-          text: content,
+          text: withQuoteClosingNote(content, org, quotedWithPrices),
           coverageLeadId,
           takeOutDocs,
           quoteVehicleMemory,
