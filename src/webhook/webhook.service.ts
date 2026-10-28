@@ -7,6 +7,7 @@ import type {
   BotContext,
   BotConversation,
   ConversationMessage,
+  HumanReply,
   MessageMedia,
 } from '../api/api.types';
 import { MetaService } from './meta.service';
@@ -450,6 +451,13 @@ export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
   private readonly openai: OpenAI;
   private readonly autoReplyEnabled: boolean;
+  /**
+   * Whether the bot steps aside on its own when a person from the office
+   * seems to be handling the chat (an app echo or inbox reply spoke last, or
+   * wrote in the last hours). Off: the only thing that silences the bot is
+   * the conversation being taken (`botPaused`); released means it answers.
+   */
+  private readonly personModeEnabled: boolean;
   private readonly model: string;
   /** What the bot said before organizations had a profile (JPMG + settings). */
   private readonly legacyOrg: OrgProfile;
@@ -512,6 +520,8 @@ export class WebhookService {
     // automated replies until smoke tests are complete.
     this.autoReplyEnabled =
       this.config.get<string>('BOT_AUTOREPLY_ENABLED') !== 'false';
+    this.personModeEnabled =
+      this.config.get<string>('BOT_PERSON_MODE_ENABLED') !== 'false';
     this.legacyOrg = legacyOrgProfile(this.config);
   }
 
@@ -781,6 +791,7 @@ export class WebhookService {
       // stay out of the way instead of answering with the welcome menu.
       if (
         !selectionId &&
+        this.personModeEnabled &&
         closesHumanConversation(
           text,
           conversation.messages,
@@ -856,7 +867,7 @@ export class WebhookService {
       botName: context.botName,
       attentionHours: context.attentionHours,
       org: this.orgOf(context),
-      flowState: this.parseFlowState(conversation.flowState),
+      flowState: this.flowStateOf(conversation.flowState),
       phoneNumberId,
       llmEnabled: context.llmEnabled,
       history: conversation.messages.map(({ role, content }) => ({
@@ -865,12 +876,9 @@ export class WebhookService {
         content,
       })),
       inboundAt,
-      lastHumanReply: conversation.lastHumanReply ?? null,
+      lastHumanReply: this.humanReplyOf(conversation),
       previousActivityAt: conversation.previousActivityAt ?? null,
-      answeringPerson: answeringAPerson(
-        conversation.messages,
-        conversation.lastHumanReply,
-      ),
+      answeringPerson: this.answeringPerson(conversation),
       // Reading the message is optional: past the hourly cap the flow
       // falls back to its menus instead of spending another call.
       llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
@@ -1154,6 +1162,39 @@ export class WebhookService {
           );
         break;
     }
+  }
+
+  /** The office person's last reply, or nothing at all with person mode off. */
+  private humanReplyOf(conversation: BotConversation): HumanReply | null {
+    return this.personModeEnabled
+      ? (conversation.lastHumanReply ?? null)
+      : null;
+  }
+
+  /**
+   * Whether the customer is answering a person rather than the bot. With
+   * person mode off the answer is always no: taken or released is all there is.
+   */
+  private answeringPerson(conversation: BotConversation): boolean {
+    return (
+      this.personModeEnabled &&
+      answeringAPerson(conversation.messages, conversation.lastHumanReply)
+    );
+  }
+
+  /**
+   * The persisted flow state. With person mode off, an office thread flagged
+   * while it was on must not keep the bot deferring to the office.
+   */
+  private flowStateOf(raw: string | null): FlowState | null {
+    const state = this.parseFlowState(raw);
+    if (!state || this.personModeEnabled) return state;
+    const data = { ...(state.data ?? {}) };
+    delete data.officeGreeted;
+    const stripped: FlowState = { ...state, data };
+    delete stripped.officeThread;
+    delete stripped.personThread;
+    return stripped;
   }
 
   /**
@@ -1456,10 +1497,7 @@ export class WebhookService {
     if (attachmentResult.attached === false) {
       // A photo for the person the customer is talking to (Mili asked for it)
       // is already in the inbox: the bot stays out of that conversation.
-      if (
-        !tipo &&
-        answeringAPerson(conversation.messages, conversation.lastHumanReply)
-      ) {
+      if (!tipo && this.answeringPerson(conversation)) {
         return false;
       }
       // Inside a claim photo step the photo was expected and the claim is
@@ -1614,7 +1652,7 @@ export class WebhookService {
       conversation.botPaused ||
       context.botEnabled === false ||
       !this.autoReplyEnabled ||
-      answeringAPerson(conversation.messages, conversation.lastHumanReply) ||
+      this.answeringPerson(conversation) ||
       !(await this.automaticRepliesStillEnabled(phoneNumberId))
     )
       return;

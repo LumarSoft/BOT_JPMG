@@ -2004,6 +2004,106 @@ describe('WebhookService', () => {
     });
   });
 
+  describe('BOT_PERSON_MODE_ENABLED=false', () => {
+    let plain: WebhookService;
+
+    beforeEach(async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          WebhookService,
+          {
+            provide: ConfigService,
+            useValue: {
+              get: jest.fn((key: string) => {
+                if (key === 'OPENAI_API_KEY') return 'test-value';
+                if (key === 'BOT_AUTOREPLY_ENABLED') return 'true';
+                if (key === 'BOT_PERSON_MODE_ENABLED') return 'false';
+                return undefined;
+              }),
+            },
+          },
+          { provide: ApiService, useValue: api },
+          { provide: MetaService, useValue: meta },
+          { provide: FlowService, useValue: flow },
+          { provide: AudioTranscriber, useValue: transcriber },
+        ],
+      }).compile();
+      plain = module.get<WebhookService>(WebhookService);
+      api.getContext.mockResolvedValue({ systemPrompt: 'x', llmEnabled: true });
+      api.saveMessage.mockResolvedValue({});
+    });
+
+    it('answers even when a person spoke last: only a takeover silences the bot', async () => {
+      const humanReply = {
+        content: 'Pasame las fotos',
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
+      };
+      api.getConversation.mockResolvedValueOnce({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [
+          { id: 1, role: 'user', content: 'hola', createdAt: '' },
+          {
+            id: 2,
+            role: 'assistant',
+            content: 'Pasame las fotos',
+            createdAt: '',
+            source: 'app_echo',
+          },
+        ],
+        botPaused: false,
+        flowState: JSON.stringify({
+          step: 'ROOT',
+          data: { officeGreeted: true },
+          officeThread: true,
+          personThread: true,
+        }),
+        lastHumanReply: humanReply,
+      });
+      flow.handle.mockResolvedValueOnce({ messages: [], state: null });
+
+      await plain.handleMessage('5491155556666', 'gracias', 'P1', 'pm-1');
+
+      expect(flow.handle).toHaveBeenCalledTimes(1);
+      const [, , ctx] = flow.handle.mock.calls[0] as [
+        string,
+        unknown,
+        {
+          answeringPerson: boolean;
+          lastHumanReply: unknown;
+          flowState: {
+            data: Record<string, unknown>;
+            officeThread?: boolean;
+            personThread?: boolean;
+          };
+        },
+      ];
+      expect(ctx.answeringPerson).toBe(false);
+      expect(ctx.lastHumanReply).toBeNull();
+      expect(ctx.flowState.officeThread).toBeUndefined();
+      expect(ctx.flowState.personThread).toBeUndefined();
+      expect(ctx.flowState.data.officeGreeted).toBeUndefined();
+    });
+
+    it('still stays out of a taken conversation', async () => {
+      api.getConversation.mockResolvedValueOnce({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [],
+        botPaused: true,
+        flowState: null,
+        lastHumanReply: null,
+      });
+
+      await plain.handleMessage('5491155556666', 'hola', 'P1', 'pm-2');
+
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(api.saveMessage).toHaveBeenCalled();
+    });
+  });
+
   describe('/reset secret command', () => {
     it('resets the session and does not persist the message', async () => {
       api.getConversation.mockResolvedValue({
