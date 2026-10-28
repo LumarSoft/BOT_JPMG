@@ -112,6 +112,19 @@ describe('answeringAPerson across sessions', () => {
     expect(answeringAPerson([], reply(13), now)).toBe(false);
   });
 
+  it('keeps answering a notice of the platform for three days', () => {
+    const notice = (hoursAgo: number) => ({
+      ...reply(hoursAgo),
+      kind: 'notice' as const,
+    });
+    expect(answeringAPerson([], notice(30), now)).toBe(true);
+    expect(answeringAPerson([], notice(71), now)).toBe(true);
+    expect(answeringAPerson([], notice(73), now)).toBe(false);
+    expect(answeringAPerson([], { ...reply(30), kind: 'person' }, now)).toBe(
+      false,
+    );
+  });
+
   it('does not apply once the bot has spoken in this session', () => {
     expect(
       answeringAPerson([msg('user'), msg('assistant')], reply(1), now),

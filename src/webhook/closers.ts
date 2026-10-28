@@ -174,11 +174,22 @@ export function lastSpeakerIsHuman(messages: ConversationMessage[]): boolean {
  */
 export const HUMAN_FOLLOWUP_MS = 2 * 60 * 60_000;
 
+/**
+ * A notice the platform sent on its own (a rechazo, a póliza vencida) is
+ * answered the next morning, and that answer is for the office: three days.
+ */
+export const NOTICE_FOLLOWUP_MS = 72 * 60 * 60_000;
+
+/** The window a reply keeps the customer "answering the office" for. */
+export function followUpWindow(reply: HumanReply | null | undefined): number {
+  return reply?.kind === 'notice' ? NOTICE_FOLLOWUP_MS : HUMAN_FOLLOWUP_MS;
+}
+
 /** Whether a person from the office wrote to this chat within the follow-up window. */
 export function recentHumanReply(
   reply: HumanReply | null | undefined,
   now: number = Date.now(),
-  windowMs: number = HUMAN_FOLLOWUP_MS,
+  windowMs: number = followUpWindow(reply),
 ): boolean {
   if (!reply) return false;
   const at = Date.parse(reply.createdAt);

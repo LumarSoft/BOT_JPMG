@@ -91,6 +91,9 @@ export interface PhoneMatch {
 export interface HumanReply {
   content: string;
   createdAt: string;
+  /** Who wrote it: a person from the office, or the platform on its own (a
+   * rechazo or póliza vencida notice). Absent from an older API: a person. */
+  kind?: 'person' | 'notice';
 }
 
 export interface PendingWarning {

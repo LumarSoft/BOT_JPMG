@@ -95,7 +95,7 @@ import type {
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
 import { legacyOrgProfile, type OrgProfile } from '../org-profile';
-import { HUMAN_FOLLOWUP_MS, isCloser, recentHumanReply } from '../closers';
+import { isCloser, recentHumanReply } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 import {
@@ -282,15 +282,6 @@ const HOW_TO_PAY_RE = /\?|\b(?:como|donde|cuando|cuanto|puedo|tengo que)\b/;
 
 /** Activity this recent means the same conversation is still going on. */
 const MID_CONVERSATION_MS = 10 * 60_000;
-
-/**
- * A person from the office wrote to this chat this recently: what the customer
- * writes is following that up, not starting over. The same two hours the bot
- * keeps out of a chat answered by hand (HUMAN_FOLLOWUP_MS); after that the bot
- * attends as usual. Three days (26/10) left a chat answered from the app with
- * nothing but "le pasé tu consulta a la oficina" (28/10).
- */
-const OFFICE_THREAD_MS = HUMAN_FOLLOWUP_MS;
 
 /**
  * Policies the bot can't see: accidentes personales and the nómina of drivers
@@ -5885,14 +5876,15 @@ export class FlowService {
   }
 
   /**
-   * A person from the office wrote here in the last two hours and the bot has
-   * not said anything since: what the customer writes now goes on with that.
+   * A person from the office wrote here in the last two hours — or the
+   * platform sent a notice (rechazo, póliza vencida) in the last three days —
+   * and the bot has not said anything since: what the customer writes now
+   * goes on with that. The windows are in closers.ts; three days for a
+   * person (26/10) left a chat answered from the app with nothing but "le
+   * pasé tu consulta a la oficina" (28/10).
    */
   private answeringOffice(ctx: FlowContext): boolean {
-    return (
-      !ctx.botSpoke &&
-      recentHumanReply(ctx.lastHumanReply, Date.now(), OFFICE_THREAD_MS)
-    );
+    return !ctx.botSpoke && recentHumanReply(ctx.lastHumanReply, Date.now());
   }
 
   /**

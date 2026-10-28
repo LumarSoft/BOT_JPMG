@@ -73,8 +73,8 @@ export interface FlowState {
    * the user already answered. Independent of DB identification (clientId). */
   audience?: 'client' | 'lead';
   /** A person from the office handled this chat in the last hours (see
-   * OFFICE_THREAD_MS): kept for the session, since the API stops reporting
-   * that person's reply once the bot answers. */
+   * followUpWindow in closers.ts): kept for the session, since the API stops
+   * reporting that person's reply once the bot answers. */
   officeThread?: boolean;
   /** What the customer wrote went to the person of the office who was
    * answering (see FlowService.personFollowUp): the rest of the session is for
