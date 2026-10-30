@@ -597,6 +597,28 @@ const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
 
 /**
+ * "No lo voy a asegurar con ustedes", "te aviso para que no inicies ningún
+ * trámite", "lo aseguré en otra compañía": the customer is backing out of a
+ * quote or a contract, not asking for one. It opened the quote menu three
+ * times over (#327). Folded text.
+ */
+const DECLINE_RE =
+  /\bno (?:lo |la |los |las |me |nos )?(?:voy|vamos|va) a (?:asegurar|contratar|hacer|tomar|seguir|sacar)(?:lo|la|los|las)?\b|\bno (?:quiero|queremos|vamos a|voy a) (?:asegurar|contratar|seguir|hacer)(?:lo|la|los|las)?\b(?! (?:con|por) (?:la|el) otra)|\bno me interesa\b|\bdesist|\bno (?:inicien?|inicies|hagan?|sigan?|avancen?)\b[^.?!]{0,20}\b(?:tramite|nada|gestion)\b|\b(?:lo|la|los|las) asegur[eé] (?:en|con) otr[ao]\b|\bya (?:lo|la) asegur[eé]\b|\bme quedo con (?:la|el) otr[ao]\b|\bno (?:lo |la )?(?:necesito|voy a necesitar) mas\b/;
+
+/**
+ * "Esta póliza que me mandaste está vencida", "venció el 17/10", "me renuevan
+ * la póliza": the policy itself, not a cuota. It got the account status twice
+ * (#334); the office sends the renewal. Folded text, cuotas excluded by the
+ * caller.
+ */
+const EXPIRED_POLICY_RE =
+  /\b(?:poliza|seguro|tarjeta verde|certificado|cobertura)\b[^.?!]{0,60}\b(?:vencid[ao]s?|vencio|caduc[oa]|caducad[ao])\b|\b(?:vencid[ao]|vencio|caduc[oa])\b[^.?!]{0,40}\b(?:poliza|seguro|tarjeta verde|certificado)\b|\b(?:renov(?:ar|arla|arlo|acion|ame|arme|aron|aran|amos)|renuev(?:a|an|en|o))\b[^.?!]{0,30}\b(?:poliza|seguro)\b|\bno (?:esta|estaria|estoy|tengo) (?:vigente|cobertura|cubiert[oa])\b/;
+
+/** Words a customer closes with after being told nothing more will happen. */
+const CLOSING_WORDS_RE =
+  /\b(?:gracias|grax|gcs|chau|adios|saludos|abrazo|beso|besos|buen dia|buenas tardes|buenas noches|dale|ok|oka|listo|perfecto|genial|igualmente)\b/;
+
+/**
  * Insuring a vehicle they don't have with us yet: "le quiero poner el seguro
  * a otro auto", "sacar un seguro para la moto nueva". #261 was taken for
  * another policy of theirs and sent to the office. Folded.
@@ -1403,6 +1425,13 @@ export class FlowService {
     // round-trip is one more billed message and one more wait. Introduce
     // ourselves in the same message — or let the quote model do it when it
     // answers directly (its prompt introduces itself on a first message).
+    // Backing out ("no lo voy a asegurar con ustedes") names "asegurar", so
+    // it goes before the quote: it is the opposite of one.
+    if (!sel && DECLINE_RE.test(fold(input.text)))
+      return this.withOpener(
+        opener,
+        await this.declineRequest(input.text, ctx, key),
+      );
     if (
       !sel &&
       (QUOTE_INTENT_RE.test(fold(input.text)) ||
@@ -1830,6 +1859,19 @@ export class FlowService {
         await this.officeFollowUp(input.text, ctx, key),
       );
     }
+    // Backing out of a quote or a contract: said once, no menu (#327).
+    if (DECLINE_RE.test(fold(input.text)))
+      return this.withOpener(
+        opener,
+        await this.declineRequest(input.text, ctx, key),
+      );
+    // "La póliza que me mandaste está vencida": the office sends the
+    // renewal; it is not a cuota (#334).
+    if (ctx.client && this.saysPolicyExpired(input.text))
+      return this.withOpener(
+        opener,
+        await this.expiredPolicyRequest(ctx, key, input.text),
+      );
     // Insured elsewhere and wants to come over: a quote, whatever the model
     // reads ("retirar el seguro de la compañía y poner el de ustedes" was
     // read as a cancellation and asked for a DNI, #295).
@@ -2320,6 +2362,16 @@ export class FlowService {
         ))
     )
       return this.closerReply(key, input.text);
+    // After "no iniciamos ningún trámite", a longer thanks or goodbye gets
+    // nothing more: no model, no menu (#327).
+    if (typed && this.closingAfterDecline(key, input.text))
+      return { messages: [] };
+    if (typed && DECLINE_RE.test(fold(input.text)))
+      return this.declineRequest(input.text, ctx, key);
+    // "Esta póliza que me mandaste está vencida": the office sends the
+    // renewal, not the account status (#334).
+    if (typed && this.saysPolicyExpired(input.text))
+      return this.expiredPolicyRequest(ctx, key, input.text);
     // "¿Habrá forma de quitar el débito? Lo pago yo": the office changes the
     // payment method with the customer's words (#259).
     if (typed && PAYMENT_CHANGE_RE.test(fold(input.text)))
@@ -2480,6 +2532,11 @@ export class FlowService {
       (typed && SAYS_CLIENT_RE.test(fold(input.text)))
     )
       return this.startClientIdentification(ctx, key);
+    // Backing out, and the goodbye that follows it (#327).
+    if (typed && this.closingAfterDecline(key, input.text))
+      return { messages: [] };
+    if (typed && DECLINE_RE.test(fold(input.text)))
+      return this.declineRequest(input.text, ctx, key);
     if (this.matchClientIntent(input.text) === OPT.bajaPoliza)
       return this.guard(ctx, key, 'baja_poliza', {}, input.text);
     // A request in their own words: their claim, payments or papers make
@@ -5247,6 +5304,13 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
+    // "Te aviso para que no inicies ningún trámite" with the quote menu on
+    // screen: no quote, and no menu again. A thanks or goodbye afterwards
+    // gets at most one short reply (#327).
+    if (!input.selectionId && DECLINE_RE.test(fold(input.text)))
+      return this.declineRequest(input.text, ctx, key);
+    if (!input.selectionId && isCloser(input.text))
+      return this.closerReply(key, input.text);
     const opt = input.selectionId ?? this.matchCotizarCategory(input.text);
     if (!opt || !COTIZAR_LABEL[opt]) {
       // Typed a vehicle instead of picking ("el gol trend 1.6 2015"): quote it.
@@ -6140,6 +6204,81 @@ export class FlowService {
             (await this.closedNote(ctx)),
         },
         clientMenu(),
+      ],
+    };
+  }
+
+  /**
+   * The customer backs out of a quote or a contract: said once, the office
+   * hears it (a sale that did not close), and no menu follows. The chat
+   * stays on their menu, flagged so the goodbye that usually comes next
+   * ("muchas gracias por todo") gets nothing more (#327).
+   */
+  private async declineRequest(
+    text: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    // Said twice ("te aviso para que no inicies ningún trámite" after "no
+    // lo voy a asegurar"): heard the first time.
+    if (this.load(key)?.state.data.declined === true) return { messages: [] };
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Avisa que no va a contratar (desistió): "${clip(text.trim())}"`,
+      )
+      .catch(() => undefined);
+    this.settleAfterRequest(key, ctx);
+    const step = this.load(key)?.state.step ?? 'ROOT';
+    this.setState(key, step, { declined: true, thanked: true });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: 'Entendido, no iniciamos ningún trámite 🙌 ¡Gracias por avisar! Si más adelante querés una cotización o cualquier otra consulta, escribime por acá.',
+        },
+      ],
+    };
+  }
+
+  /** A thanks or goodbye after backing out: nothing more to say. */
+  private closingAfterDecline(key: string, text: string): boolean {
+    if (this.load(key)?.state.data.declined !== true) return false;
+    const t = fold(text);
+    return isCloser(text) || CLOSING_WORDS_RE.test(t);
+  }
+
+  /** The policy itself is expired or up for renewal; a cuota is payments. */
+  private saysPolicyExpired(text: string): boolean {
+    const t = fold(text);
+    return !/\bcuotas?\b/.test(t) && EXPIRED_POLICY_RE.test(t);
+  }
+
+  /**
+   * "Esta póliza que me mandaste está vencida": the bot only has what Triunfo
+   * returns, so the office checks the renewal and sends the new policy. The
+   * account status is not the answer (#334).
+   */
+  private async expiredPolicyRequest(
+    ctx: FlowContext,
+    key: string,
+    text: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Dice que su póliza está vencida o pide la renovación: "${clip(text.trim())}". Revisar la vigencia con Triunfo y mandarle la póliza renovada.`,
+      )
+      .catch(() => undefined);
+    this.setState(key, 'CLIENT_MENU');
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Le pasé a la oficina que tu póliza figura vencida: un asesor revisa la renovación y te manda la póliza nueva por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote(ctx)),
+        },
       ],
     };
   }

@@ -300,6 +300,121 @@ describe('FlowService', () => {
     await send({ text: '37334584' }); // CLIENT_MENU
   }
 
+  describe('backing out of a quote (#327)', () => {
+    const noMenu = (res: { messages: Array<{ kind: string }> }) =>
+      expect(res.messages.some((m) => m.kind === 'list')).toBe(false);
+
+    it('says so once from the quote menu, tells the office, and keeps quiet on the goodbye', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.noCliente, text: 'Todavía no' });
+      await send({ selectionId: OPT.leadCotizar, text: 'Cotizar un seguro' });
+      expect(stored?.step).toBe('COTIZAR_TIPO');
+
+      const res = await send({
+        text: 'Hola Lucas disculpa que te moleste pero te quería avisar que no lo voy a asegurar en triunfo',
+      });
+      expect(res.messages).toHaveLength(1);
+      expect(res.messages[0].body).toContain('no iniciamos ningún trámite');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Avisa que no va a contratar (desistió): "Hola Lucas disculpa que te moleste pero te quería avisar que no lo voy a asegurar en triunfo"',
+      );
+      expect(stored?.step).toBe('LEAD_MENU');
+
+      const again = await send({
+        text: 'Te aviso para que no inicies ningún trámite',
+      });
+      expect(again.messages).toHaveLength(0);
+      const bye = await send({
+        text: 'Muchas gracias por todo siempre amable y dispuesto 🩷',
+      });
+      expect(bye.messages).toHaveLength(0);
+      expect(api.requestHandoff).toHaveBeenCalledTimes(1);
+    });
+
+    it('is read on the first message and on the client menu, without the menu after it', async () => {
+      const first = await send({
+        text: 'Hola, al final no voy a contratar el seguro, lo hice en otra compañía',
+      });
+      noMenu(first);
+      expect(JSON.stringify(first.messages)).toContain(
+        'no iniciamos ningún trámite',
+      );
+
+      stored = null;
+      const clientCtx: FlowContext = {
+        ...leadCtx,
+        client: {
+          firstName: 'Ana',
+          lastName: 'Gómez',
+        } as FlowContext['client'],
+      };
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        { text: 'no me interesa la cotización, gracias' },
+        clientCtx,
+      );
+      noMenu(res);
+      expect((stored as FlowState | null)?.step).toBe('CLIENT_MENU');
+    });
+
+    it('does not read a quote request or a cancellation as backing out', async () => {
+      const quote = await send({ text: 'Hola, quiero asegurar mi auto' });
+      expect(stored?.step).toMatch(/COTIZAR_TIPO|LLM_COTIZACION/);
+      expect(JSON.stringify(quote.messages)).not.toContain('no iniciamos');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the policy itself is expired (#334)', () => {
+    const clientCtx: FlowContext = {
+      ...leadCtx,
+      client: { firstName: 'Ana', lastName: 'Gómez' } as FlowContext['client'],
+    };
+
+    it('tells the office to send the renewal instead of showing the account status', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      const res = await send(
+        {
+          text: 'Esta póliza que me enviaste, Nico, está vencida. Venció el 17 del 10',
+        },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Dice que su póliza está vencida o pide la renovación: "Esta póliza que me enviaste, Nico, está vencida. Venció el 17 del 10". Revisar la vigencia con Triunfo y mandarle la póliza renovada.',
+      );
+      expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+      expect(res.messages).toHaveLength(1);
+      expect(res.messages[0].body).toContain('un asesor revisa la renovación');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('is read on the first message of a returning client too', async () => {
+      const res = await send(
+        { text: 'Buen día, me renuevan la póliza del auto? ya se venció' },
+        clientCtx,
+      );
+      expect(JSON.stringify(res.messages)).toContain('revisa la renovación');
+      expect(api.getEstadoCuenta).not.toHaveBeenCalled();
+    });
+
+    it('keeps an expired cuota as a payment matter', async () => {
+      await send({ text: 'hola' }, clientCtx);
+      await send(
+        { text: 'tengo la cuota vencida de la póliza del auto' },
+        clientCtx,
+      );
+
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('póliza está vencida'),
+      );
+      expect(api.getEstadoCuenta).toHaveBeenCalled();
+    });
+  });
+
   describe('first message that already asks for a quote', () => {
     it('skips "¿ya sos cliente?" and introduces itself with the category menu', async () => {
       const res = await send({ text: 'Hola, quiero cotizar un seguro' });
