@@ -76,6 +76,78 @@ export function mergeDatos(
   return merged;
 }
 
+// Where a labelled value ends: the next label, a separator or the end.
+const TERCERO_STOP =
+  '(?=\\s*(?:[,;.\\n]|\\b(?:dni|documento|doc\\.?|seguro|aseguradora|compa[nñ][ií]a|cia\\.?|p[óo]liza|patente|dominio|chapa|conductora?|chofer|tel[ée]fono|cel(?:ular)?)\\b)|\\s*$)';
+const TERCERO_CONDUCTOR_RE = new RegExp(
+  `\\b(?:conductora?|chofer|quien manejaba|lo manejaba|manejaba)\\b(?:\\s+del?\\s+(?:otro\\s+)?(?:auto|veh[ií]culo|tercero))?\\s*[:\\-]?\\s*(?:es|era|se llama)?\\s*([^,;.\\n]+?)${TERCERO_STOP}`,
+  'i',
+);
+const TERCERO_DNI_RE =
+  /\b(?:dni|documento|doc\.?)\s*[:-]?\s*(?:n(?:[°ºu]|ú|umero|úmero)?\.?\s*)?(\d{1,2}[.\s]?\d{3}[.\s]?\d{3}|\d{7,8})\b/i;
+const TERCERO_COMPANIA_RE = new RegExp(
+  `\\b(?:asegurad[oa]\\s+(?:en|con|por)|aseguradora|compa[nñ][ií]a(?:\\s+de\\s+seguros?)?|cia\\.?|seguro)\\s*[:\\-]?\\s*(?:es|era)?\\s*([^,;.\\n]+?)${TERCERO_STOP}`,
+  'i',
+);
+const TERCERO_POLIZA_RE =
+  /\bp[óo]liza\s*[:-]?\s*(?:n(?:[°ºu]|ú|umero|úmero)?\.?\s*)?(\d[\d\s/.-]{3,}\d)/i;
+const TERCERO_PATENTE_RE =
+  /\b(?:patente|dominio|chapa)\b(?:\s+del?\s+(?:otro\s+)?(?:auto|veh[ií]culo|tercero))?\s*[:-]?\s*(?:es|era)?\s*((?:[a-z]\s?){2,3}\d{3}(?:\s?[a-z]){0,2}|\d{3}(?:\s?[a-z]){3})\b/i;
+
+/**
+ * The other vehicle's data written with labels at the confirmation card
+ * ("Conductor: Ingaramo Juan Pablo dni: número 27336047", "seguro Victoria
+ * seguros póliza 04 3061667"), read without the model: the model left those
+ * three messages empty and the claim was never filed (#330). A DNI or policy
+ * number alone joins the name or insurer already known.
+ */
+export function terceroDesdeTexto(
+  text: string,
+  known: SiniestroDatos = SINIESTRO_DATOS_VACIOS,
+): Partial<SiniestroDatos> {
+  const t = text.replace(/\s+/g, ' ').trim();
+  const out: Partial<SiniestroDatos> = {};
+  const conductor = TERCERO_CONDUCTOR_RE.exec(t)?.[1]?.trim();
+  const dni = TERCERO_DNI_RE.exec(t)?.[1]?.replace(/[.\s]/g, '');
+  if (conductor && /\p{L}/u.test(conductor))
+    out.terceroConductor = dni ? `${conductor} (DNI ${dni})` : conductor;
+  else if (dni)
+    out.terceroConductor = known.terceroConductor
+      ? known.terceroConductor.includes(dni)
+        ? known.terceroConductor
+        : `${known.terceroConductor} (DNI ${dni})`
+      : `DNI ${dni}`;
+  const compania = TERCERO_COMPANIA_RE.exec(t)?.[1]?.trim();
+  const poliza = TERCERO_POLIZA_RE.exec(t)?.[1]?.trim();
+  if (compania && /\p{L}/u.test(compania))
+    out.terceroCompania = poliza ? `${compania} (póliza ${poliza})` : compania;
+  else if (poliza)
+    out.terceroCompania = known.terceroCompania
+      ? known.terceroCompania.includes(poliza)
+        ? known.terceroCompania
+        : `${known.terceroCompania} (póliza ${poliza})`
+      : `póliza ${poliza}`;
+  const patente = TERCERO_PATENTE_RE.exec(t)?.[1];
+  if (patente) out.terceroPatente = patente.replace(/[\s-]/g, '').toUpperCase();
+  if (Object.keys(out).length) out.otroVehiculo = true;
+  return out;
+}
+
+/**
+ * Whether free text at the confirmation card carries a detail worth keeping
+ * even when nothing could be read into a field: a number such as a DNI or a
+ * policy, a name (a capital after the first word) or a sentence of six words
+ * or more. "ok", "sí" or "los datos del otro vehículo" (an announcement of
+ * what comes next) are not.
+ */
+export function traeDetalles(text: string): boolean {
+  const t = text.trim();
+  if (/\d{4,}/.test(t)) return true;
+  const words = t.split(/\s+/).filter((w) => /\p{L}/u.test(w));
+  if (words.slice(1).some((w) => /^\p{Lu}/u.test(w))) return true;
+  return words.length >= 6;
+}
+
 /**
  * Pending items, each with the follow-up line to ask for it. The location is
  * the one people get wrong: a corner ("Pellegrini y Oroño") is not enough, so

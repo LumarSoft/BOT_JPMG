@@ -10,6 +10,8 @@ import {
   pendientes,
   pendientesBien,
   siniestroDescripcion,
+  terceroDesdeTexto,
+  traeDetalles,
 } from './siniestro-datos';
 import { fold } from '../text';
 
@@ -98,6 +100,81 @@ describe('siniestro datos', () => {
         'Otro vehículo: Sí — patente: AB123CD; conductor: no informado; compañía: no informada',
       ].join('\n'),
     );
+  });
+});
+
+describe('the other vehicle typed with labels at the confirmation card (#330)', () => {
+  it('reads the driver and their DNI', () => {
+    expect(
+      terceroDesdeTexto('Conductor: Ingaramo Juan Pablo dni: número 27336047'),
+    ).toEqual({
+      otroVehiculo: true,
+      terceroConductor: 'Ingaramo Juan Pablo (DNI 27336047)',
+    });
+  });
+
+  it('reads driver, DNI, insurer and policy from one line', () => {
+    expect(
+      terceroDesdeTexto(
+        'Conductor Ingaramo Juan Pablo dni 27336047 seguro Victoria seguros póliza   04 3061667',
+      ),
+    ).toEqual({
+      otroVehiculo: true,
+      terceroConductor: 'Ingaramo Juan Pablo (DNI 27336047)',
+      terceroCompania: 'Victoria seguros (póliza 04 3061667)',
+    });
+  });
+
+  it('reads a plate written with spaces', () => {
+    expect(terceroDesdeTexto('Patente del otro vehículo es J R M973')).toEqual({
+      otroVehiculo: true,
+      terceroPatente: 'JRM973',
+    });
+    expect(terceroDesdeTexto('dominio: ab 123 cd')).toEqual({
+      otroVehiculo: true,
+      terceroPatente: 'AB123CD',
+    });
+  });
+
+  it('joins a DNI or a policy number alone to what is already known', () => {
+    const known = {
+      ...SINIESTRO_DATOS_VACIOS,
+      otroVehiculo: true,
+      terceroConductor: 'Juan Pablo Ingaramo',
+      terceroCompania: 'Victoria',
+    };
+    expect(terceroDesdeTexto('dni 27.336.047', known)).toEqual({
+      otroVehiculo: true,
+      terceroConductor: 'Juan Pablo Ingaramo (DNI 27336047)',
+    });
+    expect(terceroDesdeTexto('póliza nº 04-3061667', known)).toEqual({
+      otroVehiculo: true,
+      terceroCompania: 'Victoria (póliza 04-3061667)',
+    });
+    expect(terceroDesdeTexto('dni 27336047')).toEqual({
+      otroVehiculo: true,
+      terceroConductor: 'DNI 27336047',
+    });
+  });
+
+  it('reads nothing from text without those labels', () => {
+    expect(terceroDesdeTexto('iba con mi hijo')).toEqual({});
+    expect(terceroDesdeTexto('Confirmar')).toEqual({});
+    expect(terceroDesdeTexto('asegurado en Sancor')).toEqual({
+      otroVehiculo: true,
+      terceroCompania: 'Sancor',
+    });
+  });
+
+  it('tells a detail worth keeping from a tap-like word or an announcement', () => {
+    expect(traeDetalles('ok')).toBe(false);
+    expect(traeDetalles('los datos del otro vehículo')).toBe(false);
+    expect(traeDetalles('Sí')).toBe(false);
+    expect(traeDetalles('venía lloviendo y el otro auto frenó de golpe')).toBe(
+      true,
+    );
+    expect(traeDetalles('el otro era un Focus')).toBe(true);
+    expect(traeDetalles('siniestro 1070308')).toBe(true);
   });
 });
 

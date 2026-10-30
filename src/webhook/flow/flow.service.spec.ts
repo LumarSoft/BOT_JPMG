@@ -694,6 +694,90 @@ describe('FlowService', () => {
       expect(filed.description).toContain('AG827QI');
     });
 
+    it('keeps the labelled driver and insurer when the model reads nothing (#330)', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce({
+        ...completo,
+        terceroPatente: null,
+      });
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+
+      extractor.extract.mockResolvedValue(vacio);
+      const withPlate = await send(
+        { text: 'Patente del otro vehículo es J R M973' },
+        ctx,
+      );
+      expect(withPlate.messages[0].body).toBe('Anoté eso 👍');
+      expect(withPlate.messages[1].body).toContain('patente: JRM973');
+
+      const withDriver = await send(
+        { text: 'Conductor: Ingaramo Juan Pablo dni: número 27336047' },
+        ctx,
+      );
+      expect(withDriver.messages[0].body).toBe('Anoté eso 👍');
+      expect(withDriver.messages[1].body).toContain(
+        'conductor: Ingaramo Juan Pablo (DNI 27336047)',
+      );
+
+      const withInsurer = await send(
+        {
+          text: 'Conductor Ingaramo Juan Pablo dni 27336047 seguro Victoria seguros póliza   04 3061667',
+        },
+        ctx,
+      );
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(withInsurer.messages[0].body).toBe('Anoté eso 👍');
+      expect(withInsurer.messages[1].body).toContain(
+        'patente: JRM973; conductor: Ingaramo Juan Pablo (DNI 27336047); compañía: Victoria seguros (póliza 04 3061667)',
+      );
+
+      await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+      const [, filed] = api.createSiniestro.mock.calls[0] as [
+        number,
+        { description: string },
+      ];
+      expect(filed.description).toContain('Victoria seguros');
+    });
+
+    it('keeps a detail that fits no field with the story instead of counting it as a misunderstanding', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce(completo);
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+
+      extractor.extract.mockResolvedValue(vacio);
+      const first = await send(
+        { text: 'venía lloviendo y el otro auto frenó de golpe' },
+        ctx,
+      );
+      expect(first.messages[0].body).toBe('Anoté eso 👍');
+      expect(first.messages[1].body).toContain(
+        'Datos adicionales: venía lloviendo y el otro auto frenó de golpe',
+      );
+
+      const second = await send({ text: 'el otro era un Focus gris' }, ctx);
+      const third = await send(
+        { text: 'había un testigo que vio todo desde la vereda' },
+        ctx,
+      );
+      expect(stored?.step).toBe('SINIESTRO_CONFIRM');
+      expect(second.messages[0].body).toBe('Anoté eso 👍');
+      expect(third.messages[0].body).toBe('Anoté eso 👍');
+      expect(third.messages[1].body).toContain('¿Confirmás?');
+      expect(third.messages[1].body).toContain('Focus gris');
+      expect(third.messages[1].body).toContain('testigo');
+    });
+
+    it('still merges what the model reads when it fails on another message', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValueOnce(completo);
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+
+      extractor.extract.mockRejectedValueOnce(new Error('sin modelo'));
+      const res = await send({ text: 'patente del tercero AB123CD' }, ctx);
+      expect(res.messages[0].body).toBe('Anoté eso 👍');
+      expect(res.messages[1].body).toContain('patente: AB123CD');
+    });
+
     it('re-shows the confirmation card when the typed text adds nothing', async () => {
       await openChecklist();
       extractor.extract.mockResolvedValueOnce(completo);
@@ -1650,6 +1734,59 @@ describe('FlowService', () => {
         dni: '30123456781',
       });
       expect(res.state?.step).toBe('CLIENT_MENU');
+    });
+
+    it('passes a question about a letter they got to the office instead of asking the DNI again (#355)', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'Quiero saber x q recibí esta carta' });
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Sin identificar. Pregunta por un papel que recibió: "Quiero saber x q recibí esta carta"',
+      );
+      expect(api.identifyClient).not.toHaveBeenCalled();
+      expect(res.state?.step).toBe('ASESOR_MOTIVO');
+      expect(res.messages[0].body).toContain(
+        'Le pasé a la oficina tu consulta para que te respondan por este chat',
+      );
+
+      const more = await send({ text: 'Espero la respuesta de la carta' });
+      expect(JSON.stringify(more.messages)).toContain('tomé nota');
+    });
+
+    it('passes a question about a file they just sent to the office, naming the attachment (#355)', async () => {
+      const withFile: FlowContext = {
+        ...leadCtx,
+        history: [
+          {
+            role: 'user',
+            content: '[El cliente envió un archivo: WhatsApp Scan.pdf]',
+          },
+          { role: 'assistant', content: '📎 ¡Recibí tu archivo!' },
+        ],
+      };
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send(
+        { text: '¿Qué es esto que me mandaron?' },
+        withFile,
+      );
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Sin identificar. Mandó un archivo o foto (ver el chat) y pregunta: "¿Qué es esto que me mandaron?"',
+      );
+      expect(res.messages[0].body).toContain('tu consulta y lo que mandaste');
+    });
+
+    it('still reads a DNI or a plain request where the DNI was asked', async () => {
+      await send({ text: 'hola' });
+      await send({ selectionId: OPT.cliente, text: 'Sí, soy cliente' });
+      const res = await send({ text: 'no me acuerdo el dni, lo busco' });
+
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+      expect(res.state?.step).toBe('IDENTIFY');
     });
 
     it('asks again when the DNI is not found', async () => {

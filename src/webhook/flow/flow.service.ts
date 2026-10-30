@@ -118,6 +118,8 @@ import {
   siniestroChecklist,
   siniestroDescripcion,
   siniestroFaltantes,
+  terceroDesdeTexto,
+  traeDetalles,
   type BienCampo,
   type BienDanio,
   type BienDatos,
@@ -376,6 +378,15 @@ const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
  * allowed) or a plate — only then is it worth asking the model to read it. */
 const MAYBE_IDENTIFICATION_RE =
   /\d(?:[ .-]?\d){6,}|\b[a-z]{2}[ -]?\d{3}[ -]?[a-z]{2}\b|\b[a-z]{3}[ -]?\d{3}\b|\b[a-z]\d{3}[a-z]{3}\b/i;
+
+/** A paper the customer got: a letter, a mail, a notice, a text message. */
+const PAPER_RE =
+  /\b(?:carta|cartas|mail|mails|e-?mail|correo|notificacion|notificaciones|telegrama|cedula|intimacion|sms|mensaje de texto|comunicado)\b/;
+/** Asking what something is or why it came, rather than stating a fact. */
+const PAPER_QUESTION_RE =
+  /\?|\b(?:por ?que|porque|que es|que significa|que quiere decir|quiero saber|quisiera saber|necesito saber|no entiendo|me explic|me (?:llego|lleg[oó]|mandaron|enviaron)|recibi)\b/;
+/** The placeholders the webhook stores for a file or photo the customer sent. */
+const ATTACHMENT_RE = /^\[El cliente envi[oó] (?:un archivo|una foto)/;
 
 const NOT_FOUND_TEXT =
   'No encontré ningún cliente con ese dato. Verificá el DNI, CUIT o patente y mandámelo de nuevo, o escribí *asesor* si preferís que te contacten.';
@@ -2644,6 +2655,17 @@ export class FlowService {
     )
       return this.enterCotizar(input, ctx, key);
 
+    // A letter, mail or notice they got, or a file they just sent, with a
+    // question about it: the office answers it with the attachment in the
+    // chat. Asking for the DNI again left a customer and her letter waiting
+    // all morning without an alert (#355).
+    if (
+      !input.selectionId &&
+      !MAYBE_IDENTIFICATION_RE.test(raw) &&
+      this.paperQuestion(raw, ctx)
+    )
+      return this.paperToOffice(raw, ctx, key);
+
     let action = (state.data.pendingAction as IdentificationAction) ?? 'pagos';
     let params: { dni: string } | { plate: string } | null =
       bareIdentification(raw);
@@ -2712,6 +2734,52 @@ export class FlowService {
         : {}),
     });
     return result ?? this.notFound(key, state.data);
+  }
+
+  /**
+   * Whether an unidentified customer is asking about a paper they received
+   * ("quiero saber por qué recibí esta carta") or about a file or photo they
+   * sent in this session ("¿qué es esto?"). An identification in the text is
+   * ruled out before.
+   */
+  private paperQuestion(raw: string, ctx: FlowContext): boolean {
+    const t = fold(raw);
+    if (!PAPER_QUESTION_RE.test(t)) return false;
+    if (PAPER_RE.test(t)) return true;
+    return this.attachmentsIn(ctx) > 0;
+  }
+
+  /** Files and photos the customer sent in this session. */
+  private attachmentsIn(ctx: FlowContext): number {
+    return (ctx.history ?? []).filter(
+      (m) => m.role === 'user' && ATTACHMENT_RE.test(m.content),
+    ).length;
+  }
+
+  private async paperToOffice(
+    raw: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const attached = this.attachmentsIn(ctx);
+    const about = attached
+      ? `Sin identificar. Mandó ${attached === 1 ? 'un archivo o foto' : `${attached} archivos o fotos`} (ver el chat) y pregunta: "${clip(raw)}"`
+      : `Sin identificar. Pregunta por un papel que recibió: "${clip(raw)}"`;
+    await this.api
+      .requestHandoff(ctx.conversationId, about)
+      .catch(() => undefined);
+    this.setState(key, 'ASESOR_MOTIVO', { alerted: true, lastQuestion: raw });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Le pasé a la oficina tu consulta${attached ? ' y lo que mandaste' : ''} para que te respondan por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote(ctx)) +
+            '\n\nSi además querés ver tus pólizas por acá, pasame el *DNI del titular* o la *patente*.',
+        },
+      ],
+    };
   }
 
   /**
@@ -4160,7 +4228,7 @@ export class FlowService {
     const text = input.text.trim();
     const known = state.data.datos as SiniestroDatos | undefined;
     if (input.selectionId || !known || !/[\p{L}\p{N}]/u.test(text)) return null;
-    let extracted: Partial<SiniestroDatos>;
+    let extracted: Partial<SiniestroDatos> = {};
     try {
       extracted = await this.extractor.extract({
         text,
@@ -4172,11 +4240,24 @@ export class FlowService {
       this.logger.warn(
         `No se pudo leer lo agregado en la confirmación del siniestro: ${(error as Error).message}`,
       );
-      return null;
     }
     if (extracted.fecha && !parseFecha(extracted.fecha)) extracted.fecha = null;
-    const datos = mergeDatos(known, extracted);
-    if (JSON.stringify(datos) === JSON.stringify(known)) return null;
+    // The labelled data of the other vehicle is read here, whatever the model
+    // made of it: "Conductor: … dni: …" came back three times with the card
+    // unchanged and the claim was never filed (#330).
+    let datos = mergeDatos(
+      mergeDatos(known, extracted),
+      terceroDesdeTexto(text, known),
+    );
+    if (JSON.stringify(datos) === JSON.stringify(known)) {
+      // A detail that fits no field is kept with the story rather than
+      // counted as a misunderstanding: the third one sent them to the FAQ.
+      if (!traeDetalles(text)) return null;
+      datos = {
+        ...known,
+        relato: `${known.relato ?? ''}\nDatos adicionales: ${text}`.trim(),
+      };
+    }
 
     const fecha = parseFecha(datos.fecha!) ?? {
       iso: state.data.fechaIso as string,
