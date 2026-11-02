@@ -1976,6 +1976,34 @@ describe('WebhookService', () => {
       );
     });
 
+    it('keeps a message from another line of the organization without answering it (2/11 loop)', async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: true,
+        internalWaIds: ['543412757294', '543417028217'],
+      });
+
+      await service.handleMessage(
+        '5493417028217',
+        'Por inactividad damos por finalizada esta conversación.',
+        'P1',
+        'wamid-internal',
+      );
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        1,
+        'user',
+        'Por inactividad damos por finalizada esta conversación.',
+        undefined,
+        undefined,
+      );
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(meta.sendText).not.toHaveBeenCalled();
+      expect(meta.sendList).not.toHaveBeenCalled();
+      expect(meta.sendButtons).not.toHaveBeenCalled();
+    });
+
     it('stores the message but sends nothing when the bot is disabled globally', async () => {
       api.getContext.mockResolvedValue({
         producerName: 'John',
@@ -3057,6 +3085,29 @@ describe('WebhookService', () => {
       );
       expect(meta.sendText.mock.calls[0][1]).toContain('Recibí tu video');
       expect(flow.handle).not.toHaveBeenCalled();
+    });
+
+    it("keeps a file from another line of the organization without the 'recibí tu archivo' reply", async () => {
+      api.getContext.mockResolvedValue({
+        producerName: 'John',
+        systemPrompt: 'x',
+        botEnabled: true,
+        internalWaIds: ['543417028217'],
+      });
+
+      await service.handleSharedItem('5493417028217', 'P1', 'wi1', {
+        kind: 'file',
+        content: '[El cliente envió un archivo: listado.xlsx]',
+      });
+
+      expect(api.saveMessage).toHaveBeenCalledWith(
+        7,
+        'user',
+        '[El cliente envió un archivo: listado.xlsx]',
+        undefined,
+        undefined,
+      );
+      expect(meta.sendText).not.toHaveBeenCalled();
     });
 
     it('stays silent while a person from the office has the chat', async () => {

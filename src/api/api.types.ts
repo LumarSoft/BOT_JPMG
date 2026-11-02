@@ -20,6 +20,10 @@ export interface BotContext {
    *  absent (older API, default org without a saved profile) → the bot keeps
    *  its built-in values. */
   profile?: BotOrgProfile | null;
+  /** The organization's other WhatsApp lines (digits, `54` + area + number,
+   *  without WhatsApp's mobile `9`): a message from one of them is kept for
+   *  the inbox and never answered. Absent on older APIs. */
+  internalWaIds?: string[];
 }
 
 /** Per-organization bot profile, as GET /bot/context sends it. */

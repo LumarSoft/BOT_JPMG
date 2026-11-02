@@ -233,6 +233,26 @@ const QUOTE_ALERT_WINDOW_MS = 30 * 60 * 1000;
  * The quote service itself failed (Triunfo down or slow, our API unreachable),
  * as opposed to data the client can fix such as a year the catalog rejects.
  */
+/**
+ * The sender is another WhatsApp line of the same organization (a branch
+ * writing to the office from its own bot number). What they send is kept for
+ * the inbox and never answered: on 2/11 the office's inactivity goodbye was
+ * answered by the branch's bot, and the two thanked each other eight times.
+ */
+export function isInternalSender(
+  context: Pick<BotContext, 'internalWaIds'>,
+  from: string,
+): boolean {
+  const own = context.internalWaIds;
+  if (!own || own.length === 0) return false;
+  const digits = from.replace(/\D/g, '');
+  const canonical = digits.startsWith('549') ? `54${digits.slice(3)}` : digits;
+  return own.some((waId) => {
+    const d = waId.replace(/\D/g, '');
+    return (d.startsWith('549') ? `54${d.slice(3)}` : d) === canonical;
+  });
+}
+
 function isQuoteServiceFailure(error: unknown): boolean {
   if (!axios.isAxiosError(error)) return false;
   const status = error.response?.status;
@@ -750,12 +770,18 @@ export class WebhookService {
 
       // A human agent has taken over this conversation — store the message so
       // the agent can see it in the inbox, but do not run the bot for this turn.
+      const internal = isInternalSender(context, from);
       if (
         conversation.botPaused ||
         !this.autoReplyEnabled ||
-        context.botEnabled === false
+        context.botEnabled === false ||
+        internal
       ) {
-        if (!this.autoReplyEnabled) {
+        if (internal) {
+          this.logger.log(
+            `Mensaje de ${from}, otro número de ${context.producerName} — guardado sin responder`,
+          );
+        } else if (!this.autoReplyEnabled) {
           this.logger.warn(
             `BOT_AUTOREPLY_ENABLED=false — mensaje de ${from} guardado sin responder`,
           );
@@ -1274,7 +1300,8 @@ export class WebhookService {
     const botAnswers =
       this.autoReplyEnabled &&
       context.botEnabled !== false &&
-      !conversation.botPaused;
+      !conversation.botPaused &&
+      !isInternalSender(context, from);
     // Download + transcription take a few seconds: show "escribiendo…".
     if (botAnswers) this.meta.showTyping(messageId, phoneNumberId);
 
@@ -1391,7 +1418,9 @@ export class WebhookService {
     }
 
     const automationDisabled =
-      context.botEnabled === false || !this.autoReplyEnabled;
+      context.botEnabled === false ||
+      !this.autoReplyEnabled ||
+      isInternalSender(context, from);
 
     const media = await this.meta.downloadMedia(mediaId, phoneNumberId);
     if (!media) {
@@ -1663,6 +1692,7 @@ export class WebhookService {
       conversation.botPaused ||
       context.botEnabled === false ||
       !this.autoReplyEnabled ||
+      isInternalSender(context, from) ||
       this.answeringPerson(conversation) ||
       !(await this.automaticRepliesStillEnabled(phoneNumberId))
     )
@@ -2193,16 +2223,23 @@ export class WebhookService {
       const result = JSON.parse(rawResult) as {
         brand?: { id?: unknown; name?: unknown };
         versions?: Array<{ codia?: unknown; description?: unknown }>;
+        /** find_vehicle found it in the other catalog (a moto in the auto flow). */
+        vehicleType?: unknown;
       };
       const args = rawArgs
         ? (JSON.parse(rawArgs) as Record<string, unknown>)
         : {};
+      const foundAs =
+        result.vehicleType === 'moto' || result.vehicleType === 'auto'
+          ? result.vehicleType
+          : undefined;
       const vehicleType =
-        args.vehicleType === 'moto'
+        foundAs ??
+        (args.vehicleType === 'moto'
           ? 'moto'
           : args.vehicleType === 'auto'
             ? 'auto'
-            : (fallbackType ?? previous?.vehicleType);
+            : (fallbackType ?? previous?.vehicleType));
       if (!vehicleType || !Array.isArray(result.versions)) return previous;
 
       const candidates = result.versions
