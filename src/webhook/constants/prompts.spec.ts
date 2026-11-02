@@ -28,6 +28,21 @@ describe('buildCotizacionPrompt', () => {
     expect(prompt).not.toContain('¿Tu moto tiene GNC?');
   });
 
+  it('reads "contra todo" on a moto as the most complete quoted coverage, never a fixed code (#399)', () => {
+    const prompt = buildCotizacionPrompt({ ...base, vehicleType: 'moto' });
+
+    expect(prompt).toContain(
+      'Si la persona pide *todo riesgo*, *contra todo*, *full* o "la más completa" para una *moto*: en motos no existe el todo riesgo con daños parciales por accidente',
+    );
+    expect(prompt).toContain(
+      'la más completa de esa lista (la que más puntos tiene en "incluye")',
+    );
+    expect(prompt).toContain(
+      'mostralas todas sin señalar ninguna y que elija la persona',
+    );
+    expect(prompt).not.toMatch(/contra todo[^.]*\bB —/);
+  });
+
   it('keeps the GNC question only for car quotes', () => {
     const prompt = buildCotizacionPrompt({
       ...base,
@@ -92,6 +107,20 @@ describe('buildFaqPrompt', () => {
     );
     expect(buildFaqPrompt(base)).toContain(
       'Sos *el asistente de John Pellegrini Management Group SRL* (JPMG), una productora',
+    );
+  });
+
+  it('asks auto or moto before explaining "contra todo", and never assumes a car (#399)', () => {
+    const prompt = buildFaqPrompt({ ...base, botName: 'NICO' });
+
+    expect(prompt).toContain(
+      'preguntá primero si es un auto o una moto: no des por hecho que es un auto',
+    );
+    expect(prompt).toContain(
+      'en motos no existe el todo riesgo con daños parciales por accidente',
+    );
+    expect(prompt).toContain(
+      'le aparecen todas las coberturas de moto para elegir',
     );
   });
 
