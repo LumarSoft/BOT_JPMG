@@ -117,7 +117,7 @@ export function buildCotizacionPrompt(options: FocusedPromptOptions): string {
     clientContext(options.client) +
     staffContext(options.staffNames, options.staffNotified);
   const vehicleContext = options.vehicleType
-    ? `El tipo de vehículo ya está definido por el flujo: *${options.vehicleType}*. Usá \`${options.vehicleType}\` como vehicleType en TODAS las tools; no lo vuelvas a preguntar ni lo cambies.`
+    ? `El tipo de vehículo ya está definido por el flujo: *${options.vehicleType}*. Usá \`${options.vehicleType}\` como vehicleType en TODAS las tools; no lo vuelvas a preguntar ni lo cambies. Única excepción: si find_vehicle devuelve un \`vehicleType\` distinto (la persona nombró una moto en el flujo de autos, o al revés), seguí con ese tipo en las tools siguientes y decíselo en una línea; nunca la mandes a un asesor por eso.`
     : 'Identificá del contexto de la charla si es *auto* o *moto* y usá ese valor como vehicleType en TODAS las tools (si no quedó claro, preguntalo).';
   return `${identity}
 

@@ -25,6 +25,8 @@ const MAX_GROUPS = 3;
 const MAX_CANDIDATES = 20;
 /** Line names listed back when the model name wasn't found. */
 const MAX_AVAILABLE = 60;
+/** Versions a match in the other catalog may have to count as that vehicle. */
+const MAX_CROSS_VERSIONS = 12;
 
 type FinderApi = Pick<ApiService, 'searchBrands' | 'getGroups' | 'getModels'>;
 
@@ -181,6 +183,39 @@ function bestMatches(models: InfoAutoModel[], words: string[]) {
  * Peugeot 308 quote ran out of rounds before reaching the price.
  */
 export async function findVehicle(
+  api: FinderApi,
+  args: FindVehicleArgs,
+): Promise<Record<string, unknown>> {
+  const found = await findInCatalog(api, args);
+  // The brand or model isn't in this catalog (the year error means it is):
+  // maybe it is the other kind of vehicle. "Honda CB 125" typed in the auto
+  // flow got "este flujo está cotizando autos… escribí asesor" (#399).
+  if ('versions' in found || 'availableYears' in found) return found;
+  const other: VehicleType = args.vehicleType === 'moto' ? 'auto' : 'moto';
+  const crossed = await findInCatalog(api, { ...args, vehicleType: other });
+  // Only a specific match counts: the moto search also matches any single
+  // word of the model ("125"), and a typo in a car's name must not turn it
+  // into a page of motos.
+  if (
+    !('versions' in crossed) ||
+    typeof crossed.total !== 'number' ||
+    crossed.total > MAX_CROSS_VERSIONS
+  )
+    return found;
+  const kind = other === 'moto' ? 'una moto' : 'un auto';
+  const name = `${args.brand} ${args.model}`.trim();
+  return {
+    ...crossed,
+    vehicleType: other,
+    note: [
+      `"${name}" es ${kind}, no ${args.vehicleType === 'moto' ? 'una moto' : 'un auto'}: está en el catálogo de ${other === 'moto' ? 'motos' : 'autos'}.`,
+      `Seguí cotizando como ${other}: usá vehicleType "${other}" en todas las tools${other === 'moto' ? ', no preguntes por GNC' : ''} y avisale en una línea que lo cotizás como ${other}.`,
+      ...(typeof crossed.note === 'string' ? [crossed.note] : []),
+    ].join(' '),
+  };
+}
+
+async function findInCatalog(
   api: FinderApi,
   args: FindVehicleArgs,
 ): Promise<Record<string, unknown>> {

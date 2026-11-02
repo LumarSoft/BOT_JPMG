@@ -3,10 +3,17 @@ import { findVehicle } from './vehicle-finder';
 describe('findVehicle', () => {
   function api() {
     return {
-      searchBrands: jest.fn().mockResolvedValue([
-        { id: 12, name: 'CHEVROLET' },
-        { id: 72, name: 'CHEVROLET CAM.' },
-      ]),
+      // Chevrolet makes no motos: the other catalog has nothing.
+      searchBrands: jest.fn().mockImplementation((type: string) =>
+        Promise.resolve(
+          type === 'moto'
+            ? []
+            : [
+                { id: 12, name: 'CHEVROLET' },
+                { id: 72, name: 'CHEVROLET CAM.' },
+              ],
+        ),
+      ),
       getGroups: jest.fn().mockResolvedValue([
         { id: 2, name: 'ASTRA', prices_from: 1997, prices_to: 2012 },
         { id: 11, name: 'CORSA', prices_from: 2000, prices_to: 2010 },
@@ -186,6 +193,7 @@ describe('findVehicle', () => {
     const a = {
       searchBrands: jest
         .fn()
+        .mockResolvedValue([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 36, name: 'RENAULT' }]),
       getGroups: jest.fn(),
@@ -197,7 +205,7 @@ describe('findVehicle', () => {
       model: 'sandero',
     });
 
-    expect(a.searchBrands).toHaveBeenLastCalledWith('auto', 'ren');
+    expect(a.searchBrands).toHaveBeenNthCalledWith(2, 'auto', 'ren');
     expect(res.similarBrands).toEqual(['RENAULT']);
   });
 
@@ -206,6 +214,7 @@ describe('findVehicle', () => {
     const a = {
       searchBrands: jest
         .fn()
+        .mockResolvedValue([])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 896, name: 'HARLEY DAVIDSON' }]),
       getGroups: jest.fn(),
@@ -370,6 +379,62 @@ describe('findVehicle', () => {
       expect(lastYear.availableYears).toEqual([
         { description: 'SKYTOWN 150', years: '0km 2026' },
       ]);
+    });
+  });
+
+  describe('a moto named in the auto flow (#399)', () => {
+    function crossApi() {
+      return {
+        searchBrands: jest
+          .fn()
+          .mockImplementation((type: string) =>
+            Promise.resolve(
+              type === 'auto'
+                ? [{ id: 19, name: 'HONDA' }]
+                : [{ id: 881, name: 'HONDA' }],
+            ),
+          ),
+        getGroups: jest.fn().mockResolvedValue([{ id: 1, name: 'CIVIC' }]),
+        getModels: jest
+          .fn()
+          .mockImplementation((type: string) =>
+            Promise.resolve(
+              type === 'moto'
+                ? [{ codia: 8810200, description: 'CB 125 F' }]
+                : [{ codia: 190001, description: 'CIVIC 1.8 EXS' }],
+            ),
+          ),
+      };
+    }
+
+    it('finds it in the moto catalog and tells the model to go on as a moto', async () => {
+      const res = await findVehicle(crossApi(), {
+        vehicleType: 'auto',
+        brand: 'Honda',
+        model: 'CB 125',
+      });
+
+      expect(res.vehicleType).toBe('moto');
+      expect(res.versions).toEqual([
+        { codia: 8810200, description: 'CB 125 F', years: undefined },
+      ]);
+      expect(res.note).toContain('es una moto, no un auto');
+      expect(res.note).toContain('vehicleType "moto"');
+      expect(res.note).toContain('no preguntes por GNC');
+    });
+
+    it('keeps the plain not-found answer when the other catalog has nothing either', async () => {
+      const a = crossApi();
+      a.getModels.mockResolvedValue([]);
+
+      const res = await findVehicle(a, {
+        vehicleType: 'auto',
+        brand: 'Honda',
+        model: 'Zafira',
+      });
+
+      expect(res.vehicleType).toBeUndefined();
+      expect(res.error).toContain('No encontré el modelo "Zafira"');
     });
   });
 });

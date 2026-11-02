@@ -1316,6 +1316,17 @@ export class FlowService {
         existing.state.data.phoneConfirm === true
       )
     ) {
+      // Still unidentified and being asked for the DNI: the tap answers the
+      // question asked two seconds earlier (a second message of theirs got in
+      // between and dropped it). Ignored, Francisco was asked for his DNI
+      // twice (#399).
+      if (
+        sel === OPT.phoneSi &&
+        !ctx.client &&
+        existing.state.step === 'IDENTIFY'
+      ) {
+        return this.confirmPhoneMatch(existing.state, ctx, key);
+      }
       if (!OPEN_STEPS.has(existing.state.step)) {
         this.logger.log('Tap tardío de "¿Hablo con…?" ignorado');
         return { messages: [] };

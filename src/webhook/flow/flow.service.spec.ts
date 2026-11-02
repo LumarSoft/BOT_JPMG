@@ -3905,6 +3905,28 @@ describe('FlowService', () => {
       expect(bodies(res)).not.toContain('¿Qué documento querés');
     });
 
+    it('un tap tardío de "Sí, soy…" sin identificar, mientras se le pide el DNI, lo identifica (#399)', async () => {
+      const withPhone: FlowContext = {
+        ...leadCtx,
+        phoneMatch: { firstName: 'FRANCISCO' },
+      };
+      const first = await send({ text: 'Hola lucas cómo andas' }, withPhone);
+      expect(bodies(first)).toContain('¿Hablo con *Francisco*?');
+      // A second message got in before the tap and the question was dropped.
+      await send({ text: 'Disculpa las molestias' }, withPhone);
+      expect(stored?.step).toBe('IDENTIFY');
+      expect(stored?.data.phoneConfirm).toBeUndefined();
+
+      const res = await send(
+        { text: 'Sí, soy Francisco', selectionId: OPT.phoneSi },
+        withPhone,
+      );
+
+      expect(api.identifyByPhone).toHaveBeenCalledWith(1);
+      expect(bodies(res)).toContain('¡Listo, te identifiqué!');
+      expect(bodies(res)).not.toContain('Pasame el *DNI del titular*');
+    });
+
     it('un tap tardío de "Sí, soy…" ya identificado vuelve al menú sin repetir el pedido (#292)', async () => {
       await send({ text: 'hola' }, clientCtx);
       await send({ text: 'me pasás el cupón de pago?' }, clientCtx);
