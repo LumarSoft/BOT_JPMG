@@ -1647,6 +1647,7 @@ describe('WebhookService', () => {
         postalCode: number;
         outcome: string;
         coverages: string[];
+        offered?: { code: string; name: string; price?: string }[];
       };
     };
     const astra = { codia: 120236, description: 'ASTRA II GL 2.0 5 PTAS' };
@@ -1694,6 +1695,39 @@ describe('WebhookService', () => {
         outcome: 'cotizada',
         coverages: ['A', 'B1'],
       });
+    });
+
+    it('keeps the names and card prices of the quoted coverages for a later change of mind', () => {
+      const next = priv().rememberQuote(
+        memory,
+        args,
+        JSON.stringify({
+          coberturas: [
+            {
+              codigo: 'A',
+              nombre: 'Responsabilidad Civil',
+              conTarjeta: '$ 67.825 por mes',
+              enEfectivo: '$ 71.713 por mes',
+            },
+            {
+              codigo: 'D3',
+              nombre: 'Todo Riesgo',
+              conTarjeta: null,
+              enEfectivo: null,
+            },
+          ],
+        }),
+      );
+      expect(next.quoted?.offered).toEqual([
+        { code: 'A', name: 'Responsabilidad Civil', price: '$ 67.825 por mes' },
+        { code: 'D3', name: 'Todo Riesgo' },
+      ]);
+      // And they survive the round trip through the persisted state.
+      const read = priv().readQuoteVehicleMemory({
+        step: 'LLM_COTIZACION',
+        data: { quoteVehicle: next },
+      });
+      expect(read?.quoted?.offered).toEqual(next.quoted?.offered);
     });
 
     it('records an incomplete quote and a failed one, but not a rejected year', () => {
@@ -3187,6 +3221,80 @@ describe('WebhookService', () => {
       const body = (meta.sendText.mock.calls as string[][])[0][1];
       expect(body).toContain('Anotamos la B1');
       expect(body).toContain('frente de tu DNI');
+    });
+
+    it('carries the quoted coverages into the document steps', async () => {
+      const offered = [
+        { code: 'A', name: 'Responsabilidad Civil', price: '$ 30.000 por mes' },
+        { code: 'B1', name: 'Todo Total 1', price: '$ 62.614 por mes' },
+      ];
+      flow.handle.mockResolvedValue({
+        messages: [],
+        state: {
+          step: 'LLM_COTIZACION',
+          data: {
+            vehiculo: 'moto',
+            quoteVehicle: {
+              ...quotedNavi,
+              quoted: { ...quotedNavi.quoted, offered },
+            },
+          },
+          audience: 'lead',
+        },
+        handoff: 'cotizacion',
+      });
+      const create = jest
+        .fn()
+        .mockResolvedValueOnce({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: 't1',
+                    type: 'function',
+                    function: {
+                      name: 'request_coverage',
+                      arguments: JSON.stringify({
+                        vehicleType: 'moto',
+                        coverageCode: 'B1',
+                        coverageName: 'Todo Total 1',
+                        vehicle: 'HONDA NAVI 110',
+                        manufactureYear: 2025,
+                        postalCode: 2000,
+                      }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: 'Anotamos la B1.' } }],
+        });
+      (
+        service as unknown as {
+          openai: { chat: { completions: { create: jest.Mock } } };
+        }
+      ).openai = { chat: { completions: { create } } };
+
+      await service.handleMessage('5493416956364', 'la B1', 'P1', 'cov-2');
+
+      expect(api.saveFlowState).toHaveBeenCalledWith(
+        3,
+        JSON.stringify({
+          step: 'COT_DOC_DNI_FRENTE',
+          data: {
+            leadId: 42,
+            zeroKm: false,
+            coverage: 'B1 — Todo Total 1',
+            offered,
+          },
+          audience: 'lead',
+        }),
+      );
     });
 
     it('does not record a coverage before there is a quote', async () => {

@@ -42,6 +42,7 @@ describe('FlowService', () => {
     identifyClient: jest.Mock;
     identifyByPhone: jest.Mock;
     getSiniestros: jest.Mock;
+    updateLeadCoverage: jest.Mock;
   };
   let extractor: { extract: jest.Mock; extractBien: jest.Mock };
   let coverage: { answer: jest.Mock };
@@ -120,6 +121,11 @@ describe('FlowService', () => {
         policyCount: 1,
       }),
       getSiniestros: jest.fn().mockResolvedValue([]),
+      updateLeadCoverage: jest.fn().mockResolvedValue({
+        leadId: 42,
+        cobertura: 'A — Responsabilidad Civil',
+        coberturaAnterior: 'D3 — Todo Riesgo con Franquicia del 10%',
+      }),
     };
     extractor = { extract: jest.fn(), extractBien: jest.fn() };
     coverage = { answer: jest.fn().mockRejectedValue(new Error('sin modelo')) };
@@ -736,6 +742,28 @@ describe('FlowService', () => {
       );
       expect(result.messages[1].body).toContain('Calle y altura exacta');
       expect(result.messages[1].body).toContain('norte, sur, este u oeste');
+    });
+
+    // Conversation 322 (1/11): "Quiero corizar mejor" at the checklist got the
+    // checklist again, then "no te entiendo" twice.
+    it('leaves the claim and opens the quote when they ask to quote instead', async () => {
+      await openChecklist();
+
+      const res = await send({ text: 'Quiero corizar mejor' }, ctx);
+
+      expect(extractor.extract).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('COTIZAR_TIPO');
+      expect(res.messages[0].body).toContain('dejamos la denuncia por ahora');
+      expect(JSON.stringify(res.messages)).toContain('cot_auto');
+    });
+
+    it('quotes the vehicle named while leaving the claim', async () => {
+      await openChecklist();
+
+      await send({ text: 'quiero cotizar un byd song pro 2026' }, ctx);
+
+      expect(extractor.extract).not.toHaveBeenCalled();
+      expect(stored?.step).toBe('LLM_COTIZACION');
     });
 
     it('confirms and files the claim when the answer is complete', async () => {
@@ -2827,6 +2855,208 @@ describe('FlowService', () => {
       await send({ text: 'no la tengo' });
 
       expect(stored?.step).toBe('COT_DOC_DNI_DORSO');
+    });
+
+    // Conversation 322 (1/11): D3 chosen, then "Mejor una responsabilidad
+    // civil" got "Mandame la foto" and "No pero quiero la cobertura A al
+    // final" skipped the DNI as if it were "no la tengo".
+    describe('a change of coverage while sending the documents', () => {
+      const offered = [
+        { code: 'A', name: 'Responsabilidad Civil', price: '$ 67.825 por mes' },
+        {
+          code: 'B1',
+          name: 'Robo e Incendio Total',
+          price: '$ 115.589 por mes',
+        },
+        { code: 'C2', name: 'Terceros Completo con Adicionales' },
+        {
+          code: 'D3',
+          name: 'Todo Riesgo con Franquicia del 10%',
+          price: '$ 223.091 por mes',
+        },
+      ];
+      function startWithCoverage(
+        current = 'D3 — Todo Riesgo con Franquicia del 10%',
+      ) {
+        stored = takeOutDocsState(
+          { step: 'LLM_COTIZACION', data: {}, audience: 'client' },
+          15,
+          { zeroKm: false },
+          { current, offered },
+        );
+      }
+
+      it('moves the request to the coverage named and asks the same photo again', async () => {
+        startWithCoverage();
+
+        const res = await send({ text: 'Mejor una responsabilidad civil' });
+
+        expect(api.updateLeadCoverage).toHaveBeenCalledWith(1, 15, {
+          cobertura: 'A — Responsabilidad Civil',
+          precio: '$ 67.825 por mes',
+        });
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          'Cambió la cobertura de la solicitud #15: ahora quiere A — Responsabilidad Civil (antes D3 — Todo Riesgo con Franquicia del 10%).',
+        );
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+        expect(stored?.data.coverage).toBe('A — Responsabilidad Civil');
+        expect(stored?.data.leadId).toBe(15);
+        const text = JSON.stringify(res.messages);
+        expect(text).toContain(
+          'cambiamos tu pedido a *A — Responsabilidad Civil*',
+        );
+        expect(text).toContain('frente de tu DNI');
+      });
+
+      it('"No pero quiero la cobertura A" is the change, not "no la tengo"', async () => {
+        startWithCoverage();
+
+        await send({ text: 'No pero quiero la cobertura A al final' });
+
+        expect(api.updateLeadCoverage).toHaveBeenCalledWith(
+          1,
+          15,
+          expect.objectContaining({ cobertura: 'A — Responsabilidad Civil' }),
+        );
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      });
+
+      it('a bare "no pero…" no longer skips the photo either', async () => {
+        startWithCoverage();
+
+        const res = await send({ text: 'No pero la mando más tarde' });
+
+        expect(api.updateLeadCoverage).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+        expect(JSON.stringify(res.messages)).toContain('Mandame la *foto*');
+      });
+
+      it('takes the code on its own, and "RC" as Responsabilidad Civil', async () => {
+        startWithCoverage();
+        await send({ text: 'b1' });
+        expect(api.updateLeadCoverage).toHaveBeenLastCalledWith(
+          1,
+          15,
+          expect.objectContaining({ cobertura: 'B1 — Robo e Incendio Total' }),
+        );
+
+        await send({ text: 'mejor la rc' });
+        expect(api.updateLeadCoverage).toHaveBeenLastCalledWith(
+          1,
+          15,
+          expect.objectContaining({ cobertura: 'A — Responsabilidad Civil' }),
+        );
+      });
+
+      it('keeps the new coverage along the following steps and sends no price it does not have', async () => {
+        startWithCoverage();
+        await send({ text: 'mejor terceros completo' });
+        expect(api.updateLeadCoverage).toHaveBeenLastCalledWith(1, 15, {
+          cobertura: 'C2 — Terceros Completo con Adicionales',
+        });
+
+        await send({ text: '', selectionId: PHOTO_RECEIVED }); // DNI frente
+        expect(stored?.step).toBe('COT_DOC_DNI_DORSO');
+        expect(stored?.data.coverage).toBe(
+          'C2 — Terceros Completo con Adicionales',
+        );
+        expect(stored?.data.offered).toHaveLength(4);
+
+        // Still possible at the next document.
+        await send({ text: 'quiero la D3' });
+        expect(api.updateLeadCoverage).toHaveBeenLastCalledWith(
+          1,
+          15,
+          expect.objectContaining({
+            cobertura: 'D3 — Todo Riesgo con Franquicia del 10%',
+          }),
+        );
+        expect(stored?.step).toBe('COT_DOC_DNI_DORSO');
+      });
+
+      it('says so when they name the coverage already recorded', async () => {
+        startWithCoverage();
+
+        const res = await send({ text: 'quiero la D3' });
+
+        expect(api.updateLeadCoverage).not.toHaveBeenCalled();
+        expect(JSON.stringify(res.messages)).toContain(
+          'Ya tenemos anotada la *D3',
+        );
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      });
+
+      it('asks which one when the words fit several coverages', async () => {
+        stored = takeOutDocsState(
+          { step: 'LLM_COTIZACION', data: {}, audience: 'client' },
+          15,
+          { zeroKm: false },
+          {
+            current: 'A — Responsabilidad Civil',
+            offered: [
+              ...offered,
+              { code: 'D4', name: 'Todo Riesgo con Franquicia del 4%' },
+            ],
+          },
+        );
+
+        const res = await send({ text: 'mejor un todo riesgo' });
+
+        expect(api.updateLeadCoverage).not.toHaveBeenCalled();
+        const text = JSON.stringify(res.messages);
+        expect(text).toContain('¿Cuál de estas querés?');
+        expect(text).toContain('D3 — Todo Riesgo');
+        expect(text).toContain('D4 — Todo Riesgo');
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      });
+
+      it('a question about a coverage keeps its own answer path', async () => {
+        startWithCoverage();
+
+        await send({ text: '¿la A cubre granizo?' });
+
+        expect(api.updateLeadCoverage).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      });
+
+      it('a photo, a skip or an unrelated line go on as before', async () => {
+        startWithCoverage();
+
+        await send({ text: 'la saco en un rato' });
+        expect(api.updateLeadCoverage).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+
+        await send({ text: 'no la tengo' });
+        expect(stored?.step).toBe('COT_DOC_DNI_DORSO');
+      });
+
+      it('tells the office when the request could not be updated', async () => {
+        startWithCoverage();
+        api.updateLeadCoverage.mockRejectedValue(new Error('500'));
+
+        const res = await send({ text: 'mejor la A' });
+
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('no pudo actualizarla'),
+        );
+        expect(JSON.stringify(res.messages)).toContain('Le aviso a la oficina');
+        expect(stored?.data.coverage).toBe(
+          'D3 — Todo Riesgo con Franquicia del 10%',
+        );
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+      });
+
+      it('an old state without the quoted coverages behaves as before', async () => {
+        startDocs();
+
+        const res = await send({ text: 'mejor la A' });
+
+        expect(api.updateLeadCoverage).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+        expect(JSON.stringify(res.messages)).toContain('Mandame la *foto*');
+      });
     });
 
     it('re-asks for the photo on other text, without reaching the LLM', async () => {

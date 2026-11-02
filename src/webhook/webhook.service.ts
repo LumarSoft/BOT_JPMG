@@ -17,7 +17,9 @@ import {
   PHOTO_RECEIVED,
   SINIESTRO_PHOTO_TIPO,
   takeOutDocsIntro,
+  type TakeOutCoverage,
   type TakeOutDocs,
+  type OfferedCoverage,
   takeOutDocsState,
 } from './flow/flow.service';
 import type {
@@ -96,6 +98,9 @@ interface QuotedFacts {
    * sin_respuesta = the quote service failed. Both failures alert the office. */
   outcome: 'cotizada' | 'incompleta' | 'sin_respuesta';
   coverages: string[];
+  /** The same coverages with their names and monthly card price, so a change
+   * of mind during the documents can name the new one. */
+  offered?: OfferedCoverage[];
 }
 
 interface QuoteVehicleMemory {
@@ -1006,6 +1011,7 @@ export class WebhookService {
         text: raw,
         coverageLeadId,
         takeOutDocs,
+        takeOutCoverage,
         quoteVehicleMemory,
         action,
       } = await this.generateReply(
@@ -1082,7 +1088,12 @@ export class WebhookService {
           .saveFlowState(
             conversation.conversationId,
             JSON.stringify(
-              takeOutDocsState(effectiveState, coverageLeadId, takeOutDocs),
+              takeOutDocsState(
+                effectiveState,
+                coverageLeadId,
+                takeOutDocs,
+                takeOutCoverage,
+              ),
             ),
           )
           .catch((error: Error) =>
@@ -1818,6 +1829,19 @@ export class WebhookService {
               coverages: quoted.coverages
                 .filter((c): c is string => typeof c === 'string')
                 .slice(0, 20),
+              ...(Array.isArray(quoted.offered)
+                ? {
+                    offered: quoted.offered
+                      .filter(
+                        (o): o is OfferedCoverage =>
+                          !!o &&
+                          typeof o === 'object' &&
+                          typeof o.code === 'string' &&
+                          typeof o.name === 'string',
+                      )
+                      .slice(0, 20),
+                  }
+                : {}),
             },
           }
         : {}),
@@ -1890,7 +1914,12 @@ export class WebhookService {
         officeNotified?: unknown;
         cotizacionIncompleta?: unknown;
         sinCotizacion?: unknown;
-        coberturas?: Array<{ codigo?: unknown }>;
+        coberturas?: Array<{
+          codigo?: unknown;
+          nombre?: unknown;
+          conTarjeta?: unknown;
+          enEfectivo?: unknown;
+        }>;
       };
       const manufactureYear = Number(args.manufactureYear);
       const postalCode = Number(args.postalCode);
@@ -1908,9 +1937,25 @@ export class WebhookService {
       const coverages = (result.coberturas ?? [])
         .map((c) => c.codigo)
         .filter((c): c is string => typeof c === 'string');
+      const offered = (result.coberturas ?? []).flatMap((c) => {
+        if (typeof c.codigo !== 'string' || typeof c.nombre !== 'string')
+          return [];
+        const price = [c.conTarjeta, c.enEfectivo].find(
+          (v): v is string => typeof v === 'string' && v.length > 0,
+        );
+        return [
+          { code: c.codigo, name: c.nombre, ...(price ? { price } : {}) },
+        ];
+      });
       return {
         ...memory,
-        quoted: { manufactureYear, postalCode, outcome, coverages },
+        quoted: {
+          manufactureYear,
+          postalCode,
+          outcome,
+          coverages,
+          ...(offered.length ? { offered } : {}),
+        },
       };
     } catch {
       return memory;
@@ -2234,6 +2279,8 @@ export class WebhookService {
     coverageLeadId?: number;
     /** What the chosen coverage's vehicle needs to be taken out. */
     takeOutDocs?: TakeOutDocs;
+    /** The chosen coverage and the quoted ones, for a change of mind. */
+    takeOutCoverage?: TakeOutCoverage;
     quoteVehicleMemory?: QuoteVehicleMemory;
     /** The model acted instead of answering: the flow runs this option. */
     action?: FlowAction;
@@ -2329,6 +2376,7 @@ export class WebhookService {
     // Set when the model calls request_coverage (the customer chose a coverage).
     let coverageLeadId: number | undefined;
     let takeOutDocs: TakeOutDocs = {};
+    let takeOutCoverage: TakeOutCoverage | undefined;
     // True once quote_vehicle gave the customer prices: the organization's
     // closing line (if any) goes under the model's reply.
     let quotedWithPrices = false;
@@ -2378,6 +2426,7 @@ export class WebhookService {
               : FALLBACK_REPLY,
             coverageLeadId,
             takeOutDocs,
+            takeOutCoverage,
             quoteVehicleMemory,
           };
         }
@@ -2407,6 +2456,7 @@ export class WebhookService {
             text: '',
             coverageLeadId,
             takeOutDocs,
+            takeOutCoverage,
             quoteVehicleMemory,
             action,
           };
@@ -2441,6 +2491,7 @@ export class WebhookService {
             );
             coverageLeadId = res.leadId;
             if (res.docs) takeOutDocs = res.docs;
+            if (res.coverage) takeOutCoverage = res.coverage;
             return res.result;
           }),
         );
@@ -2516,6 +2567,7 @@ export class WebhookService {
           text: withQuoteClosingNote(content, org, quotedWithPrices),
           coverageLeadId,
           takeOutDocs,
+          takeOutCoverage,
           quoteVehicleMemory,
         };
       }
@@ -2587,7 +2639,12 @@ export class WebhookService {
     conversation: BotConversation,
     from: string,
     memory?: QuoteVehicleMemory,
-  ): Promise<{ result: string; leadId?: number; docs?: TakeOutDocs }> {
+  ): Promise<{
+    result: string;
+    leadId?: number;
+    docs?: TakeOutDocs;
+    coverage?: TakeOutCoverage;
+  }> {
     let args: Record<string, unknown>;
     try {
       args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
@@ -2668,7 +2725,18 @@ export class WebhookService {
       this.logger.log(
         `📝 Pedido de contratación #${id}: ${String(payload.cobertura)} (${vehicleType})`,
       );
-      return { result: JSON.stringify({ ok: true }), leadId: id, docs };
+      // The quoted coverages travel with the document steps: "mejor una
+      // responsabilidad civil" there moves this request to the new one.
+      const offered = memory?.quoted?.offered ?? [];
+      const coverage: TakeOutCoverage | undefined = offered.length
+        ? { current: String(payload.cobertura), offered }
+        : undefined;
+      return {
+        result: JSON.stringify({ ok: true }),
+        leadId: id,
+        docs,
+        coverage,
+      };
     } catch (error) {
       return { result: this.toolError(REQUEST_COVERAGE_TOOL, error) };
     }

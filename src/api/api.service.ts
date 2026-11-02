@@ -277,6 +277,27 @@ export class ApiService {
     return data;
   }
 
+  /**
+   * Moves the request the bot created for a quoted coverage to another one:
+   * the customer changed their mind while sending the documents.
+   */
+  async updateLeadCoverage(
+    conversationId: number,
+    leadId: number,
+    body: { cobertura: string; precio?: string },
+  ): Promise<{
+    leadId: number;
+    cobertura: string;
+    coberturaAnterior: string | null;
+  }> {
+    const { data } = await this.http.patch<{
+      leadId: number;
+      cobertura: string;
+      coberturaAnterior: string | null;
+    }>(`/bot/conversation/${conversationId}/leads/${leadId}/cobertura`, body);
+    return data;
+  }
+
   /** Lists the active fixed-price plans of a product (bolso, hogar) for the conversation's producer. */
   async getPricing(
     conversationId: number,

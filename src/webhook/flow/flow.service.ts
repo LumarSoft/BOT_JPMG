@@ -593,6 +593,9 @@ export function withStaffNotice(result: FlowResult, name: string): FlowResult {
   };
 }
 
+/** A quote asked in the middle of a claim; "corizar" is how it was typed. */
+const CLAIM_TO_QUOTE_RE = /\bco[tr]iza|\bpresupuest/;
+
 const QUOTE_INTENT_RE =
   /\bcotiz|\bpresupuest|\basegurar\b|\bcuanto (sale|cuesta|me sale|vale|saldria)\b.*\b(seguro|asegur)|\bprecio.*\b(seguro|asegur)/;
 
@@ -756,6 +759,93 @@ export interface TakeOutDocs {
   gnc?: boolean;
 }
 
+/** One coverage of the quote the customer chose from, as the bot labels it. */
+export interface OfferedCoverage {
+  code: string;
+  name: string;
+  /** Monthly price shown for it ("$ 67.825 por mes"), when quoted. */
+  price?: string;
+}
+
+/**
+ * The coverage recorded on the request and the ones quoted beside it: kept
+ * along the document steps so "mejor una responsabilidad civil" can move the
+ * request instead of being answered with "Mandame la foto" (conv. 322, 1/11).
+ */
+export interface TakeOutCoverage {
+  /** "D3 — Todo Riesgo con Franquicia del 10%", as the lead has it. */
+  current: string;
+  offered: OfferedCoverage[];
+}
+
+/** "A — Responsabilidad Civil": how a chosen coverage is written on the lead. */
+export function coverageLabel(
+  c: Pick<OfferedCoverage, 'code' | 'name'>,
+): string {
+  return [c.code, c.name].filter(Boolean).join(' — ');
+}
+
+const COVERAGE_STOPWORDS = new Set([
+  'con',
+  'del',
+  'de',
+  'la',
+  'el',
+  'por',
+  'para',
+  'al',
+  'los',
+  'las',
+  'y',
+  'e',
+  'un',
+  'una',
+  'sin',
+]);
+
+/**
+ * The coverages of the quote that `text` names, by code ("D3", "la A",
+ * "cobertura A") or by name ("responsabilidad civil", "todo riesgo",
+ * "terceros completo"). A single letter counts only alone or right after
+ * "cobertura", "opción", "plan" or an article: "a" is also a preposition.
+ */
+export function coveragesNamed(
+  text: string,
+  offered: OfferedCoverage[],
+): OfferedCoverage[] {
+  const t = ` ${fold(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9ñ]+/g, ' ')
+    .trim()} `;
+  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const byCode = offered.filter((o) => {
+    const code = fold(o.code).toLowerCase().trim();
+    if (!code) return false;
+    if (code.length > 1) return new RegExp(`\\b${escape(code)}\\b`).test(t);
+    return new RegExp(
+      `^ ${code} $|\\b(?:cobertura|opcion|plan|la|el|una|un) ${code}\\b`,
+    ).test(t);
+  });
+  if (byCode.length) return byCode;
+  return offered.filter((o) => {
+    const words = fold(o.name)
+      .toLowerCase()
+      .split(/[^a-z0-9ñ]+/)
+      .filter(
+        (w) => w.length >= 3 && !COVERAGE_STOPWORDS.has(w) && !/^\d/.test(w),
+      )
+      .slice(0, 2);
+    if (!words.length) return false;
+    // "robo e incendio": one short word may sit between the two.
+    const re = new RegExp(
+      `\\b${words.map(escape).join('\\b(?: [a-z]{1,2})? \\b')}`,
+    );
+    if (re.test(t)) return true;
+    // "RC" is how people say Responsabilidad Civil.
+    return words.join(' ') === 'responsabilidad civil' && /\brc\b/.test(t);
+  });
+}
+
 /** The take-out steps for a vehicle, in order. */
 export function takeOutSteps(docs: TakeOutDocs): FlowStep[] {
   return [
@@ -800,6 +890,7 @@ export function takeOutDocsState(
   prev: FlowState | null,
   leadId: number,
   docs: TakeOutDocs = {},
+  coverage?: TakeOutCoverage,
 ): FlowState {
   return {
     step: 'COT_DOC_DNI_FRENTE',
@@ -807,9 +898,36 @@ export function takeOutDocsState(
       leadId,
       ...(docs.zeroKm !== undefined ? { zeroKm: docs.zeroKm } : {}),
       ...(docs.gnc ? { gnc: true } : {}),
+      ...takeOutCoverageData(coverage),
     },
     ...(prev?.audience ? { audience: prev.audience } : {}),
   };
+}
+
+/** The coverage part of a take-out state, carried from step to step. */
+function takeOutCoverageData(
+  coverage: TakeOutCoverage | undefined,
+): Record<string, unknown> {
+  if (!coverage?.current || !coverage.offered.length) return {};
+  return { coverage: coverage.current, offered: coverage.offered };
+}
+
+/** Reads the coverage carried in a take-out state, if the quote left one. */
+function takeOutCoverageOf(
+  data: Record<string, unknown>,
+): TakeOutCoverage | null {
+  const current = data.coverage;
+  const offered = data.offered;
+  if (typeof current !== 'string' || !current || !Array.isArray(offered))
+    return null;
+  const valid = offered.filter(
+    (o): o is OfferedCoverage =>
+      !!o &&
+      typeof o === 'object' &&
+      typeof (o as OfferedCoverage).code === 'string' &&
+      typeof (o as OfferedCoverage).name === 'string',
+  );
+  return valid.length ? { current, offered: valid } : null;
 }
 
 /** Buttons of the "¿es 0 km?" take-out step. */
@@ -831,6 +949,11 @@ function ceroKmQuestion(): OutgoingMessage {
 function takeOutPrompt(step: FlowStep, last: boolean): OutgoingMessage {
   const lead = last ? 'Por último, ' : 'Ahora ';
   switch (step) {
+    case 'COT_DOC_DNI_FRENTE':
+      return {
+        kind: 'text',
+        body: 'Mandame una foto del *frente de tu DNI*. (si no la tenés a mano, escribí *no la tengo*)',
+      };
     case 'COT_DOC_DNI_DORSO':
       return {
         kind: 'text',
@@ -4064,6 +4187,15 @@ export class FlowService {
         asked.length ? siniestroFaltantes(faltan) : siniestroChecklist(),
       ]);
     }
+    // "Quiero cotizar mejor" with the claim checklist on screen: the claim is
+    // dropped and the quote opens. Fed to the extractor it got the checklist
+    // again and then "no te entiendo" (conv. 322, 1/11).
+    if (!input.selectionId && CLAIM_TO_QUOTE_RE.test(fold(text))) {
+      return this.prepend(
+        'Dale, dejamos la denuncia por ahora 👍 Cuando quieras retomarla, entrá por *Siniestros* en el menú. Vamos con la cotización.',
+        await this.enterCotizar(input, ctx, key),
+      );
+    }
 
     let extracted: Partial<SiniestroDatos>;
     try {
@@ -4450,8 +4582,12 @@ export class FlowService {
    * tengo", "saltar", "listo", and the way people actually type it: "listooo",
    * "ya está", "eso es todo"). */
   private isPhotoSkip(text: string): boolean {
+    const t = fold(text).trim();
+    // "No pero quiero la cobertura A" is another request, not "no la tengo":
+    // the leading "no" skipped the DNI and the request was ignored (1/11).
+    if (/^no+\b\s*,?\s*pero\b/.test(t)) return false;
     return /^(no+|nop|no la tengo|no las? tengo|no los? tengo|no tengo|salt(ar|o|a)|omitir|siguiente|despues|list[oa]+|ya (esta|fue|termine)|termine|eso es todo|nada mas|fin)\b/.test(
-      fold(text).trim(),
+      t,
     );
   }
 
@@ -4708,6 +4844,8 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
+    const changed = await this.takeOutCoverageChange(state, input, ctx, key);
+    if (changed) return changed;
     if (!this.photoAdvances(input)) {
       return (
         this.questionInPhotoStep(input, key) ??
@@ -4724,6 +4862,8 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
+    const changed = await this.takeOutCoverageChange(state, input, ctx, key);
+    if (changed) return changed;
     const t = fold(input.text).trim();
     const zeroKm =
       input.selectionId === CERO_KM_SI ||
@@ -4752,6 +4892,8 @@ export class FlowService {
       this.setState(key, state.step, state.data);
       return { messages: [{ kind: 'text', body: vehiclePhotoAddedText() }] };
     }
+    const changed = await this.takeOutCoverageChange(state, input, ctx, key);
+    if (changed) return changed;
     if (!input.selectionId && this.isPhotoSkip(input.text))
       return this.nextTakeOutStep(state.step, state.data, ctx, key);
     const again: OutgoingMessage = {
@@ -4787,9 +4929,102 @@ export class FlowService {
       leadId: data.leadId,
       ...(docs.zeroKm !== undefined ? { zeroKm: docs.zeroKm } : {}),
       ...(docs.gnc ? { gnc: true } : {}),
+      ...takeOutCoverageData(takeOutCoverageOf(data) ?? undefined),
     });
     const last = next === steps[steps.length - 1];
     return { messages: [takeOutPrompt(next, last)] };
+  }
+
+  /**
+   * "Mejor una responsabilidad civil" / "no pero quiero la cobertura A" typed
+   * where a document was expected: the request moves to that coverage and the
+   * same document is asked again. Only when the quote's coverages travel in
+   * the state; a question ("¿la A cubre granizo?") keeps its own path.
+   */
+  private async takeOutCoverageChange(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    if (input.selectionId || !input.text.trim() || /\?/.test(input.text))
+      return null;
+    const coverage = takeOutCoverageOf(state.data);
+    if (!coverage) return null;
+    const named = coveragesNamed(input.text, coverage.offered);
+    if (!named.length) return null;
+    const steps = takeOutSteps({
+      zeroKm:
+        typeof state.data.zeroKm === 'boolean' ? state.data.zeroKm : undefined,
+      gnc: state.data.gnc === true,
+    });
+    const again = takeOutPrompt(
+      state.step,
+      state.step === steps[steps.length - 1],
+    );
+    if (named.length > 1) {
+      this.setState(key, state.step, state.data, state.audience);
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body:
+              '¿Cuál de estas querés? Decime el código:\n' +
+              named.map((c) => `• *${coverageLabel(c)}*`).join('\n'),
+          },
+        ],
+      };
+    }
+    const chosen = named[0];
+    const label = coverageLabel(chosen);
+    if (label === coverage.current) {
+      this.setState(key, state.step, state.data, state.audience);
+      return this.prepend(
+        `Ya tenemos anotada la *${label}* 👍 Seguimos con las fotos.`,
+        { messages: [again] },
+      );
+    }
+    const leadId = Number(state.data.leadId);
+    try {
+      await this.api.updateLeadCoverage(ctx.conversationId, leadId, {
+        cobertura: label,
+        ...(chosen.price ? { precio: chosen.price } : {}),
+      });
+    } catch (error) {
+      this.logger.error(
+        `No se pudo cambiar la cobertura del pedido #${leadId}: ${this.errMsg(error)}`,
+      );
+      await this.api
+        .requestHandoff(
+          ctx.conversationId,
+          `Quiere cambiar la cobertura de la solicitud #${leadId} a ${label} (antes ${coverage.current}); el sistema no pudo actualizarla.`,
+        )
+        .catch(() => undefined);
+      this.setState(key, state.step, state.data, state.audience);
+      return this.prepend(
+        `Le aviso a la oficina que preferís la *${label}* ✍️ Mientras, seguimos con las fotos.`,
+        { messages: [again] },
+      );
+    }
+    this.logger.log(
+      `📝 Pedido de contratación #${leadId}: ${coverage.current} → ${label}`,
+    );
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Cambió la cobertura de la solicitud #${leadId}: ahora quiere ${label} (antes ${coverage.current}).`,
+      )
+      .catch(() => undefined);
+    this.setState(
+      key,
+      state.step,
+      { ...state.data, coverage: label },
+      state.audience,
+    );
+    return this.prepend(
+      `Listo, cambiamos tu pedido a *${label}* ✅ Seguimos con las fotos.`,
+      { messages: [again] },
+    );
   }
 
   private async finishTakeOutDocs(
