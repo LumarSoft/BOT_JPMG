@@ -174,9 +174,10 @@ async function main() {
 
   query = makeQuery(API_DIR);
   if (flag('cleanup')) return;
-  const number = query(`SELECT p.botEnabled FROM PhoneNumber n JOIN Producer p ON p.id=n.producerId WHERE n.phoneNumberId='${PNID}' AND n.deletedAt IS NULL`);
+  // The bot's switch is per number since 28/10 (PhoneNumber.botEnabled).
+  const number = query(`SELECT n.botEnabled FROM PhoneNumber n WHERE n.phoneNumberId='${PNID}' AND n.deletedAt IS NULL`);
   if (!number.length) fail(`La base local no tiene el número de prueba ${PNID} (producerId 1).`);
-  if (number[0][0] !== '1') fail('El bot está desactivado para el productor del número de prueba (Producer.botEnabled).');
+  if (number[0][0] !== '1') fail('El bot está desactivado en el número de prueba (PhoneNumber.botEnabled).');
 
   if (!flag('no-build')) { build(API_DIR, 'la API'); build(BOT_DIR, 'el bot'); }
 

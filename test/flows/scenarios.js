@@ -1337,4 +1337,36 @@ module.exports = [
     id: 'I02', stage: 'inactivity', afterIdle: { goodbye: false }, area: 'Inactividad', name: 'Con pedido a la oficina: no manda el cierre', wa: wa(), regression: '#187/#195 (14/10)',
     steps: [...ident('99000004'), { select: 'm_documentos', title: '📄 Documentación', list: true, expect: { any: [/No tengo los documentos/] } }],
   },
+
+  // ─── Revisión 1/11: arrepentidos a mitad de la cotización y de la denuncia ──
+  {
+    id: 'N01', area: 'Revisión 1/11', name: 'Cambia la cobertura mientras manda las fotos: el pedido se actualiza y sigue la misma foto', wa: wa(), regression: 'conv. 322 (1/11)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_auto', title: 'Auto', list: true },
+      { text: 'Volkswagen Gol Trend 1.6 2015, Rosario', max: 90000, quiet: 5000 },
+      { drive: { max: 4, until: /por mes/, answer: quoteAnswer('Volkswagen Gol Trend 1.6 2015, Rosario'), expect: { any: [/por mes/] } } },
+      // Any coverage other than A, as the model listed it.
+      { drive: { max: 1, until: /DNI/, answer: (prev) => { const m = prev.match(/\*([B-D]\d?) — /); return { text: `Quiero la ${m ? m[1] : 'B1'}` }; }, expect: { any: [/frente de tu DNI/] } } },
+      { text: 'Mejor una responsabilidad civil', expect: { any: [/cambiamos tu pedido a \*A — /, /frente de tu DNI/], none: [/dorso del DNI/, /^Mandame la \*foto\*/m] } },
+      { text: 'No pero quiero la cobertura A al final', expect: { any: [/Ya tenemos anotada la \*A/], none: [/dorso del DNI/] } },
+      { image: true, expect: { any: [/dorso del DNI/] } },
+    ],
+    db: [
+      handoffs('aviso del cambio de cobertura', (r) => r.some(([b]) => /Cambió la cobertura/.test(b))),
+      { name: 'la solicitud quedó en A con la anterior guardada', sql: "SELECT JSON_UNQUOTE(JSON_EXTRACT(l.payload,'$.cobertura')), JSON_UNQUOTE(JSON_EXTRACT(l.payload,'$.coberturaAnterior')) FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId='$WA' ORDER BY l.id DESC", test: (r) => r.length === 1 && /^A — /.test(r[0][0]) && /^[B-D]/.test(r[0][1]) },
+    ],
+  },
+  {
+    id: 'N02', area: 'Revisión 1/11', name: '"Quiero cotizar" con la lista de la denuncia en pantalla deja la denuncia y abre la cotización', wa: wa(), regression: 'conv. 322 (1/11)',
+    steps: [
+      ...ident('99000001'),
+      { select: 'm_siniestros', title: '🛡️ Siniestros', list: true },
+      { select: 'sin_nueva', title: 'Denuncia nueva', expect: { any: [/Respondé todo en un solo mensaje/] } },
+      { text: 'Quiero corizar mejor', expect: { any: [/dejamos la denuncia/, /cot_auto/], none: [/Para completar la denuncia/, /no te estoy entendiendo/i] } },
+      { select: 'cot_auto', title: 'Auto', list: true, expect: { any: [/marca, modelo/i] } },
+    ],
+  },
 ];
