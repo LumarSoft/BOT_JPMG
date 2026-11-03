@@ -137,6 +137,28 @@ export const CLAIM_COPY_RE =
  */
 export const CLAIMS_PHONE_RE =
   /\b0 ?8[01]0\b|\btelefono\b.{0,50}\b(?:denunci|siniestro|compania|triunfo|aseguradora)|\b(?:denunci|siniestro|compania|triunfo|aseguradora)\w*\b.{0,50}\btelefono\b|\bllam(?:o|ar|amos)\b.{0,40}\b(?:denunci|siniestro|triunfo|compania|aseguradora)/;
+
+/** A DNI/CUIT/CUIL with its label ("DNI: 12.345.678", "cuit 20-12345678-3"). */
+const ID_NUMBER_RE = /\b(?:dni|cuit|cuil)\b\W*[\d.-]+/gi;
+
+/**
+ * The phone in the answer to "pasame un teléfono": the first run of 8 to 15
+ * digits written as a phone (spaces, dashes, parentheses, a leading +), so "mi
+ * cel es 341 555-0000" gives "341 555-0000". Dots are not phone separators:
+ * "12.345.678" is how a DNI is written, and one real chat answered with a
+ * name, a DNI and "Beneficiaria", which went whole to the lead and failed.
+ */
+export function contactPhone(text: string): string | null {
+  const unlabeled = text.replace(ID_NUMBER_RE, ' ');
+  for (const [run] of unlabeled.matchAll(/[+(]*\d[\d \t()-]*\d/g)) {
+    const digits = run.replace(/\D/g, '');
+    if (digits.length < 8 || digits.length > 15) continue;
+    const phone = run.replace(/\s+/g, ' ').trim();
+    // The lead takes up to 30 characters.
+    return phone.length <= 30 ? phone : digits;
+  }
+  return null;
+}
 export const PLAN_PREFIX = 'plan_';
 
 // ─── Helpers ────────────────────────────────────────────────

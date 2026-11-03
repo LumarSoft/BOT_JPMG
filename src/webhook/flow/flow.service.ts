@@ -46,6 +46,7 @@ import {
   CLAIM_COPY_ID,
   CLAIM_COPY_RE,
   CLAIMS_PHONE_RE,
+  contactPhone,
   displayName,
   INSTALLMENT_MISSING_RE,
   OTHER_POLIZA_ID,
@@ -5906,8 +5907,8 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    const phone = input.text.trim();
-    if (phone.replace(/\D/g, '').length < 8) {
+    const phone = contactPhone(input.text);
+    if (!phone) {
       return this.retry(key, state, [
         {
           kind: 'text',

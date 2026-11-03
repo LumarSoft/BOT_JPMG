@@ -14,6 +14,7 @@ import {
   debitNotDone,
   CLAIM_COPY_RE,
   CLAIMS_PHONE_RE,
+  contactPhone,
   coverageSummary,
   docPicker,
   formatSiniestros,
@@ -684,6 +685,34 @@ describe('payment rules the office repeats', () => {
       '1ª cuota de la renovación',
     );
     expect(paymentAnswer([debit()], 'pero si ya me debitaron')).toBeNull();
+  });
+});
+
+describe('contactPhone', () => {
+  it('takes the phone out of the answer, as written', () => {
+    expect(contactPhone('341 555-0000')).toBe('341 555-0000');
+    expect(contactPhone('Mi cel es (0341) 155-550000, a la tarde')).toBe(
+      '(0341) 155-550000',
+    );
+    expect(contactPhone('+54 9 341 555-0000')).toBe('+54 9 341 555-0000');
+    expect(contactPhone('3415550000')).toBe('3415550000');
+  });
+
+  it('never takes a DNI or a CUIT for the phone', () => {
+    // A name, a DNI and a role sent while the bot waited for the phone (3/11).
+    expect(contactPhone('Lucía Inventada\nDNI:12.345.678\nBeneficiaria')).toBe(
+      null,
+    );
+    expect(contactPhone('dni 12345678')).toBe(null);
+    expect(contactPhone('CUIT 20-12345678-3')).toBe(null);
+    expect(contactPhone('12.345.678')).toBe(null);
+    expect(contactPhone('DNI 12345678, tel 341 555-0000')).toBe('341 555-0000');
+  });
+
+  it('asks again when there is no phone at all', () => {
+    expect(contactPhone('👆🏽tomador')).toBe(null);
+    expect(contactPhone('555-0000')).toBe(null);
+    expect(contactPhone('1234567890123456')).toBe(null);
   });
 });
 

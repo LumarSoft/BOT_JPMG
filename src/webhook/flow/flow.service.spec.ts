@@ -2255,6 +2255,25 @@ describe('FlowService', () => {
       expect(api.createLead).toHaveBeenCalled();
     });
 
+    it('asks the phone again when the answer is a name and a DNI, and keeps only the phone', async () => {
+      await send({ text: 'hola' });
+      await send({ text: 'Me gustaria cotizar un hogar' });
+      await send({ text: 'Juan Prueba' });
+
+      const res = await send({
+        text: 'Lucía Inventada\nDNI:12.345.678\nBeneficiaria',
+      });
+      expect(JSON.stringify(res.messages)).toContain('No reconocí el teléfono');
+      expect(stored?.step).toBe('COT_LEAD_TELEFONO');
+      expect(api.createLead).not.toHaveBeenCalled();
+
+      await send({ text: 'Mi cel es 341 555-0000' });
+      expect(api.createLead).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ phone: '341 555-0000' }),
+      );
+    });
+
     it('details every plan with its coverages before the picker (matches the web)', async () => {
       api.getPricing.mockResolvedValueOnce([
         {
