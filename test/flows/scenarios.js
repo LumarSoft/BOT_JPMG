@@ -1369,4 +1369,40 @@ module.exports = [
       { select: 'cot_auto', title: 'Auto', list: true, expect: { any: [/marca, modelo/i] } },
     ],
   },
+  // ─── Revisión 3/11: el teléfono del pedido de cotización ──────────────────
+  {
+    id: 'T01', area: 'Revisión 3/11', name: 'Hogar: nombre y DNI en vez del teléfono → lo vuelve a pedir; el teléfono dentro de una frase queda solo en la solicitud', wa: wa(), regression: 'conv. 87 (3/11)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_hogar', title: 'Hogar', list: true, expect: { any: [/plan_\d+/] } },
+      { drive: { max: 1, until: /nombre y apellido/, answer: (prev) => ({ select: (prev.match(/\|(plan_\d+)\]/) || [])[1], title: 'Plan', list: true }), expect: { any: [/nombre y apellido/] } } },
+      { text: 'Juan Prueba', expect: { any: [/teléfono/] } },
+      { text: 'Lucía Inventada\nDNI: 12.345.678\nBeneficiaria', expect: { any: [/No reconocí el teléfono/], none: [/inconveniente/i, /Registré tu pedido/] } },
+      { text: 'Mi cel es 341 555-0000, a la tarde', expect: { any: [/Registré tu pedido de cotización/], none: [/inconveniente/i] } },
+    ],
+    db: [
+      { name: 'la solicitud guardó solo el teléfono', sql: "SELECT l.phone, l.contactName FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId='$WA'", test: (r) => r.length === 1 && r[0][0] === '341 555-0000' && r[0][1] === 'Juan Prueba' },
+    ],
+  },
+  {
+    id: 'T02', area: 'Revisión 3/11', name: 'Datos de un seguro de alquiler en mensajes sueltos mientras pide el teléfono: sin error, ofrece un asesor y avisa a la oficina', wa: wa(), regression: 'conv. 87 (3/11)',
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_hogar', title: 'Hogar', list: true, expect: { any: [/plan_\d+/] } },
+      { drive: { max: 1, until: /nombre y apellido/, answer: (prev) => ({ select: (prev.match(/\|(plan_\d+)\]/) || [])[1], title: 'Plan', list: true }), expect: { any: [/nombre y apellido/] } } },
+      // The city, taken for the name as in the real chat.
+      { text: 'Rosario', expect: { any: [/teléfono/] } },
+      { text: '👆🏽tomador', expect: { any: [/No reconocí el teléfono/], none: [/inconveniente/i] } },
+      { text: 'Lucía Inventada\nDNI:12.345.678\nBeneficiaria', expect: { any: [/stuck_asesor/], none: [/inconveniente/i, /Registré tu pedido/] } },
+      { select: 'stuck_asesor', title: 'Hablar con un asesor', expect: { any: [/avisé a la oficina/] } },
+    ],
+    db: [
+      handoffs('aviso a la oficina', (r) => r.length >= 1),
+      { name: 'sin solicitud con un teléfono inventado', sql: "SELECT COUNT(*) FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId='$WA'", test: (r) => Number(r[0][0]) === 0 },
+    ],
+  },
 ];
