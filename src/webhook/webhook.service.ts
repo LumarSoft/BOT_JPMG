@@ -3028,6 +3028,22 @@ export class WebhookService {
             });
           }
           const brandFromCodia = Math.floor(codiaNum / 10000);
+          // The vehicle as the client saw it ("FORD KA 1.5 SE"), for the office's follow-up.
+          const quotedVersion =
+            rememberedVehicle?.vehicleType === vehicleType
+              ? (rememberedVehicle.candidates.find(
+                  (c) => c.codia === codiaNum,
+                ) ??
+                (rememberedVehicle.selected?.codia === codiaNum
+                  ? rememberedVehicle.selected
+                  : undefined))
+              : undefined;
+          const vehicleLabel = quotedVersion
+            ? [rememberedVehicle?.brandName, quotedVersion.description]
+                .filter(Boolean)
+                .join(' ')
+                .slice(0, 160)
+            : undefined;
           let quote: Awaited<ReturnType<ApiService['quoteVehicle']>>;
           try {
             quote = await this.api.quoteVehicle(
@@ -3041,6 +3057,8 @@ export class WebhookService {
                 ...(vehicleType === 'auto' && knownGnc !== undefined
                   ? { hasGnc: knownGnc }
                   : {}),
+                conversationId,
+                ...(vehicleLabel ? { vehicleLabel } : {}),
               },
               phoneNumberId,
             );

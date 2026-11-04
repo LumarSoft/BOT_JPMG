@@ -1035,7 +1035,8 @@ describe('WebhookService', () => {
         'P2',
       );
 
-      // Quoted for the organization of the number the chat came through.
+      // Quoted for the organization of the number the chat came through, with
+      // the chat and the vehicle as the client saw it for the office's follow-up.
       expect(api.quoteVehicle).toHaveBeenCalledWith(
         'auto',
         {
@@ -1044,6 +1045,8 @@ describe('WebhookService', () => {
           manufactureYear: 2024,
           postalCode: 2000,
           hasGnc: false,
+          conversationId: 9,
+          vehicleLabel: 'CHEVROLET ONIX 1.0T PREMIER II AT L/24',
         },
         'P2',
       );

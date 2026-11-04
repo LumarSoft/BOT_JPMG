@@ -667,14 +667,27 @@ export class ApiService {
       postalCode: number;
       zeroKm?: boolean;
       hasGnc?: boolean;
+      /** The chat the quote is for and the vehicle as the bot named it: the
+       * API keeps them to follow up a quote that did not end in a policy.
+       * Only the number's endpoint takes them. */
+      conversationId?: number;
+      vehicleLabel?: string;
     },
     phoneNumberId?: string,
   ): Promise<QuoteResult> {
+    // The public endpoint rejects the chat fields: they only go with a number.
+    const { conversationId, vehicleLabel, ...vehicle } = payload;
     const { data } = await this.http.post<QuoteResult>(
       phoneNumberId
         ? `/bot/numbers/${phoneNumberId}/cotizador/${vehicleType}`
         : `/cotizador/${vehicleType}`,
-      payload,
+      phoneNumberId
+        ? {
+            ...vehicle,
+            ...(conversationId ? { conversationId } : {}),
+            ...(vehicleLabel ? { vehicleLabel } : {}),
+          }
+        : vehicle,
     );
     return data;
   }
