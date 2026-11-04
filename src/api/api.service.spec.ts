@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { AxiosError, AxiosHeaders } from 'axios';
 import { ApiService } from './api.service';
 
 describe('ApiService image messages', () => {
@@ -202,5 +203,73 @@ describe('ApiService per organization', () => {
       payload,
     );
     expect(http.post).toHaveBeenNthCalledWith(2, '/cotizador/moto', payload);
+  });
+});
+
+describe('ApiService.requestHandoff', () => {
+  function setup() {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new ApiService(config);
+    const post = jest.fn().mockResolvedValue({ data: { ok: true } });
+    (service as unknown as { http: { post: jest.Mock } }).http.post = post;
+    return { service, post };
+  }
+
+  const badRequest = () =>
+    new AxiosError('Bad Request', 'ERR_BAD_REQUEST', undefined, undefined, {
+      status: 400,
+      statusText: 'Bad Request',
+      data: {},
+      headers: {},
+      config: { headers: new AxiosHeaders() },
+    });
+
+  it('sends why the bot stopped a claim with the reason', async () => {
+    const { service, post } = setup();
+
+    await service.requestHandoff(
+      7,
+      'Denuncia de siniestro no registrada: la póliza 9001 figura con un cobro rechazado.',
+      'REJECTED_PAYMENT',
+    );
+
+    expect(post).toHaveBeenCalledWith('/bot/conversation/7/request-handoff', {
+      reason:
+        'Denuncia de siniestro no registrada: la póliza 9001 figura con un cobro rechazado.',
+      blockedClaimReason: 'REJECTED_PAYMENT',
+    });
+  });
+
+  it('leaves the field out of any other request', async () => {
+    const { service, post } = setup();
+    await service.requestHandoff(7, 'Quiere hablar con un asesor');
+    expect(post).toHaveBeenCalledWith('/bot/conversation/7/request-handoff', {
+      reason: 'Quiere hablar con un asesor',
+    });
+  });
+
+  it('asks again without the field when the API does not know it yet', async () => {
+    const { service, post } = setup();
+    post.mockRejectedValueOnce(badRequest());
+
+    await service.requestHandoff(7, 'Denuncia…', 'NO_POLICY');
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenLastCalledWith(
+      '/bot/conversation/7/request-handoff',
+      { reason: 'Denuncia…' },
+    );
+  });
+
+  it('does not repeat the request on any other failure', async () => {
+    const { service, post } = setup();
+    post.mockRejectedValueOnce(new Error('network down'));
+
+    await expect(
+      service.requestHandoff(7, 'Denuncia…', 'NO_POLICY'),
+    ).rejects.toThrow('network down');
+    expect(post).toHaveBeenCalledTimes(1);
   });
 });

@@ -213,6 +213,17 @@ export interface PaymentStatus {
   overdueInstallments: number;
 }
 
+/**
+ * Why the bot refused to file a claim and sent it to the office ("denuncia
+ * frenada"): no policy in force, or the policy has a rejected payment or
+ * overdue installments. The API badges the matter and counts it in the
+ * monthly balance.
+ */
+export type BlockedClaimReason =
+  | 'NO_POLICY'
+  | 'REJECTED_PAYMENT'
+  | 'OVERDUE_INSTALLMENTS';
+
 export interface CuotaImpaga {
   number: number;
   amount: string;

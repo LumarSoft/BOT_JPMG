@@ -1578,6 +1578,7 @@ describe('FlowService', () => {
       expect(api.requestHandoff).toHaveBeenCalledWith(
         1,
         expect.stringContaining('1741715'),
+        'REJECTED_PAYMENT',
       );
       expect(api.createSiniestro).not.toHaveBeenCalled();
     });
@@ -1594,7 +1595,11 @@ describe('FlowService', () => {
       const result = await pickPolicyForClaim();
 
       expect(JSON.stringify(result.messages)).toContain('cuotas vencidas');
-      expect(api.requestHandoff).toHaveBeenCalled();
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('saldo vencido impago'),
+        'OVERDUE_INSTALLMENTS',
+      );
       expect(stored?.step).toBe('CLIENT_MENU');
     });
 
@@ -1627,6 +1632,7 @@ describe('FlowService', () => {
       expect(api.requestHandoff).toHaveBeenCalledWith(
         1,
         expect.stringContaining('no tiene pólizas vigentes'),
+        'NO_POLICY',
       );
       expect(stored?.step).toBe('CLIENT_MENU');
     });

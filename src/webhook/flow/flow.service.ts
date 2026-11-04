@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { ApiService } from '../../api/api.service';
 import type {
+  BlockedClaimReason,
   EstadoCuentaPoliza,
   PolizaDocumento,
   PolizaSummary,
@@ -3268,6 +3269,7 @@ export class FlowService {
           return this.siniestroBloqueado(
             key,
             ctx,
+            'NO_POLICY',
             'Denuncia de siniestro no registrada: el cliente no tiene pólizas vigentes.',
             'No encontré pólizas vigentes a tu nombre, así que no puedo registrar la denuncia automáticamente.',
           );
@@ -3850,6 +3852,9 @@ export class FlowService {
       return this.siniestroBloqueado(
         key,
         ctx,
+        pago.rejectedInstallments > 0
+          ? 'REJECTED_PAYMENT'
+          : 'OVERDUE_INSTALLMENTS',
         `Denuncia de siniestro no registrada: la póliza ${poliza.certificateNumber} figura con ${motivo}.`,
         pago.rejectedInstallments > 0
           ? `La póliza *${poliza.certificateNumber}* registra un *pago rechazado*, así que no puedo tomar la denuncia automáticamente: la cobertura puede estar suspendida hasta regularizarlo.`
@@ -6679,16 +6684,18 @@ export class FlowService {
   /**
    * A claim the bot must not file on its own (no policy in force, or the policy
    * has a rejected / overdue payment). The chat goes to human attention with
-   * the reason so an advisor reviews the case instead of the claim stalling.
+   * the reason so an advisor reviews the case instead of the claim stalling;
+   * `blocked` lets the office see it as a "denuncia frenada" and count it.
    */
   private async siniestroBloqueado(
     key: string,
     ctx: FlowContext,
+    blocked: BlockedClaimReason,
     reason: string,
     explanation: string,
   ): Promise<FlowResult> {
     await this.api
-      .requestHandoff(ctx.conversationId, reason)
+      .requestHandoff(ctx.conversationId, reason, blocked)
       .catch(() => undefined);
     this.setState(key, 'CLIENT_MENU');
     return {

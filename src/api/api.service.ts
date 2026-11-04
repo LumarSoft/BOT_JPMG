@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import type {
   AttachAdjuntosResult,
+  BlockedClaimReason,
   BotContext,
   BotConversation,
   ConversationMessage,
@@ -258,11 +259,29 @@ export class ApiService {
   }
 
   /** Marks the conversation as pending human attention (user requested an advisor). */
-  async requestHandoff(conversationId: number, reason?: string): Promise<void> {
-    await this.http.post(
-      `/bot/conversation/${conversationId}/request-handoff`,
-      { reason: reason?.slice(0, 2000) },
-    );
+  /**
+   * Asks for a person. `blockedClaimReason` marks a claim the bot refused to
+   * file; an API older than that field rejects it (400), and the request is
+   * sent again without it so the office still hears about the claim.
+   */
+  async requestHandoff(
+    conversationId: number,
+    reason?: string,
+    blockedClaimReason?: BlockedClaimReason,
+  ): Promise<void> {
+    const url = `/bot/conversation/${conversationId}/request-handoff`;
+    const body = { reason: reason?.slice(0, 2000) };
+    if (!blockedClaimReason) {
+      await this.http.post(url, body);
+      return;
+    }
+    try {
+      await this.http.post(url, { ...body, blockedClaimReason });
+    } catch (error) {
+      if (!axios.isAxiosError(error) || error.response?.status !== 400)
+        throw error;
+      await this.http.post(url, body);
+    }
   }
 
   /** Creates an advisor-contact / fixed-plan lead, scoped to the conversation's producer. */
