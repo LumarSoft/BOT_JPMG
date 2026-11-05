@@ -364,6 +364,41 @@ describe('WebhookController', () => {
     });
   });
 
+  it('ignores a reaction made from the WhatsApp Business app', () => {
+    controller.receiveMessage({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'W1',
+          changes: [
+            {
+              field: 'smb_message_echoes',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: '+54',
+                  phone_number_id: 'P1',
+                },
+                message_echoes: [
+                  {
+                    from: 'business',
+                    to: 'wa1',
+                    id: 'echo2',
+                    timestamp: '1',
+                    type: 'reaction',
+                    reaction: { message_id: 'wamid.customer1', emoji: '👍' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(api.recordAgentEcho).not.toHaveBeenCalled();
+  });
+
   it('records Meta disconnection_info.reason from an account update', () => {
     controller.receiveMessage({
       object: 'whatsapp_business_account',

@@ -31,6 +31,8 @@ export interface WhatsAppMessageEcho {
   audio?: { id: string };
   video?: { id: string; caption?: string };
   sticker?: { id: string };
+  /** An empty emoji means the reaction was removed. */
+  reaction?: { message_id: string; emoji?: string };
 }
 
 /** One thread inside a history chunk. */

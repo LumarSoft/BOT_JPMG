@@ -282,6 +282,9 @@ export class WebhookController {
       // Our own API sends can bounce back here. Pausing on those would mute the
       // bot everywhere, quietly.
       if (this.sent.isOurs(echo.id)) continue;
+      // Reacting from the app is not a message: recording it would move the
+      // chat to the top of the inbox, reopen it and pause the bot.
+      if (echo.type === 'reaction') continue;
 
       const content = describeEcho(echo);
       if (!content || !echo.to) continue;
