@@ -5946,5 +5946,121 @@ describe('FlowService', () => {
         expect(text(res)).not.toContain('no incluyen grúa');
       });
     });
+
+    describe('revisión 6/11: relatos, siniestros ya cargados y gente de la compañía', () => {
+      const notFound = () =>
+        api.identifyClient.mockRejectedValueOnce(
+          Object.assign(new Error('Not found'), {
+            isAxiosError: true,
+            response: { status: 404 },
+          }),
+        );
+      const story =
+        'Hoy jueves 5 de noviembre aproximadamente 8:40. Yo Damián Luis Migueles Dni 31.676.725, manejando la Fiorino, llevando a una pasajera. Al llegar a Oroño frené en el semáforo y la pasajera se cayó para adelante. Quiero hacer la denuncia.';
+
+      it('un relato con un DNI que no está en la cartera va a la oficina en vez de "no encontré ningún cliente" (#462)', async () => {
+        intents.interpret.mockResolvedValue('siniestro');
+        notFound();
+
+        const res = await send({ text: story }, withModel);
+
+        expect(api.identifyClient).toHaveBeenCalledWith(1, { dni: '31676725' });
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('DNI 31676725 no está en la cartera'),
+        );
+        expect(text(res)).toContain('le pasé tu mensaje a la oficina');
+        expect(text(res)).not.toContain('No encontré ningún cliente');
+        expect(stored?.step).toBe('IDENTIFY');
+      });
+
+      it('otro DNI después del relato sigue identificando', async () => {
+        intents.interpret.mockResolvedValue('siniestro');
+        notFound();
+        await send({ text: story }, withModel);
+
+        const res = await send({ text: '27345678' }, withModel);
+
+        expect(api.identifyClient).toHaveBeenLastCalledWith(1, {
+          dni: '27345678',
+        });
+        expect(text(res)).toContain('te identifiqué');
+      });
+
+      it('un DNI corto que no está sigue diciendo que no lo encontró', async () => {
+        intents.interpret.mockResolvedValue('baja');
+        notFound();
+
+        const res = await send(
+          { text: 'quiero dar de baja mi seguro, dni 27345678' },
+          withModel,
+        );
+
+        expect(text(res)).toContain('No encontré ningún cliente');
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+      });
+
+      it('"hice una denuncia… el del taller me pide que pague" es un seguimiento, no una denuncia nueva (#434)', async () => {
+        await send({ text: 'hola' }, asClient);
+        api.getSiniestros.mockResolvedValue([]);
+        const res = await send(
+          {
+            text: 'Mirá, yo hice una denuncia por un siniestro y se comunicó conmigo el inspector, me pasó un taller, y yo le dije que no quería pagar la franquicia porque a mí me chocaron. Ahora el del taller me pide que yo le pague.',
+          },
+          asClient,
+        );
+
+        expect(stored?.step).not.toBe('SINIESTRO_POLIZA');
+        expect(stored?.step).not.toBe('SINIESTRO_DATOS');
+        expect(api.createSiniestro).not.toHaveBeenCalled();
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Consulta sobre un siniestro'),
+        );
+        expect(text(res)).toContain('le pasé tu consulta a la oficina');
+      });
+
+      it('"me chocaron recién" sigue abriendo una denuncia nueva', async () => {
+        await send({ text: 'hola' }, asClient);
+        await send(
+          { text: 'me chocaron recién, quiero hacer la denuncia' },
+          asClient,
+        );
+
+        expect(['SINIESTRO_POLIZA', 'SINIESTRO_DATOS']).toContain(stored?.step);
+      });
+
+      it('un inspector de la compañía que pide el contacto de un asegurado va a la oficina (#466)', async () => {
+        intents.interpret.mockResolvedValue('consulta');
+
+        const res = await send(
+          {
+            text: 'Buenas tardes Vanesa. Soy Esteban Giménez inspector de Triunfo Seguros. Necesitaría el contacto del asegurado Rosano Albano. Fiesta AA252SH.',
+          },
+          withModel,
+        );
+
+        expect(res.handoff).toBeUndefined();
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Escribe alguien de la compañía'),
+        );
+        expect(text(res)).toContain('Le pasé tu pedido a la oficina');
+        expect(api.identifyClient).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('ASESOR_MOTIVO');
+      });
+
+      it('"vino el inspector a ver el auto" de un cliente no es gente de la compañía', async () => {
+        await send({ text: 'hola' }, asClient);
+        intents.interpret.mockResolvedValue('seguimiento');
+
+        await send({ text: 'ayer vino el inspector a ver el auto' }, asClient);
+
+        expect(api.requestHandoff).not.toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Escribe alguien de la compañía'),
+        );
+      });
+    });
   });
 });

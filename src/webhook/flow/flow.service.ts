@@ -376,6 +376,24 @@ const samePlate = (listed: string | null | undefined, typed: string) =>
 const NEW_INCIDENT_RE =
   /\bnuev[ao]|\bdenunci|\breportar|\bregistr|\bquiero hacer|\bocurri|\btuve|\bchoc|\baccidente|\bme robaron|\brob(?:o|aron)\b|\bhurt|\bgranizo|\bincendi|\bse (?:quemo|prendio fuego)|\bme (?:rompieron|golpearon|pegaron|rozaron|rayaron)|\b(?:roce|roze|rozamos|raye|golpee)\b|\b(?:te )?paso (?:los )?datos\b/;
 
+/** A claim already made, told after the fact: "hice la denuncia", "ya
+ * denuncié", the inspector who came, the shop that charges, the deductible.
+ * Following it up, not a new claim: "hice una denuncia… el del taller me pide
+ * que le pague" opened the claim checklist (#434). Folded text. */
+const EXISTING_CLAIM_RE =
+  /\b(?:hice|hicimos|realice|realizamos|presente|presentamos|cargue|cargamos|ya tengo|tengo hecha|tengo cargada)\b[^.]{0,25}\bdenuncia|\b(?:ya|la|lo|las|los) denunci(?:e|amos|o)\b|\bdenuncie\b|\bnumero de (?:siniestro|denuncia|stro)\b|\b(?:inspector|inspectora|perito|perita|liquidador|liquidadora)\b|\bfranquicia\b|\btaller\b[^.]{0,40}\b(?:pide|piden|cobra|cobran|cobrar|pague|pagar|pago)\b|\bme (?:llamaron|contactaron|contacto)\b|\bse comunic(?:o|aron)\b/;
+
+/** Someone from the insurer introducing themselves: an inspector, an
+ * adjuster, "soy de Triunfo". They want the office, not the menu or the
+ * FAQ model, which refused to share a customer's contact and told nobody
+ * (#466). Folded text. */
+const COMPANY_STAFF_RE =
+  /\bsoy\b[^.]{0,40}\b(?:inspector|inspectora|perito|perita|liquidador|liquidadora|tasador|tasadora)\b|\b(?:inspector|inspectora|perito|perita|liquidador|liquidadora|tasador|tasadora)\b[^.]{0,30}\bde (?:triunfo|la compan|la aseguradora|la cia)|\bsoy de (?:triunfo|la compan|la aseguradora)|\b(?:te |les |le )?(?:escribo|hablo|llamo) de (?:parte de )?(?:triunfo|la compan|la aseguradora)/;
+
+/** A message that tells what happened (an accident, a situation) rather
+ * than a request with a document in it: twenty words or more. */
+const isNarrative = (text: string) => words(text).split(' ').length >= 20;
+
 const DOCS_TOO_RE = /\bpolizas?\b|\btarjeta\b|\bcertificado\b|\bdocumenta/;
 
 /** Something in a request shaped like a DNI/CUIT (7+ digits, dots or dashes
@@ -1997,6 +2015,13 @@ export class FlowService {
         await this.officeFollowUp(input.text, ctx, key),
       );
     }
+    // Someone from the insurer ("soy Esteban, inspector de Triunfo, necesito
+    // el contacto del asegurado"): a request for the office (#466).
+    if (!ctx.client && COMPANY_STAFF_RE.test(fold(input.text)))
+      return this.withOpener(
+        opener,
+        await this.companyStaffRequest(input.text, ctx, key),
+      );
     // Backing out of a quote or a contract: said once, no menu (#327).
     if (DECLINE_RE.test(fold(input.text)))
       return this.withOpener(
@@ -2761,6 +2786,8 @@ export class FlowService {
           opts,
         );
         if (result) return result;
+        if (isNarrative(said))
+          return this.unmatchedStory(said, params, ctx, key, pending);
         this.setState(key, 'IDENTIFY', pending);
         return { messages: [{ kind: 'text', body: NOT_FOUND_TEXT }] };
       }
@@ -2928,7 +2955,10 @@ export class FlowService {
         ? { docs: state.data.pendingDocs as string[] }
         : {}),
     });
-    return result ?? this.notFound(key, state.data);
+    if (result) return result;
+    if (!bare && isNarrative(raw))
+      return this.unmatchedStory(raw, params, ctx, key, state.data);
+    return this.notFound(key, state.data);
   }
 
   /**
@@ -2972,6 +3002,73 @@ export class FlowService {
             `Le pasé a la oficina tu consulta${attached ? ' y lo que mandaste' : ''} para que te respondan por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
             (await this.closedNote(ctx)) +
             '\n\nSi además querés ver tus pólizas por acá, pasame el *DNI del titular* o la *patente*.',
+        },
+      ],
+    };
+  }
+
+  /**
+   * The document in a story matched nobody ("yo, Damián, DNI 31.676.725,
+   * manejando la Fiorino… la pasajera se cayó"). "No encontré ningún cliente"
+   * answered an accident report as if it were a typo, with no alert (#462):
+   * the office reads it, and another DNI or the plate still works here.
+   */
+  private async unmatchedStory(
+    said: string,
+    params: { dni: string } | { plate: string },
+    ctx: FlowContext,
+    key: string,
+    pending: Record<string, unknown>,
+  ): Promise<FlowResult> {
+    const id =
+      'dni' in params ? `DNI ${params.dni}` : `patente ${params.plate}`;
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Sin identificar (${id} no está en la cartera). Escribió: "${clip(said.trim())}"`,
+      )
+      .catch(() => undefined);
+    this.setState(key, 'IDENTIFY', {
+      ...withoutPhoneQuestion(pending),
+      notFound: 1,
+    });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `No encontré el ${id} en nuestra cartera, pero le pasé tu mensaje a la oficina para que lo revise y te escriba por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote(ctx)) +
+            '\n\nSi la póliza está a nombre de otra persona, pasame su *DNI* o la *patente* y lo busco de nuevo.',
+        },
+      ],
+    };
+  }
+
+  /**
+   * An inspector, an adjuster or anyone from the insurer writing to the
+   * office: whatever they need (a customer's contact, a document) is the
+   * office's to give. The bot never shares a customer's data.
+   */
+  private async companyStaffRequest(
+    raw: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    await this.api
+      .requestHandoff(
+        ctx.conversationId,
+        `Escribe alguien de la compañía: "${clip(raw.trim())}"`,
+      )
+      .catch(() => undefined);
+    this.setState(key, 'ASESOR_MOTIVO', { alerted: true, lastQuestion: raw });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body:
+            `Le pasé tu pedido a la oficina para que te respondan por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+            (await this.closedNote(ctx)),
         },
       ],
     };
@@ -7125,6 +7222,7 @@ export class FlowService {
       )
     )
       return OPT.sinConsultar;
+    if (EXISTING_CLAIM_RE.test(t)) return OPT.sinConsultar;
     if (NEW_INCIDENT_RE.test(t)) return OPT.sinNueva;
     if (/\bver\b|\bmis\b|\btengo\b/.test(t)) return OPT.sinConsultar;
     return null;
