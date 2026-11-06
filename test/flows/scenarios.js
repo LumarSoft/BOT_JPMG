@@ -1421,8 +1421,10 @@ module.exports = [
   },
   {
     id: 'F02', area: 'Revisión 6/11', name: 'Cuenta lo que pasó con una denuncia ya hecha (inspector, taller, franquicia): seguimiento, no denuncia nueva', wa: wa(), regression: 'conv. 434 (4/11)',
+    // Gustavo: other scenarios file claims for Ana in the same run, and with
+    // claims the follow-up lists them instead of alerting the office.
     steps: [
-      ...ident('99000001'),
+      ...ident('99000006'),
       {
         text: 'Hice una denuncia por un choque, se comunicó conmigo el inspector y me mandó a un taller. Yo le dije que no quería pagar la franquicia porque a mí me chocaron, y ahora el del taller me pide que le pague. No entiendo.',
         max: 60000,
@@ -1453,7 +1455,7 @@ module.exports = [
     ],
   },
   {
-    id: 'F05', area: 'Revisión 6/11', name: '"Sí, es eso" tocado tarde, después de escribir el motivo: no vuelve a preguntar "¿Es por esto?"', wa: wa(), regression: 'conv. 430 (4/11)', known: 'repregunta citando "Sí, es eso"',
+    id: 'F05', area: 'Revisión 6/11', name: '"Sí, es eso" tocado tarde, después de escribir el motivo: no vuelve a preguntar "¿Es por esto?"', wa: wa(), regression: 'conv. 430 (4/11)',
     steps: [
       ...ident('99000001'),
       { text: 'Este cupón me lo pasaste para pagar este mes?', max: 60000 },
@@ -1463,7 +1465,7 @@ module.exports = [
     ],
   },
   {
-    id: 'F06', area: 'Revisión 6/11', name: 'Cuota de débito sin debitar y el cliente escribe "transferencia": da la cuenta en vez de repetir el estado', wa: wa(), regression: 'conv. 482 (6/11)', known: 'repite el estado de cuenta sin dar alias ni CBU',
+    id: 'F06', area: 'Revisión 6/11', name: 'Cuota de débito sin debitar y el cliente escribe "transferencia": da la cuenta en vez de repetir el estado', wa: wa(), regression: 'conv. 482 (6/11)',
     steps: [
       ...ident('99000002'),
       { select: 'm_pagos', title: '💳 Pagos y cobranzas', list: true, expect: { any: [/débito/i] } },
@@ -1471,7 +1473,7 @@ module.exports = [
     ],
   },
   {
-    id: 'F07', area: 'Revisión 6/11', name: 'Después de cotizar la moto, "necesito el seguro cuanto antes para sacarla del corralón" sigue la contratación, no "no encontré pólizas"', wa: wa(), regression: 'conv. 448 (5/11)', known: 'contesta "No encontré pólizas vigentes a tu nombre"',
+    id: 'F07', area: 'Revisión 6/11', name: 'Después de cotizar la moto, "necesito el seguro cuanto antes para sacarla del corralón" sigue la contratación, no "no encontré pólizas"', wa: wa(), regression: 'conv. 448 (5/11)',
     steps: [
       { text: 'Hola quiero cotizar una moto Honda Wave 110 2023, soy de Rosario', max: 90000, quiet: 5000 },
       {
@@ -1490,7 +1492,7 @@ module.exports = [
     ],
   },
   {
-    id: 'F08', area: 'Revisión 6/11', name: 'Altas de nómina en PDF y "los podrán sumar": a la oficina, sin pedir el DNI en cada mensaje', wa: wa(), regression: 'conv. 187 (5/11)', known: 'pide el DNI en cada mensaje mientras el cliente explica',
+    id: 'F08', area: 'Revisión 6/11', name: 'Altas de nómina en PDF y "los podrán sumar": a la oficina, sin pedir el DNI en cada mensaje', wa: wa(), regression: 'conv. 187 (5/11)',
     steps: [
       { pdf: '2026 11 ALTA PRUEBA.pdf', expect: { reply: true } },
       { text: 'Hola Mili buen día', expect: { none: [/DNI/] } },
