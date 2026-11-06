@@ -1405,4 +1405,98 @@ module.exports = [
       { name: 'sin solicitud con un teléfono inventado', sql: "SELECT COUNT(*) FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId='$WA'", test: (r) => Number(r[0][0]) === 0 },
     ],
   },
+  // ─── Revisión 6/11: chats de las 4 sucursales (4–6/11) ───────────────────
+  {
+    id: 'F01', area: 'Revisión 6/11', name: 'Relato de un accidente con un DNI que no está en la cartera: avisa a la oficina, no "no encontré ningún cliente"', wa: wa(), regression: 'conv. 462 (5/11)',
+    steps: [
+      {
+        text: 'Hoy jueves a las 8:40, yo Damián Prueba, DNI 12.345.678, manejando la Fiorino patente ZZ999ZZ, llevando a una pasajera por calle Zeballos. Al llegar a Oroño frené en el semáforo con tiempo y la pasajera se cayó para adelante. Ella tenía puesto el cinturón. No hubo lesionados. Quiero hacer la denuncia.',
+        max: 60000,
+        expect: { any: [/le pasé tu mensaje a la oficina/i], none: [/No encontré ningún cliente/, /ya sos cliente/i] },
+      },
+      // Another document after the story still identifies.
+      { text: '99000001', expect: { any: [/te identifiqué/i] } },
+    ],
+    db: [handoffs('aviso con el relato', (r) => r.some(([b]) => /no está en la cartera/.test(b)))],
+  },
+  {
+    id: 'F02', area: 'Revisión 6/11', name: 'Cuenta lo que pasó con una denuncia ya hecha (inspector, taller, franquicia): seguimiento, no denuncia nueva', wa: wa(), regression: 'conv. 434 (4/11)',
+    steps: [
+      ...ident('99000001'),
+      {
+        text: 'Hice una denuncia por un choque, se comunicó conmigo el inspector y me mandó a un taller. Yo le dije que no quería pagar la franquicia porque a mí me chocaron, y ahora el del taller me pide que le pague. No entiendo.',
+        max: 60000,
+        expect: { any: [/le pasé tu consulta a la oficina/i], none: [/Respondé todo en un solo mensaje/, /Sobre qué póliza/, /Para cargar la denuncia/] },
+      },
+    ],
+    db: [handoffs('consulta sobre el siniestro', (r) => r.some(([b]) => /Consulta sobre un siniestro/.test(b)))],
+  },
+  {
+    id: 'F03', area: 'Revisión 6/11', name: 'Un inspector de la compañía pide el contacto de un asegurado: a la oficina, sin dar datos', wa: wa(), regression: 'conv. 466 (5/11)',
+    steps: [
+      {
+        text: 'Buenas tardes. Soy Esteban Prueba, inspector de Triunfo Seguros. Necesitaría el contacto del asegurado Rosano Albano, Ford Fiesta ZZ901AA, para coordinar la inspección.',
+        max: 60000,
+        expect: { any: [/Le pasé tu pedido a la oficina/], none: [/ya sos cliente/i, /341159990001/, /No puedo compartir/, /DNI del titular/] },
+      },
+    ],
+    db: [handoffs('pedido de la compañía', (r) => r.some(([b]) => /alguien de la compañía/.test(b)))],
+  },
+  {
+    id: 'F04', area: 'Revisión 6/11', name: 'Formulario de siniestro completo en el primer mensaje: no vuelve a pedir los 8 datos', wa: wa(), regression: 'conv. 468 (5/11)', known: 'pide la lista de datos de nuevo y, con las fotos, "terminemos primero los datos"',
+    steps: [
+      {
+        text: '*INFORMACIÓN PARA REGISTRAR UN SINIESTRO*\n-Nombre del asegurado: Ana Prueba\n-DNI: 99000001\n-Día del siniestro: 05/11/2026\n-Hora del siniestro: 18:00 hs\n-Calle: San Nicolás y Dorrego, Rosario\n-Sentido de circulación: Norte a Sur\n-Patente: ZZ901AA\n-Nombre del conductor: Ana Prueba\n-Cantidad de personas que iban en el vehículo: 2\n-Daños ocasionados: espejo y guardabarro rotos\n*DATOS TERCEROS*\n-Nombre del conductor: María Prueba\n-Patente: ZZ998ZZ\n-Marca y modelo: Renault Sandero\n-Compañía de seguro: La Segunda\n-Daños: espejo retrovisor roto',
+        max: 60000,
+        expect: { any: [/Revisá la denuncia antes de registrarla/], none: [/Respondé todo en un solo mensaje/] },
+      },
+    ],
+  },
+  {
+    id: 'F05', area: 'Revisión 6/11', name: '"Sí, es eso" tocado tarde, después de escribir el motivo: no vuelve a preguntar "¿Es por esto?"', wa: wa(), regression: 'conv. 430 (4/11)', known: 'repregunta citando "Sí, es eso"',
+    steps: [
+      ...ident('99000001'),
+      { text: 'Este cupón me lo pasaste para pagar este mes?', max: 60000 },
+      { select: 'm_asesor', title: '👤 Hablar con un asesor', list: true, expect: { any: [/Es por esto o por otra cosa/] } },
+      { text: 'Es por la casa de Alvear 1335', expect: { any: [/tomé nota|le avisé|le pasé|lo sumo/i] } },
+      { select: 'asesor_misma', title: 'Sí, es eso', expect: { none: [/Es por esto o por otra cosa/] } },
+    ],
+  },
+  {
+    id: 'F06', area: 'Revisión 6/11', name: 'Cuota de débito sin debitar y el cliente escribe "transferencia": da la cuenta en vez de repetir el estado', wa: wa(), regression: 'conv. 482 (6/11)', known: 'repite el estado de cuenta sin dar alias ni CBU',
+    steps: [
+      ...ident('99000002'),
+      { select: 'm_pagos', title: '💳 Pagos y cobranzas', list: true, expect: { any: [/débito/i] } },
+      { text: 'Transferencia, necesito pagarla', expect: { any: [/alias|CBU|transferir/i], none: [/Estado de cuenta\*[\s\S]*Estado de cuenta/] } },
+    ],
+  },
+  {
+    id: 'F07', area: 'Revisión 6/11', name: 'Después de cotizar la moto, "necesito el seguro cuanto antes para sacarla del corralón" sigue la contratación, no "no encontré pólizas"', wa: wa(), regression: 'conv. 448 (5/11)', known: 'contesta "No encontré pólizas vigentes a tu nombre"',
+    steps: [
+      { text: 'Hola quiero cotizar una moto Honda Wave 110 2023, soy de Rosario', max: 90000, quiet: 5000 },
+      {
+        drive: {
+          max: 4,
+          until: /por mes/,
+          answer: (prev) => /(^|\n)\s*\*?1[.)]/.test(prev) ? { text: '1' }
+            : /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' }
+            : { text: 'Honda Wave 110 S 2023, código postal 2000' },
+          expect: { any: [/por mes/] },
+        },
+      },
+      { text: 'Quiero la A', expect: { any: [/frente de tu DNI/] } },
+      { text: 'No la tengo', expect: { any: [/dorso del DNI/] } },
+      { text: 'Necesito el seguro cuanto antes para poder sacar la moto del corralón', expect: { none: [/No encontré pólizas vigentes/], any: [/dorso|foto|asesor|oficina/i] } },
+    ],
+  },
+  {
+    id: 'F08', area: 'Revisión 6/11', name: 'Altas de nómina en PDF y "los podrán sumar": a la oficina, sin pedir el DNI en cada mensaje', wa: wa(), regression: 'conv. 187 (5/11)', known: 'pide el DNI en cada mensaje mientras el cliente explica',
+    steps: [
+      { pdf: '2026 11 ALTA PRUEBA.pdf', expect: { reply: true } },
+      { text: 'Hola Mili buen día', expect: { none: [/DNI/] } },
+      { pdf: '2026 11 ALTA PRUEBA 2.pdf', expect: { none: [/DNI/] } },
+      { text: 'te envío estas altas de dos ingresos que aún no aparecen en la nómina, los podrán sumar porfa', expect: { any: [/oficina/i], none: [/DNI/] } },
+    ],
+    db: [handoffs('aviso de las altas', (r) => r.length >= 1)],
+  },
 ];
