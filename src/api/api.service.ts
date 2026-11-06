@@ -11,6 +11,7 @@ import type {
   CreateLeadResult,
   EstadoCuentaPoliza,
   HoursStatus,
+  Holder,
   IdentifyResult,
   InfoAutoBrand,
   InfoAutoGroup,
@@ -345,6 +346,22 @@ export class ApiService {
       params,
     );
     return data;
+  }
+
+  /**
+   * Whether a DNI or plate is the identified client's, another client's or
+   * nobody's, without linking anything: for a relative's policy asked about
+   * from the client's chat.
+   */
+  async holderOf(
+    conversationId: number,
+    params: { dni: string } | { plate: string },
+  ): Promise<Holder> {
+    const { data } = await this.http.post<{ holder: Holder }>(
+      `/bot/conversation/${conversationId}/holder`,
+      params,
+    );
+    return data.holder;
   }
 
   /** Links the client whose cartera phone is this number (see `phoneMatch`). */

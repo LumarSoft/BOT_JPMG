@@ -926,11 +926,44 @@ export function otherPolizaPrompt(): OutgoingMessage {
   };
 }
 
-/** A plate at a picker that is none of the client's: the office takes it. */
+/**
+ * A plate the client asked about that nobody in the cartera has: maybe of
+ * another company or mistyped, so the office takes it. Said as "not in your
+ * name", never as "it does not exist".
+ */
 export function plateNotListedPrompt(plate: string): OutgoingMessage {
   return {
     kind: 'text',
-    body: `La patente *${plate}* no figura entre tus pólizas. Contame a nombre de quién está y qué necesitás, y se lo paso a la oficina.`,
+    body: `No encuentro la patente *${plate}* a tu nombre. Contame a nombre de quién está y qué necesitás, y se lo paso a la oficina.`,
+  };
+}
+
+/** A plate of the client's own that is not in force: the office takes it. */
+export function plateNotInForcePrompt(plate: string): OutgoingMessage {
+  return {
+    kind: 'text',
+    body: `La patente *${plate}* está a tu nombre, pero no la tengo entre tus pólizas vigentes. Contame qué necesitás y se lo paso a la oficina.`,
+  };
+}
+
+/**
+ * A plate or DNI of another client, asked about from this client's chat (a
+ * relative's car): it is in someone else's name, so only its holder gets it,
+ * from their own WhatsApp. Who that is stays unsaid.
+ */
+export function anotherHolderMessage(
+  id: { dni: string } | { plate: string },
+): OutgoingMessage {
+  const what =
+    'plate' in id
+      ? `La póliza de la patente *${id.plate}*`
+      : `Las pólizas del DNI *${id.dni}*`;
+  const are = 'plate' in id ? 'está' : 'están';
+  return {
+    kind: 'text',
+    body:
+      `${what} ${are} a nombre de otra persona, no a tu nombre 🔒 ` +
+      'Por seguridad, sus datos y papeles solo se los paso al titular: pedile que nos escriba desde su número de WhatsApp y lo atendemos por ahí.',
   };
 }
 

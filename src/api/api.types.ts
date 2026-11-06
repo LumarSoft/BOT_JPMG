@@ -267,6 +267,12 @@ export interface SiniestroSummary {
   policy: { id: number; certificado: string; riskType: string };
 }
 
+/**
+ * Whose a DNI or plate is, seen from the identified client: theirs, another
+ * client's (never who) or nobody's among the clients the number serves.
+ */
+export type Holder = 'self' | 'other' | 'none';
+
 export interface IdentifyResult {
   client: ClientSummary;
   policyCount: number;

@@ -51,7 +51,9 @@ import {
   displayName,
   INSTALLMENT_MISSING_RE,
   OTHER_POLIZA_ID,
+  anotherHolderMessage,
   otherPolizaPrompt,
+  plateNotInForcePrompt,
   plateNotListedPrompt,
   pagosMenu,
   paymentAnswer,
@@ -1658,7 +1660,7 @@ export class FlowService {
       case 'IDENTIFY':
         return this.handleIdentify(state, input, ctx, key);
       case 'BAJA_POLIZA':
-        return this.handleBajaPoliza(state, input, key);
+        return this.handleBajaPoliza(state, input, ctx, key);
       case 'BAJA_CONFIRM':
         return this.handleBajaConfirm(state, input, ctx, key);
       case 'BAJA_MOTIVO':
@@ -2542,10 +2544,10 @@ export class FlowService {
       });
       return { messages: [otherPolizaPrompt()] };
     }
-    // A plate on its own: one of theirs, or someone else's for the office
-    // (the moto of another holder got "no te entendí", #143).
+    // A plate or DNI on its own: one of theirs, or someone else's (the moto
+    // of another holder got "no te entendí", #143).
     if (typed && ctx.client) {
-      const plated = await this.plateFromClientMenu(input, ctx, key);
+      const plated = await this.idFromClientMenu(input, ctx, key);
       if (plated) return plated;
     }
     // A request in the customer's own words is read like a first message:
@@ -3401,7 +3403,7 @@ export class FlowService {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
     const withDocs = state.data.withDocs === true;
     const t = fold(input.text);
-    const other = this.otherPoliza(input, key);
+    const other = await this.otherPoliza(input, ctx, key);
     if (other) return other;
     if (
       input.selectionId === ALL_POLIZAS_ID ||
@@ -3635,13 +3637,14 @@ export class FlowService {
     };
   }
 
-  private handleBajaPoliza(
+  private async handleBajaPoliza(
     state: FlowState,
     input: UserInput,
+    ctx: FlowContext,
     key: string,
-  ): FlowResult {
+  ): Promise<FlowResult> {
     const polizas = state.data.polizas as PolizaSummary[];
-    const other = this.otherPoliza(input, key);
+    const other = await this.otherPoliza(input, ctx, key);
     if (other) return other;
     const id = this.parsePrefId(input.selectionId, POLIZA_PREFIX);
     const poliza =
@@ -3676,12 +3679,12 @@ export class FlowService {
     };
   }
 
-  private handleBajaConfirm(
+  private async handleBajaConfirm(
     state: FlowState,
     input: UserInput,
     ctx: FlowContext,
     key: string,
-  ): FlowResult {
+  ): Promise<FlowResult> {
     const choice = input.selectionId ?? this.matchConfirmIntent(input.text);
     if (choice === OPT.cancelar) {
       this.setState(key, 'CLIENT_MENU');
@@ -3692,7 +3695,7 @@ export class FlowService {
         ],
       };
     }
-    const other = this.otherPoliza(input, key);
+    const other = await this.otherPoliza(input, ctx, key);
     if (other) return other;
     const poliza = (state.data.polizas as PolizaSummary[]).find(
       (p) => p.id === state.data.polizaId,
@@ -5086,7 +5089,7 @@ export class FlowService {
     key: string,
   ): Promise<FlowResult> {
     const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
-    const other = this.otherPoliza(input, key);
+    const other = await this.otherPoliza(input, ctx, key);
     if (other) return other;
     if (!input.selectionId && CLAIM_COPY_RE.test(fold(input.text)))
       return this.claimCopyRequest(input.text, ctx, key);
@@ -5318,11 +5321,7 @@ export class FlowService {
       };
     }
     this.setState(key, 'DOC_POLIZA', { polizas });
-    return (
-      this.otherPoliza({ text: '', selectionId: OTHER_POLIZA_ID }, key) ?? {
-        messages: [],
-      }
-    );
+    return this.otherPolizaChosen(key);
   }
 
   private async sendDocs(
@@ -6365,21 +6364,60 @@ export class FlowService {
   }
 
   /** "Otra póliza" in a picker: the customer describes it and the office takes it. */
-  private otherPoliza(input: UserInput, key: string): FlowResult | null {
-    const plate =
-      input.selectionId === OTHER_POLIZA_ID
-        ? null
-        : this.plateOutsideList(input, key);
-    if (input.selectionId !== OTHER_POLIZA_ID && !plate) return null;
+  private otherPolizaChosen(key: string): FlowResult {
     // What the customer was asking for goes with the description, or the
     // office reads "la del seguro de vida" without knowing it is a cancellation.
     const asking = OTHER_POLIZA_REQUEST[this.load(key)?.state.step ?? 'ROOT'];
-    const about = plate
-      ? `${asking ?? 'Pregunta por otra póliza'}, patente ${plate}`
-      : asking;
-    this.setState(key, 'ASESOR_MOTIVO', about ? { otherPoliza: about } : {});
+    this.setState(key, 'ASESOR_MOTIVO', asking ? { otherPoliza: asking } : {});
+    return { messages: [otherPolizaPrompt()] };
+  }
+
+  /** "Otra póliza" chosen in a picker, or a plate typed there that is none of the listed ones. */
+  private async otherPoliza(
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    if (input.selectionId === OTHER_POLIZA_ID)
+      return this.otherPolizaChosen(key);
+    const plate = this.plateOutsideList(input, key);
+    if (!plate) return null;
+    const asking = OTHER_POLIZA_REQUEST[this.load(key)?.state.step ?? 'ROOT'];
+    return this.notOnTheirList({ plate }, ctx, key, asking);
+  }
+
+  /**
+   * A plate or DNI an identified client asked about that is none of their
+   * policies in force. Another client's is said to be in someone else's name,
+   * and only its holder gets it, from their own WhatsApp: Raul asked for his
+   * wife's car and got "no figura entre tus pólizas", which reads as "no
+   * existe" (05/11). Their own policy out of force, or a plate nobody has, goes
+   * to the office with what they need, as before.
+   */
+  private async notOnTheirList(
+    id: { dni: string } | { plate: string },
+    ctx: FlowContext,
+    key: string,
+    asking?: string,
+  ): Promise<FlowResult> {
+    const holder = await this.api
+      .holderOf(ctx.conversationId, id)
+      .catch(() => null);
+    if (holder === 'other') {
+      this.setState(key, 'CLIENT_MENU');
+      return { messages: [anotherHolderMessage(id), clientMenu()] };
+    }
+    const what = 'plate' in id ? `la patente ${id.plate}` : `el DNI ${id.dni}`;
+    this.setState(key, 'ASESOR_MOTIVO', {
+      otherPoliza: asking ? `${asking}, ${what}` : `Pregunta por ${what}`,
+    });
+    if ('dni' in id) return { messages: [otherPolizaPrompt()] };
     return {
-      messages: [plate ? plateNotListedPrompt(plate) : otherPolizaPrompt()],
+      messages: [
+        holder === 'self'
+          ? plateNotInForcePrompt(id.plate)
+          : plateNotListedPrompt(id.plate),
+      ],
     };
   }
 
@@ -6400,16 +6438,35 @@ export class FlowService {
   }
 
   /**
-   * A plate on its own from an identified client: theirs, so the menu is for
-   * it, or someone else's, which the office takes with what they need.
+   * A plate or DNI on its own from an identified client: theirs, so the menu
+   * is for it, or someone else's (a relative's), said as such. A plate nobody
+   * has goes to the office; a number nobody has is left to the rest of the
+   * menu (it may be a policy number).
    */
-  private async plateFromClientMenu(
+  private async idFromClientMenu(
     input: UserInput,
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult | null> {
     const read = bareIdentification(input.text);
-    if (!read || !('plate' in read)) return null;
+    if (!read) return null;
+    if ('dni' in read) {
+      const holder = await this.api
+        .holderOf(ctx.conversationId, read)
+        .catch(() => null);
+      if (holder === 'other') return this.notOnTheirList(read, ctx, key);
+      if (holder === 'self')
+        return {
+          messages: [
+            {
+              kind: 'text',
+              body: 'Ese es tu DNI, ya te tengo identificado 🙌',
+            },
+            clientMenu(),
+          ],
+        };
+      return null;
+    }
     const polizas = await this.api
       .getPolizas(ctx.conversationId)
       .catch(() => null);
@@ -6427,10 +6484,7 @@ export class FlowService {
           clientMenu(),
         ],
       };
-    this.setState(key, 'ASESOR_MOTIVO', {
-      otherPoliza: `Pregunta por la patente ${read.plate}`,
-    });
-    return { messages: [plateNotListedPrompt(read.plate)] };
+    return this.notOnTheirList(read, ctx, key);
   }
 
   /** "Cambiar forma de pago": the office asks for the card or CBU itself. */

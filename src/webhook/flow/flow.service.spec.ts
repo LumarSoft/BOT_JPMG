@@ -41,6 +41,7 @@ describe('FlowService', () => {
     getHours: jest.Mock;
     identifyClient: jest.Mock;
     identifyByPhone: jest.Mock;
+    holderOf: jest.Mock;
     getSiniestros: jest.Mock;
     updateLeadCoverage: jest.Mock;
   };
@@ -120,6 +121,7 @@ describe('FlowService', () => {
         client: { firstName: 'Ana', lastName: 'Gómez' },
         policyCount: 1,
       }),
+      holderOf: jest.fn().mockResolvedValue('none'),
       getSiniestros: jest.fn().mockResolvedValue([]),
       updateLeadCoverage: jest.fn().mockResolvedValue({
         leadId: 42,
@@ -5777,6 +5779,78 @@ describe('FlowService', () => {
           1,
           expect.stringContaining('dar de baja'),
         );
+      });
+
+      it('de otra persona en el menú, aclara que está a otro nombre y que la pida el titular', async () => {
+        dosPolizas();
+        api.holderOf.mockResolvedValue('other');
+        await send({ text: 'hola' }, asClient);
+
+        const res = await send({ text: 'LOS 659' }, asClient);
+
+        expect(api.holderOf).toHaveBeenCalledWith(1, { plate: 'LOS659' });
+        expect(text(res)).toContain('a nombre de otra persona');
+        expect(text(res)).toContain('desde su número de WhatsApp');
+        expect(text(res)).not.toContain('no figura');
+        expect(stored?.step).toBe('CLIENT_MENU');
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+      });
+
+      it('de otra persona en la lista de la baja, también la pide el titular', async () => {
+        dosPolizas();
+        api.holderOf.mockResolvedValue('other');
+        intents.interpret.mockResolvedValue('baja');
+        await send({ text: 'hola' }, asClient);
+        await send({ text: 'quiero dar de baja una póliza' }, asClient);
+        expect(stored?.step).toBe('BAJA_POLIZA');
+
+        const res = await send({ text: 'A300dpy' }, asClient);
+
+        expect(text(res)).toContain(
+          'La póliza de la patente *A300DPY* está a nombre de otra persona',
+        );
+        expect(stored?.step).toBe('CLIENT_MENU');
+        expect(api.requestPolicyCancellation).not.toHaveBeenCalled();
+      });
+
+      it('suya pero no vigente, va a la oficina diciendo que está a su nombre', async () => {
+        dosPolizas();
+        api.holderOf.mockResolvedValue('self');
+        await send({ text: 'hola' }, asClient);
+
+        const res = await send({ text: 'AA111BB' }, asClient);
+
+        expect(text(res)).toContain(
+          'está a tu nombre, pero no la tengo entre tus pólizas vigentes',
+        );
+        expect(stored?.step).toBe('ASESOR_MOTIVO');
+      });
+
+      it('que nadie tiene, no dice que no existe: no la encuentra a su nombre', async () => {
+        dosPolizas();
+        await send({ text: 'hola' }, asClient);
+
+        const res = await send({ text: 'ZZ999ZZ' }, asClient);
+
+        expect(text(res)).toContain(
+          'No encuentro la patente *ZZ999ZZ* a tu nombre',
+        );
+        expect(stored?.step).toBe('ASESOR_MOTIVO');
+      });
+
+      it('un DNI de otra persona en el menú aclara que sus pólizas están a otro nombre', async () => {
+        dosPolizas();
+        api.holderOf.mockResolvedValue('other');
+        await send({ text: 'hola' }, asClient);
+
+        const res = await send({ text: '40123456' }, asClient);
+
+        expect(api.holderOf).toHaveBeenCalledWith(1, { dni: '40123456' });
+        expect(text(res)).toContain(
+          'Las pólizas del DNI *40123456* están a nombre de otra persona',
+        );
+        expect(api.identifyClient).not.toHaveBeenCalled();
+        expect(stored?.step).toBe('CLIENT_MENU');
       });
 
       it('sola en el menú, una patente suya no se pasa a la oficina', async () => {
