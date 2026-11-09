@@ -121,3 +121,16 @@ SET @cv=LAST_INSERT_ID();
 INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
  ('user','Ya está aplicado el pago?','live', UTC_TIMESTAMP(3) - INTERVAL 25 HOUR, @cv),
  ('assistant','Gracias lu','app_echo', UTC_TIMESTAMP(3) - INTERVAL 24 HOUR, @cv);
+-- The office quoted a bike by hand 10 hours ago (revisión 9/11: the bot takes the chat back within a day).
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
+ ('5493419990125',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 11 HOUR, UTC_TIMESTAMP(3) - INTERVAL 10 HOUR, NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Quería saber qué precio me podés hacer por la Rouser 250, la más completa','live', UTC_TIMESTAMP(3) - INTERVAL 11 HOUR, @cv),
+ ('assistant','La cobertura más alta, robo e incendio total con destrucción total y RC, te queda en 81 en efectivo y 75 con débito automático. De 94 la pude bajar a 81','app_echo', UTC_TIMESTAMP(3) - INTERVAL 10 HOUR, @cv);
+INSERT INTO Conversation (waId, producerId, phoneNumberId, sessionStartedAt, lastMessageAt, updatedAt) VALUES
+ ('5493419990126',1,'1109940228878973', UTC_TIMESTAMP(3) - INTERVAL 11 HOUR, UTC_TIMESTAMP(3) - INTERVAL 10 HOUR, NOW(3));
+SET @cv=LAST_INSERT_ID();
+INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
+ ('user','Me mandás la póliza del auto?','live', UTC_TIMESTAMP(3) - INTERVAL 11 HOUR, @cv),
+ ('assistant','Listo, ahí te la mandé','app_echo', UTC_TIMESTAMP(3) - INTERVAL 10 HOUR, @cv);

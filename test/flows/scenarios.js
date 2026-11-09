@@ -1501,4 +1501,19 @@ module.exports = [
     ],
     db: [handoffs('aviso de las altas', (r) => r.length >= 1)],
   },
+
+  // ─── Revisión 9/11: el bot retomaba charlas que llevaba la oficina ──────────
+  {
+    id: 'H01', area: 'Revisión 9/11', name: 'La oficina cotizó ayer y el cliente sigue con eso: a la persona, no al menú de cotización', wa: '5493419990125', regression: 'conv. 509 (7/11), conv. 256 (5/11)',
+    steps: [{ text: 'Dale, si lo hacemos ya queda en el acto asegurada?', max: 30000, expect: { any: [/persona de la oficina que te venía atendiendo/], none: [/Qué querés cotizar/, /ya sos cliente/, /Hablo con/] } }],
+    db: [handoffs('aviso con lo que escribió', (r) => r.some(([b]) => /en el acto asegurada/.test(b)))],
+  },
+  {
+    id: 'H02', area: 'Revisión 9/11', name: 'La oficina escribió ayer y el cliente pide otra cosa: la atiende el bot', wa: '5493419990126', regression: 'revisión 9/11',
+    steps: [{ text: 'Hola, quiero cotizar el seguro de una moto Honda Wave 110 2023, soy de Rosario', max: 60000, quiet: 5000, expect: { none: [/te venía atendiendo/], any: [/Wave|versi|código postal|cotiz/i] } }],
+  },
+  {
+    id: 'H03', area: 'Revisión 9/11', name: '"Muchísimas gracias" como primer mensaje: de nada, sin "¿Hablo con…?"', wa: wa(), regression: 'conv. 519 (6/11)',
+    steps: [{ text: 'muchisimas gracias', expect: { any: [/De nada/], none: [/Hablo con/, /DNI/, /ya sos cliente/] } }],
+  },
 ];
