@@ -2098,7 +2098,7 @@ describe('WebhookService', () => {
       api.saveMessage.mockResolvedValue({});
     });
 
-    it('answers even when a person spoke last: only a takeover silences the bot', async () => {
+    it('answers even when a person spoke last, but the flow still sees the office thread', async () => {
       const humanReply = {
         content: 'Pasame las fotos',
         createdAt: new Date(Date.now() - 60_000).toISOString(),
@@ -2128,7 +2128,12 @@ describe('WebhookService', () => {
       });
       flow.handle.mockResolvedValueOnce({ messages: [], state: null });
 
-      await plain.handleMessage('5491155556666', 'gracias', 'P1', 'pm-1');
+      await plain.handleMessage(
+        '5491155556666',
+        'ya te las mandé por mail',
+        'P1',
+        'pm-1',
+      );
 
       expect(flow.handle).toHaveBeenCalledTimes(1);
       const [, , ctx] = flow.handle.mock.calls[0] as [
@@ -2144,11 +2149,47 @@ describe('WebhookService', () => {
           };
         },
       ];
+      // Person mode only decides whether the bot keeps quiet for that person.
       expect(ctx.answeringPerson).toBe(false);
-      expect(ctx.lastHumanReply).toBeNull();
-      expect(ctx.flowState.officeThread).toBeUndefined();
       expect(ctx.flowState.personThread).toBeUndefined();
-      expect(ctx.flowState.data.officeGreeted).toBeUndefined();
+      // What the office was talking about still reaches the flow (9/11).
+      expect(ctx.lastHumanReply).toEqual(humanReply);
+      expect(ctx.flowState.officeThread).toBe(true);
+      expect(ctx.flowState.data.officeGreeted).toBe(true);
+    });
+
+    it('still keeps quiet on a "gracias" to the person who spoke last (conv 519)', async () => {
+      api.getConversation.mockResolvedValueOnce({
+        conversationId: 1,
+        client: null,
+        newSession: false,
+        messages: [
+          { id: 1, role: 'user', content: 'hola', createdAt: '' },
+          {
+            id: 2,
+            role: 'assistant',
+            content: 'Listo, ya te lo mandé',
+            createdAt: '',
+            source: 'app_echo',
+          },
+        ],
+        botPaused: false,
+        flowState: null,
+        lastHumanReply: {
+          content: 'Listo, ya te lo mandé',
+          createdAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      });
+
+      await plain.handleMessage(
+        '5491155556666',
+        'muchisimas gracias',
+        'P1',
+        'pm-3',
+      );
+
+      expect(flow.handle).not.toHaveBeenCalled();
+      expect(api.saveMessage).toHaveBeenCalled();
     });
 
     it('still stays out of a taken conversation', async () => {

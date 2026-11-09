@@ -5066,6 +5066,132 @@ describe('FlowService', () => {
       expect(intents.interpret).toHaveBeenCalled();
       expect(stored?.step).toBe('IDENTIFY');
     });
+
+    describe('within a day of the office writing (9/11)', () => {
+      // The office quoted on Friday at 16:46; on Saturday the customer asked
+      // whether the bike would be covered right away and got the quote menu
+      // (conv 509). "Hacemos este." once the office had closed got "dale,
+      // mañana lo vemos" from the model (conv 256).
+      const yesterday = {
+        ...ctx,
+        answeringPerson: false,
+        botSpoke: false,
+        lastHumanReply: {
+          content: 'De 94 la pude bajar a 81 en efectivo, 75 con débito',
+          createdAt: new Date(Date.now() - 20 * 3_600_000).toISOString(),
+        },
+      };
+
+      it('passes a follow-up to the office instead of starting a flow', async () => {
+        intents.interpret.mockResolvedValue('seguimiento');
+
+        const res = await send(
+          { text: '¿Y con débito me queda en 75 entonces?' },
+          yesterday,
+        );
+
+        const text = JSON.stringify(res.messages);
+        expect(text).toContain('persona de la oficina que te venía atendiendo');
+        expect(text).not.toContain('Qué querés cotizar');
+        expect(res.handoff).toBeUndefined();
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('me queda en 75 entonces'),
+        );
+        // The office's line is what lets the model read it as a follow-up.
+        const [read] = intents.interpret.mock.calls[0] as [
+          { lastHumanReply: { content: string } | null },
+        ];
+        expect(read.lastHumanReply?.content).toBe(
+          'De 94 la pude bajar a 81 en efectivo, 75 con débito',
+        );
+      });
+
+      it('takes "hacemos este" to the office without asking the model', async () => {
+        intents.interpret.mockResolvedValue('cotizar');
+
+        const res = await send({ text: 'Hacemos este.' }, yesterday);
+
+        expect(JSON.stringify(res.messages)).toContain(
+          'persona de la oficina que te venía atendiendo',
+        );
+        expect(intents.interpret).not.toHaveBeenCalled();
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Hacemos este.'),
+        );
+      });
+
+      it('attends a new request itself, reading the message once', async () => {
+        intents.interpret.mockResolvedValue('pagos');
+
+        const res = await send(
+          { text: '¿Cuánto debo de la póliza?' },
+          yesterday,
+        );
+
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+        expect(JSON.stringify(res.messages)).not.toContain(
+          'te venía atendiendo',
+        );
+        expect(intents.interpret).toHaveBeenCalledTimes(1);
+        expect(stored?.step).toBe('IDENTIFY');
+      });
+
+      it('acknowledges the second line briefly instead of repeating itself', async () => {
+        intents.interpret.mockResolvedValue('seguimiento');
+        await send({ text: 'Dale, lo hacemos' }, yesterday);
+        api.requestHandoff.mockClear();
+
+        const res = await send(
+          { text: 'Lo pago con la misma tarjeta' },
+          { ...yesterday, botSpoke: true },
+        );
+
+        const text = JSON.stringify(res.messages);
+        expect(text).toContain('Lo sumé a lo que le pasé a la oficina');
+        expect(text).not.toContain('te venía atendiendo');
+        expect(api.requestHandoff).toHaveBeenCalledWith(
+          1,
+          expect.stringContaining('Lo pago con la misma tarjeta'),
+        );
+      });
+
+      it('leaves the tow truck to the bot', async () => {
+        const res = await send({ text: 'Necesito la grúa urgente' }, yesterday);
+
+        expect(JSON.stringify(res.messages)).not.toContain(
+          'te venía atendiendo',
+        );
+        expect(api.requestHandoff).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('a thanks as the first message (conv 519)', () => {
+    it('answers the thanks without asking who they are', async () => {
+      const res = await send(
+        { text: 'muchísimas gracias' },
+        { ...leadCtx, phoneMatch: { firstName: 'Matias' } },
+      );
+
+      const text = JSON.stringify(res.messages);
+      expect(text).toContain('De nada');
+      expect(text).not.toContain('Hablo con');
+      expect(text).not.toContain('DNI');
+      expect(intents.interpret).not.toHaveBeenCalled();
+    });
+
+    it('still reads a thanks that asks for something', async () => {
+      intents.interpret.mockResolvedValue('documentos');
+
+      const res = await send({
+        text: 'Gracias! Me pasás la póliza del auto?',
+      });
+
+      expect(JSON.stringify(res.messages)).not.toContain('De nada');
+      expect(res.messages.length).toBeGreaterThan(0);
+    });
   });
 
   describe('after the welcome menu', () => {

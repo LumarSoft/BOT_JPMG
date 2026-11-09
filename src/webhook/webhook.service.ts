@@ -819,10 +819,11 @@ export class WebhookService {
 
       // A person from the office was the last to speak and the customer is just
       // wrapping up ("gracias", "dale", "ok"): keep the message for the inbox and
-      // stay out of the way instead of answering with the welcome menu.
+      // stay out of the way instead of answering with the welcome menu. With or
+      // without person mode: "muchísimas gracias" after the office helped got
+      // "¿Hablo con Matías?" (conv 519, 6/11).
       if (
         !selectionId &&
-        this.personModeEnabled &&
         closesHumanConversation(
           text,
           conversation.messages,
@@ -1201,11 +1202,14 @@ export class WebhookService {
     }
   }
 
-  /** The office person's last reply, or nothing at all with person mode off. */
+  /**
+   * The office person's last reply. Whatever the person mode: the flow needs
+   * it to tell a follow-up to the office ("¿si lo hacemos ya queda
+   * asegurada?" the day after the office quoted) from a new request. Person
+   * mode only decides whether the bot keeps quiet for that person.
+   */
   private humanReplyOf(conversation: BotConversation): HumanReply | null {
-    return this.personModeEnabled
-      ? (conversation.lastHumanReply ?? null)
-      : null;
+    return conversation.lastHumanReply ?? null;
   }
 
   /**
@@ -1220,16 +1224,14 @@ export class WebhookService {
   }
 
   /**
-   * The persisted flow state. With person mode off, an office thread flagged
-   * while it was on must not keep the bot deferring to the office.
+   * The persisted flow state. With person mode off, a thread flagged for a
+   * person while it was on must not keep the bot silent for her; the office
+   * thread (what they were talking about with the office) still counts.
    */
   private flowStateOf(raw: string | null): FlowState | null {
     const state = this.parseFlowState(raw);
     if (!state || this.personModeEnabled) return state;
-    const data = { ...(state.data ?? {}) };
-    delete data.officeGreeted;
-    const stripped: FlowState = { ...state, data };
-    delete stripped.officeThread;
+    const stripped: FlowState = { ...state };
     delete stripped.personThread;
     return stripped;
   }

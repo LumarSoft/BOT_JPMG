@@ -99,7 +99,7 @@ import type {
 } from '../../api/api.types';
 import { attentionHoursOf } from '../constants/business';
 import { legacyOrgProfile, type OrgProfile } from '../org-profile';
-import { isCloser, recentHumanReply } from '../closers';
+import { isCloser, recentHumanReply, recentOfficeThread } from '../closers';
 import { fold } from '../text';
 import { SiniestroExtractor } from './siniestro-extractor.service';
 import {
@@ -181,6 +181,15 @@ const BARE_ADVISOR_RE =
 /** Command words that only make sense mid-chat, sent as a first message. Folded. */
 const OPENING_COMMAND_RE =
   /^(?:menu|cancelar|cancela|volver|atras|finalizar|terminar|salir|chau|chao|adios)[\s.!]*$/;
+
+/**
+ * Taking up what the office offered by hand ("dale, lo hacemos", "hacemos
+ * este", "me viene joya", "¿si lo hacemos ya queda asegurada?"). Read only
+ * while the chat is the office's thread, where the thing accepted is hers:
+ * the model read "si lo hacemos ya queda asegurada?" as a quote (9/11). Folded.
+ */
+const ACCEPTS_OFFER_RE =
+  /\b(?:lo|la) hacemos\b|\bhacemos (?:ese|esa|este|esta|el|la)\b|\bme viene (?:joya|bien|barbaro)\b|\bme quedo con\b|\b(?:lo|la|esa|ese|esta|este) quiero\b|\bmand(?:a|alo|ala) a autorizar\b|\bemit(?:i|ila|ilo|imela|imelo)\b|\bdejalo (?:asi|como esta)\b/;
 
 /** A message that asks for a quote. Run against folded text (see `fold`). */
 /**
@@ -1199,7 +1208,7 @@ export class FlowService {
     // chat over would leave every such conversation to the office.
     const prior = this.load(key)?.state;
     const officeThread =
-      prior?.officeThread === true || this.answeringOffice(ctx);
+      prior?.officeThread === true || this.officeThreadRecently(ctx);
     ctx = { ...ctx, officeThread };
     const named = await this.notifyStaff(input, ctx, prior);
     // Still writing to the person of the office. Out of hours the bot said
@@ -1513,6 +1522,25 @@ export class FlowService {
         OPENING_COMMAND_RE.test(fold(input.text).trim()));
     // The customer is answering a person from the office: no introduction.
     const personRecently = ctx.answeringPerson === true;
+    // "Muchísimas gracias" as the first line of a session, after the office
+    // helped from the app: "¿Hablo con Matías?" read as if nobody knew what
+    // they were thanking for (conv 519, 6/11). A thanks alone gets one back.
+    if (
+      !sel &&
+      !bareGreeting &&
+      isCloser(input.text) &&
+      /\b(?:gracias|grax|gcs)\b/.test(fold(input.text))
+    ) {
+      this.setState(key, 'ROOT', { thanked: true });
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: '¡De nada! 🙌 Cuando necesites algo, escribime por acá.',
+          },
+        ],
+      };
+    }
     if (ctx.client) {
       const hello = returningGreeting(ctx.client.firstName, ctx.contactName);
       this.setState(key, 'CLIENT_MENU', {}, 'client');
@@ -2015,6 +2043,30 @@ export class FlowService {
         await this.officeFollowUp(input.text, ctx, key),
       );
     }
+    // A person from the office wrote here in the last day (nothing from the
+    // bot since) and the customer goes on with that: "¿si lo hacemos ya
+    // queda asegurada?" the morning after the office quoted got the quote
+    // menu (conv 509), "Hacemos este." once the office had closed got "dale,
+    // mañana lo vemos" from the model (conv 256). The message is read with
+    // the office's line in view: a follow-up goes to that person; a new
+    // request (a quote, a claim, a payment) is attended as usual, so a client
+    // the office talked to yesterday is not sent back to it for everything.
+    let read = known;
+    if (
+      read === undefined &&
+      this.officeThreadRecently(ctx) &&
+      !/\bgrua\b|\bauxilio\b|\bremolque\b/.test(fold(input.text))
+    ) {
+      // Taking up the office's offer needs no model: what they accept is hers.
+      read = ACCEPTS_OFFER_RE.test(fold(input.text))
+        ? 'seguimiento'
+        : await this.readIntent(input, ctx);
+      if (read === 'seguimiento')
+        return this.withOpener(
+          opener,
+          await this.officeFollowUp(input.text, ctx, key),
+        );
+    }
     // Someone from the insurer ("soy Esteban, inspector de Triunfo, necesito
     // el contacto del asegurado"): a request for the office (#466).
     if (!ctx.client && COMPANY_STAFF_RE.test(fold(input.text)))
@@ -2049,7 +2101,7 @@ export class FlowService {
         await this.paymentChangeRequest(ctx, key, input.text),
       );
     const intent =
-      known !== undefined ? known : await this.readIntent(input, ctx);
+      read !== undefined ? read : await this.readIntent(input, ctx);
     if (
       intent &&
       !['saludo', 'cotizar', 'siniestro', 'grua'].includes(intent) &&
@@ -2473,6 +2525,7 @@ export class FlowService {
     // Or right after the bot offered to pass on what they were talking about.
     if (!ctx.answeringPerson)
       return this.answeringOffice(ctx) ||
+        ctx.officeThread === true ||
         this.load(key)?.state.data.officeGreeted === true
         ? this.officeFollowUp(input.text, ctx, key)
         : null;
@@ -6381,6 +6434,16 @@ export class FlowService {
   }
 
   /**
+   * A person from the office wrote here in the last day and the bot has not
+   * said anything since: the chat is the office's thread. Wider than
+   * `answeringOffice` — the message is still read, and only a follow-up to
+   * that person goes to the office.
+   */
+  private officeThreadRecently(ctx: FlowContext): boolean {
+    return !ctx.botSpoke && recentOfficeThread(ctx.lastHumanReply, Date.now());
+  }
+
+  /**
    * Back to the menu of whoever they said they are, without sending it: the
    * reply already says what happens next.
    */
@@ -6417,15 +6480,26 @@ export class FlowService {
           : undefined,
       )
       .catch(() => undefined);
+    // Said once per session: the second line to the office gets a short
+    // acknowledgement, not the whole explanation again.
+    const again = this.load(key)?.state.data.officeRelayed === true;
     this.settleAfterRequest(key, ctx);
+    const settled = this.load(key)?.state;
+    if (settled)
+      this.setState(key, settled.step, {
+        ...settled.data,
+        officeRelayed: true,
+      });
     return {
       messages: [
         {
           kind: 'text',
-          body:
-            `Le pasé tu consulta a la persona de la oficina que te venía atendiendo 🙌 Te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
-            (await this.closedNote(ctx)) +
-            '\n\nSi necesitás otra cosa, escribí *menú*.',
+          body: again
+            ? `Lo sumé a lo que le pasé a la oficina 🙌 Te responden por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+              (await this.closedNote(ctx))
+            : `Le pasé tu consulta a la persona de la oficina que te venía atendiendo 🙌 Te responde por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+              (await this.closedNote(ctx)) +
+              '\n\nSi necesitás otra cosa, escribí *menú*.',
         },
       ],
     };

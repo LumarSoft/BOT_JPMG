@@ -5,7 +5,29 @@ import {
   isAutoReply,
   isCloser,
   lastSpeakerIsHuman,
+  recentOfficeThread,
 } from './closers';
+
+describe('recentOfficeThread', () => {
+  const now = Date.parse('2026-11-07T18:00:00.000Z');
+  const reply = (hoursAgo: number, kind?: 'person' | 'notice') => ({
+    content: 'De 94 la pude bajar a 81',
+    createdAt: new Date(now - hoursAgo * 3_600_000).toISOString(),
+    ...(kind ? { kind } : {}),
+  });
+
+  it('counts a person from the office for a day, past the two hours the bot keeps out', () => {
+    expect(recentOfficeThread(reply(1), now)).toBe(true);
+    expect(recentOfficeThread(reply(22), now)).toBe(true);
+    expect(recentOfficeThread(reply(25), now)).toBe(false);
+    expect(recentOfficeThread(null, now)).toBe(false);
+  });
+
+  it('keeps a notice of the platform for three days, like the follow-up window', () => {
+    expect(recentOfficeThread(reply(48, 'notice'), now)).toBe(true);
+    expect(recentOfficeThread(reply(73, 'notice'), now)).toBe(false);
+  });
+});
 
 const msg = (
   role: ConversationMessage['role'],

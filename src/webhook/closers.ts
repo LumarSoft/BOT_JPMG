@@ -175,10 +175,34 @@ export function lastSpeakerIsHuman(messages: ConversationMessage[]): boolean {
 export const HUMAN_FOLLOWUP_MS = 2 * 60 * 60_000;
 
 /**
+ * How long a person's reply marks the chat as the office's thread. Past the
+ * two hours above the bot answers again, but what the customer writes may
+ * still be about that exchange: "¿si lo hacemos ya queda asegurada?" the
+ * Saturday after the office quoted on Friday got the quote menu (conv 509,
+ * 7/11), and "Hacemos este." an hour and forty minutes after the office
+ * quoted — once the office had closed — got "dale, mañana lo vemos" from the
+ * model (conv 256). Within a day the message is read with that reply in
+ * view, and a follow-up goes to the person; a new request is attended.
+ */
+export const OFFICE_THREAD_MS = 24 * 60 * 60_000;
+
+/**
  * A notice the platform sent on its own (a rechazo, a póliza vencida) is
  * answered the next morning, and that answer is for the office: three days.
  */
 export const NOTICE_FOLLOWUP_MS = 72 * 60 * 60_000;
+
+/** Whether a person from the office wrote to this chat in the last day (a notice: three days). */
+export function recentOfficeThread(
+  reply: HumanReply | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  return recentHumanReply(
+    reply,
+    now,
+    reply?.kind === 'notice' ? NOTICE_FOLLOWUP_MS : OFFICE_THREAD_MS,
+  );
+}
 
 /** The window a reply keeps the customer "answering the office" for. */
 export function followUpWindow(reply: HumanReply | null | undefined): number {
