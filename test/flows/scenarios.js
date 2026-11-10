@@ -467,8 +467,7 @@ module.exports = [
           answer: (prev) => /(^|\n)\s*\*?1[.)]/.test(prev) ? { text: '1' }
             : /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' }
             : { text: 'Honda Wave 110 S 2023, código postal 2000' },
-          // B4 (RC + incendio) is only offered once the office switches it on (10/11).
-          expect: { any: [/por mes/, /B1/], none: [/GNC/, /\bB4\b/] },
+          expect: { any: [/por mes/, /B1/], none: [/GNC/] },
         },
       },
     ],
