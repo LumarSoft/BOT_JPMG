@@ -1521,7 +1521,7 @@ module.exports = [
     id: 'J01', area: 'Revisión 10/11', name: '"Wave 110 s New Base" 2026 cotiza la New Base, no la Wave 110 de 2008-2018', wa: wa(), regression: 'conv. 534 (9/11)',
     steps: [
       { text: 'Hola buenas tardes, quería averiguar presupuesto de seguro de moto Honda Wave 110', max: 60000, quiet: 5000, expect: { any: [/año|versi/i] } },
-      { text: '2026\nGranadero Baigorria\nWave 110 s New Base', max: 90000, quiet: 5000, expect: { none: [/no lista/i, /no tiene disponible/i, /documentaci[oó]n/i], any: [/por mes/, /c[oó]digo postal/i] } },
+      { text: '2026\nGranadero Baigorria\nWave 110 s New Base', max: 90000, quiet: 5000, expect: { none: [/no lista/i, /no tiene disponible/i, /documentaci[oó]n/i] } },
       {
         drive: {
           max: 2,
@@ -1531,5 +1531,12 @@ module.exports = [
         },
       },
     ],
+    // The version the bot settled on, not the wording: the New Base (8810135) asked for 2026, never the
+    // Wave 110 (8810065). The suite does not store quotes (no presupuesto), the chat's flow state keeps it.
+    db: [{
+      name: 'eligió y cotizó la Wave 110S New Base 2026',
+      sql: "SELECT JSON_EXTRACT(flowState, '$.data.quoteVehicle.selected.codia'), JSON_EXTRACT(flowState, '$.data.quoteVehicle.lastRequest.manufactureYear') FROM Conversation WHERE waId='$WA'",
+      test: (rows) => rows.some(([codia, year]) => codia === '8810135' && year === '2026'),
+    }],
   },
 ];
