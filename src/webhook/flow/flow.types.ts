@@ -49,7 +49,11 @@ export type FlowStep =
   | 'ASESOR_MOTIVO' // waiting for the reason to pass to an advisor
   | 'LEAD_CONTACT' // non-client leaving name/time for a sales rep
   | 'COTIZAR_TIPO' // pick what to quote (auto/moto online vs other risks)
-  | 'COT_PLAN' // pick a fixed-price plan (bolso/hogar)
+  | 'COT_PLAN' // pick a fixed-price plan (bolso/hogar) or one Sancor quoted
+  | 'COT_PERSONAS_TIPO' // personas with Sancor on: personal accidents or vida/sepelio/salud
+  | 'COT_SANCOR_CP' // postal code (and city) Sancor prices the risk at
+  | 'COT_SANCOR_DNI' // personal accidents: the DNI Sancor quotes with
+  | 'COT_SANCOR_NACIMIENTO' // personal accidents: birth date, for the age range
   | 'COT_LEAD_FIELDS' // capturing the product-specific fields (driven by the shared catalog)
   | 'COT_LEAD_NOMBRE' // capturing the contact name for an advisor-contact lead
   | 'COT_LEAD_TELEFONO' // capturing the contact phone, then create the lead

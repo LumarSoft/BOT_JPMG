@@ -22,6 +22,9 @@ import type {
   PolizaSummary,
   ProductCatalogItem,
   ProductPlanSummary,
+  SancorProducts,
+  SancorQuote,
+  SancorQuoteInput,
   QuoteResult,
   SiniestroSummary,
   VehicleTypeParam,
@@ -325,6 +328,31 @@ export class ApiService {
   ): Promise<ProductPlanSummary[]> {
     const { data } = await this.http.get<ProductPlanSummary[]>(
       `/bot/conversation/${conversationId}/pricing/${productType}`,
+    );
+    return data;
+  }
+
+  /** What this conversation's bot quotes with Sancor; empty while it is off. */
+  async getSancorProducts(conversationId: number): Promise<SancorProducts> {
+    const { data } = await this.http.get<SancorProducts>(
+      `/bot/conversation/${conversationId}/sancor/products`,
+    );
+    return data;
+  }
+
+  /**
+   * Sancor's plans for a lead product. A 400 means Sancor has no city for the
+   * postal code; a 502, that Sancor could not quote.
+   */
+  async quoteSancor(
+    conversationId: number,
+    input: SancorQuoteInput,
+  ): Promise<SancorQuote> {
+    const { data } = await this.http.post<SancorQuote>(
+      `/bot/conversation/${conversationId}/sancor/quote`,
+      input,
+      // Personal accidents take one Sancor call per capital, up to 30 s each.
+      { timeout: 45_000 },
     );
     return data;
   }

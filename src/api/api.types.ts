@@ -385,3 +385,26 @@ export interface ProductPlanSummary {
   isActive: boolean;
   sortOrder: number;
 }
+
+/** Products the conversation's bot quotes with Sancor ('bolso', 'hogar', 'bici', 'personas'). */
+export interface SancorProducts {
+  productTypes: string[];
+}
+
+export interface SancorQuoteInput {
+  productType: string;
+  zipCode: number;
+  cityName?: string;
+  /** Personal accidents only: Sancor does not quote them without it. */
+  documentNumber?: number;
+  /** Personal accidents only, DD/MM/AAAA. */
+  birthDate?: string;
+}
+
+/** Sancor's plans, shaped like the office's fixed-price ones (`id` is Sancor's module). */
+export interface SancorQuote {
+  insurer: 'Sancor';
+  zipCode: number;
+  quotationId: number | null;
+  plans: ProductPlanSummary[];
+}

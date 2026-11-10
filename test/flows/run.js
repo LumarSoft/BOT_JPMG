@@ -11,6 +11,8 @@
 //   npm run test:flows -- --no-build         use the current dist/ of both repos
 //   npm run test:flows -- --keep             leave the test data in the database to inspect
 //   npm run test:flows -- --cleanup          only remove the test data (after --keep)
+//   npm run test:flows -- --sancor           only the Sancor quotes (S01…), with Sancor on for
+//                                            the test number: calls Sancor's preproduction
 //
 // The API repo is ../api_john (FLOWS_API_DIR to change it). Credentials come
 // from each repo's .env and are never printed.
@@ -32,6 +34,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
 const only = args.find((a) => a.startsWith('--only='))?.slice('--only='.length).split(',');
+// Sancor on for the test number (producerId 1) only in its own run: with it the
+// hogar/bolso scenarios get Sancor's plans instead of the office's.
+const sancor = flag('sancor');
 const concurrency = Number(args.find((a) => a.startsWith('--concurrency='))?.split('=')[1] || 6);
 
 const children = [];
@@ -191,6 +196,7 @@ async function main() {
     TRIUNFO_CARTERA_SYNC_ENABLED: 'false',
     RESEND_API_KEY: '',
     FLOWS_API_DIR: API_DIR,
+    SANCOR_BOT_PRODUCER_IDS: sancor ? '1' : '',
   });
   await waitReady('api', `http://localhost:${API_PORT}/`, api);
   const bot = start('bot', BOT_DIR, path.join(__dirname, 'meta-intercept.js'), 'dist/main.js', {
@@ -201,7 +207,7 @@ async function main() {
   console.log('API y bot locales listos (WhatsApp interceptado, Triunfo sin presupuesto).\n');
 
   const all = require('./scenarios');
-  const chosen = only ? all.filter((s) => only.includes(s.id)) : all;
+  const chosen = (only ? all.filter((s) => only.includes(s.id)) : all).filter((s) => !!s.sancor === sancor);
   const main = chosen.filter((s) => s.stage !== 'inactivity');
   const idle = flag('skip-inactivity') ? [] : chosen.filter((s) => s.stage === 'inactivity');
   const t0 = Date.now();

@@ -1516,4 +1516,59 @@ module.exports = [
     id: 'H03', area: 'Revisión 9/11', name: '"Muchísimas gracias" como primer mensaje: de nada, sin "¿Hablo con…?"', wa: wa(), regression: 'conv. 519 (6/11)',
     steps: [{ text: 'muchisimas gracias', expect: { any: [/De nada/], none: [/Hablo con/, /DNI/, /ya sos cliente/] } }],
   },
+
+  // ─── Cotización con Sancor (solo con --sancor) ───────────────────
+  {
+    id: 'S01', area: 'Cotización con Sancor', name: 'Hogar: código postal → planes de Sancor → nombre → teléfono', wa: wa(), sancor: true,
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_hogar', title: 'Hogar', list: true, expect: { any: [/código postal/], none: [/plan_\d+/] } },
+      { text: '2000 Rosario', max: 60000, expect: { any: [/Sancor Seguros/, /plan_7\d/, /Incendio Edificio/] } },
+      { select: 'plan_71', title: 'Plan 2', list: true, expect: { any: [/Elegiste el plan \*Plan 2\* de Sancor/] } },
+      { text: 'Juan Prueba', expect: { any: [/teléfono/] } },
+      { text: '341 555-0000', expect: { any: [/Registré tu pedido de cotización con el plan \*Plan 2\*/] } },
+    ],
+    db: [
+      {
+        name: 'la solicitud lleva el plan y la cotización de Sancor',
+        sql: "SELECT l.productType, l.selectedPlanId, JSON_UNQUOTE(JSON_EXTRACT(l.payload,'$.aseguradora')), JSON_UNQUOTE(JSON_EXTRACT(l.payload,'$.plan')), JSON_UNQUOTE(JSON_EXTRACT(l.payload,'$.codigoPostal')), JSON_UNQUOTE(JSON_EXTRACT(l.payload,'$.cotizacionSancor')) FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId='$WA'",
+        test: (r) => r.length === 1 && r[0][0] === 'hogar' && r[0][1] === 'NULL' && r[0][2] === 'Sancor' && r[0][3] === 'Plan 2' && r[0][4] === '2000' && /^\d+$/.test(r[0][5]),
+      },
+    ],
+  },
+  {
+    id: 'S02', area: 'Cotización con Sancor', name: 'Accidentes personales: código postal → DNI → nacimiento → capitales', wa: wa(), sancor: true,
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_personas', title: 'Personas', list: true, expect: { any: [/cot_accidentes/, /cot_personas_otra/] } },
+      { select: 'cot_accidentes', title: 'Accidentes (AP)', expect: { any: [/código postal/] } },
+      { text: 'cp 2121', expect: { any: [/DNI/] } },
+      { text: '20.999.001', expect: { any: [/fecha de nacimiento/] } },
+      { text: '15/04/1985', max: 90000, expect: { any: [/Capital \$8\.000\.000/, /Capital \$20\.000\.000/, /plan_47/] } },
+    ],
+  },
+  {
+    id: 'S03', area: 'Cotización con Sancor', name: 'Bolso: código postal inexistente → lo pide de nuevo', wa: wa(), sancor: true,
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { text: 'quiero cotizar un bolso protegido', expect: { any: [/código postal/] } },
+      { text: '9998', max: 60000, expect: { any: [/No encontré el código postal \*9998\*/] } },
+      { text: '2000', max: 60000, expect: { any: [/Plan \$2\.000/, /plan_1\b/] } },
+    ],
+  },
+  {
+    id: 'S04', area: 'Cotización con Sancor', name: 'Bici: precio al instante en vez de pedido a un asesor', wa: wa(), sancor: true,
+    steps: [
+      { text: 'Hola' },
+      { select: 'no_cliente', title: 'Todavía no' },
+      { select: 'l_cotizar', title: '💰 Cotizar un seguro', list: true },
+      { select: 'cot_bici', title: 'Bicicleta', list: true, expect: { any: [/código postal/] } },
+      { text: 'Rosario 2000', max: 60000, expect: { any: [/Plan \$25\.000/, /Plan \$100\.000/] } },
+    ],
+  },
 ];

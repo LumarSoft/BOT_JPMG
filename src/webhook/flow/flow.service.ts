@@ -44,6 +44,9 @@ import {
   debitNotDone,
   transferOffer,
   type PaymentInfo,
+  fmtPlanMoney,
+  personasKindButtons,
+  sancorZipPrompt,
   CLAIM_COPY_ID,
   CLAIM_COPY_RE,
   CLAIMS_PHONE_RE,
@@ -531,6 +534,8 @@ const IN_PROGRESS_STEPS = new Set<FlowStep>([
   'COT_LEAD_FIELDS',
   'COT_LEAD_NOMBRE',
   'COT_LEAD_TELEFONO',
+  'COT_SANCOR_DNI',
+  'COT_SANCOR_NACIMIENTO',
   'COT_DOC_DNI_FRENTE',
   'COT_DOC_DNI_DORSO',
   'COT_DOC_CERO_KM',
@@ -717,10 +722,85 @@ const DUAL_BRAND_RE = /\b(honda|suzuki)\b/;
 /** A model year ("2010", "1998"): a strong sign the text describes a vehicle. */
 const MODEL_YEAR_RE = /\b(19[5-9]\d|20[0-4]\d)\b/;
 
+/** Lead products Sancor can quote; the API says which ones each organization has on. */
+const SANCOR_PRODUCT_TYPES = new Set(['bolso', 'hogar', 'bici', 'personas']);
+
+/** What a Sancor quote carries from the postal code to the plan picked. */
+interface SancorQuoteData {
+  zipCode: number;
+  cityName?: string;
+  documentNumber?: number;
+  birthDate?: string;
+  quotationId: number | null;
+}
+
+/** "2000 Rosario", "cp 2121, Pérez", "S2000": the postal code and the city, if named. */
+export function readZipAndCity(
+  text: string,
+): { zipCode: number; cityName?: string } | null {
+  const match = /(?:^|[^\d])[a-z]?(\d{4})(?:[a-z]{3})?(?!\d)/i.exec(text);
+  if (!match) return null;
+  const city = text
+    .replace(match[0], ' ')
+    .replace(/\b(c\.?\s?p\.?|c[oó]digo postal|localidad|de|es|mi)\b/gi, ' ')
+    .replace(/[^a-záéíóúüñ\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return {
+    zipCode: Number(match[1]),
+    ...(city.length >= 3 ? { cityName: city } : {}),
+  };
+}
+
+/** A DNI of 7 or 8 digits, dots and spaces allowed ("30.123.456"). */
+export function readDni(text: string): number | null {
+  const match = /(?:^|\D)(\d{1,2}[.\s]?\d{3}[.\s]?\d{3})(?!\d)/.exec(text);
+  if (!match) return null;
+  const dni = Number(match[1].replace(/[.\s]/g, ''));
+  return dni >= 1_000_000 ? dni : null;
+}
+
+/** A birth date as DD/MM/AAAA, from "15/04/1985", "15-4-1985" or "15.04.1985". */
+export function readBirthDate(text: string, now = new Date()): string | null {
+  const match = /(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(text);
+  if (!match) return null;
+  const [day, month, year] = match.slice(1).map(Number);
+  const date = new Date(year, month - 1, day);
+  const valid =
+    date.getDate() === day &&
+    date.getMonth() === month - 1 &&
+    year >= now.getFullYear() - 100 &&
+    year <= now.getFullYear() - 14;
+  if (!valid) return null;
+  return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+}
+
+/** What the office sees in the request for a Sancor plan the customer picked. */
+function sancorLeadDetails(
+  plan: ProductPlanSummary,
+  quote: SancorQuoteData,
+): Record<string, string> {
+  return {
+    aseguradora: 'Sancor',
+    precio: `${fmtPlanMoney(plan.monthlyPrice)} por mes`,
+    codigoPostal: String(quote.zipCode),
+    ...(quote.cityName ? { localidad: quote.cityName } : {}),
+    ...(quote.documentNumber ? { dni: String(quote.documentNumber) } : {}),
+    ...(quote.birthDate ? { fechaNacimiento: quote.birthDate } : {}),
+    ...(quote.quotationId
+      ? { cotizacionSancor: String(quote.quotationId) }
+      : {}),
+  };
+}
+
 /** Steps inside a quote: re-tapping a quote category there starts over. */
 const QUOTE_STEPS = new Set<FlowStep>([
   'LLM_COTIZACION',
   'COT_PLAN',
+  'COT_PERSONAS_TIPO',
+  'COT_SANCOR_CP',
+  'COT_SANCOR_DNI',
+  'COT_SANCOR_NACIMIENTO',
   'COT_LEAD_FIELDS',
   'COT_LEAD_NOMBRE',
   'COT_LEAD_TELEFONO',
@@ -1771,6 +1851,14 @@ export class FlowService {
         return this.handleCotizarTipo(input, ctx, key);
       case 'COT_PLAN':
         return this.handleCotPlan(state, input, ctx, key);
+      case 'COT_PERSONAS_TIPO':
+        return this.handlePersonasTipo(state, input, ctx, key);
+      case 'COT_SANCOR_CP':
+        return this.handleSancorCp(state, input, ctx, key);
+      case 'COT_SANCOR_DNI':
+        return this.handleSancorDni(state, input, key);
+      case 'COT_SANCOR_NACIMIENTO':
+        return this.handleSancorNacimiento(state, input, ctx, key);
       case 'COT_LEAD_FIELDS':
         return this.handleCotLeadFields(state, input, key);
       case 'COT_LEAD_NOMBRE':
@@ -5734,6 +5822,24 @@ export class FlowService {
 
     const productType = COTIZAR_PRODUCT_TYPE[opt];
 
+    // Sancor prices it on the spot where the organization has it on.
+    if (await this.quotesWithSancor(ctx, productType)) {
+      if (productType === 'personas') {
+        this.setState(key, 'COT_PERSONAS_TIPO');
+        return { messages: [personasKindButtons()] };
+      }
+      return this.askSancorZip(key, opt, COTIZAR_LABEL[opt]);
+    }
+    return this.officeQuote(opt, ctx, key);
+  }
+
+  /** The office's fixed-price plans (bolso/hogar), else a request for an advisor. */
+  private async officeQuote(
+    opt: string,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const productType = COTIZAR_PRODUCT_TYPE[opt];
     if (COTIZAR_FIXED.has(opt)) {
       const plans = await this.api
         .getPricing(ctx.conversationId, productType)
@@ -5757,6 +5863,245 @@ export class FlowService {
     }
 
     return this.startLeadCapture(key, productType, COTIZAR_LABEL[opt]);
+  }
+
+  // ─── Sancor quotes (bolso, hogar, bici, accidentes personales) ───
+
+  /** Whether this conversation's bot quotes the product with Sancor. */
+  private async quotesWithSancor(
+    ctx: FlowContext,
+    productType: string,
+  ): Promise<boolean> {
+    if (!SANCOR_PRODUCT_TYPES.has(productType)) return false;
+    try {
+      const { productTypes } = await this.api.getSancorProducts(
+        ctx.conversationId,
+      );
+      return productTypes.includes(productType);
+    } catch {
+      return false;
+    }
+  }
+
+  private askSancorZip(
+    key: string,
+    opt: string,
+    productLabel: string,
+  ): FlowResult {
+    this.setState(key, 'COT_SANCOR_CP', {
+      option: opt,
+      productType: COTIZAR_PRODUCT_TYPE[opt],
+      productLabel,
+    });
+    return { messages: [sancorZipPrompt(productLabel)] };
+  }
+
+  /** Personas with Sancor on: personal accidents are quoted, the rest goes to an advisor. */
+  private async handlePersonasTipo(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const t = fold(input.text);
+    if (
+      input.selectionId === OPT.cotAccidentes ||
+      (!input.selectionId && /\baccident|\bap\b/.test(t))
+    ) {
+      return this.askSancorZip(key, OPT.cotPersonas, 'Accidentes personales');
+    }
+    if (
+      input.selectionId === OPT.cotPersonasOtra ||
+      (!input.selectionId && /\b(vida|sepelio|salud|medic)/.test(t))
+    ) {
+      return this.startLeadCapture(
+        key,
+        'personas',
+        COTIZAR_LABEL[OPT.cotPersonas],
+      );
+    }
+    const switched = await this.switchQuoteCategory(state, input, ctx, key);
+    if (switched) return switched;
+    return this.retry(key, state, [
+      personasKindButtons('Elegí una de las dos opciones 🙂\n\n'),
+    ]);
+  }
+
+  /**
+   * The customer named another product instead of answering ("mejor el
+   * bolso"): quote that one. Null when the message is not another category.
+   */
+  private async switchQuoteCategory(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult | null> {
+    const other = input.selectionId
+      ? COTIZAR_LABEL[input.selectionId]
+        ? input.selectionId
+        : null
+      : this.matchCotizarCategory(input.text);
+    if (!other || COTIZAR_PRODUCT_TYPE[other] === state.data.productType)
+      return null;
+    this.setState(key, 'COTIZAR_TIPO');
+    return this.handleCotizarTipo(
+      { text: input.text, selectionId: other },
+      ctx,
+      key,
+    );
+  }
+
+  private async handleSancorCp(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const place = readZipAndCity(input.text);
+    if (!place) {
+      const switched = await this.switchQuoteCategory(state, input, ctx, key);
+      if (switched) return switched;
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'Necesito el *código postal*, 4 números, por ejemplo *2000 Rosario*. Escribí *menú* para volver.',
+        },
+      ]);
+    }
+    const data: Record<string, unknown> = {
+      ...state.data,
+      ...place,
+      [RETRIES]: 0,
+    };
+    if (data.productType === 'personas') {
+      this.setState(key, 'COT_SANCOR_DNI', data);
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Para cotizar *accidentes personales* la aseguradora pide tu *DNI*. ¿Me lo pasás? (solo los números)',
+          },
+        ],
+      };
+    }
+    return this.quoteWithSancor(data, ctx, key);
+  }
+
+  private handleSancorDni(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult {
+    const dni = readDni(input.text);
+    if (!dni) {
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'No reconocí el DNI 🙈 Mandámelo con 7 u 8 números, por ejemplo *30123456*.',
+        },
+      ]);
+    }
+    this.setState(key, 'COT_SANCOR_NACIMIENTO', {
+      ...state.data,
+      documentNumber: dni,
+      [RETRIES]: 0,
+    });
+    return {
+      messages: [
+        {
+          kind: 'text',
+          body: '¿Cuál es tu *fecha de nacimiento*? Escribila como DD/MM/AAAA (por ejemplo: 15/04/1985).',
+        },
+      ],
+    };
+  }
+
+  private async handleSancorNacimiento(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const birthDate = readBirthDate(input.text);
+    if (!birthDate) {
+      return this.retry(key, state, [
+        {
+          kind: 'text',
+          body: 'No entendí la fecha 🙈 Escribila como DD/MM/AAAA, por ejemplo *15/04/1985*.',
+        },
+      ]);
+    }
+    return this.quoteWithSancor({ ...state.data, birthDate }, ctx, key);
+  }
+
+  /**
+   * Sancor's plans with the same breakdown and picker as the office's. A postal
+   * code Sancor does not know is asked again; when Sancor cannot quote, the
+   * customer gets what the office offers without Sancor.
+   */
+  private async quoteWithSancor(
+    data: Record<string, unknown>,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const productType = data.productType as string;
+    const zipCode = data.zipCode as number;
+    const cityName = data.cityName as string | undefined;
+    const documentNumber = data.documentNumber as number | undefined;
+    const birthDate = data.birthDate as string | undefined;
+    try {
+      const quote = await this.api.quoteSancor(ctx.conversationId, {
+        productType,
+        zipCode,
+        ...(cityName ? { cityName } : {}),
+        ...(documentNumber ? { documentNumber } : {}),
+        ...(birthDate ? { birthDate } : {}),
+      });
+      if (!quote.plans.length) throw new Error('Sancor answered no plans');
+      const productLabel = data.productLabel as string;
+      this.setState(key, 'COT_PLAN', {
+        productType,
+        productLabel,
+        plans: quote.plans,
+        sancor: {
+          zipCode,
+          cityName,
+          documentNumber,
+          birthDate,
+          quotationId: quote.quotationId,
+        },
+      });
+      return {
+        messages: [
+          planDetails(`${productLabel} con Sancor Seguros`, quote.plans),
+          planPicker(productLabel, quote.plans),
+        ],
+      };
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : 0;
+      if (status === 400) {
+        this.setState(key, 'COT_SANCOR_CP', {
+          option: data.option,
+          productType,
+          productLabel: data.productLabel,
+        });
+        return {
+          messages: [
+            {
+              kind: 'text',
+              body:
+                `No encontré el código postal *${zipCode}* 🙈 ` +
+                'Revisalo y mandámelo de nuevo, por ejemplo *2000 Rosario*.',
+            },
+          ],
+        };
+      }
+      this.logger.warn(
+        `Sancor no cotizó ${productType} (conv ${ctx.conversationId}): ${(error as Error).message}`,
+      );
+      return this.officeQuote(data.option as string, ctx, key);
+    }
   }
 
   /** Handles the fixed-price plan selection (bolso/hogar). */
@@ -5821,6 +6166,25 @@ export class FlowService {
           'No reconocí ese plan 🙈 Elegilo de la lista, o escribí *menú* para volver.\n\n',
         ),
       ]);
+    }
+
+    const sancor = state.data.sancor as SancorQuoteData | undefined;
+    if (sancor) {
+      this.setState(key, 'COT_LEAD_NOMBRE', {
+        productType,
+        planName: plan.name,
+        leadDetails: sancorLeadDetails(plan, sancor),
+      });
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body:
+              `Elegiste el plan *${plan.name}* de Sancor Seguros (${fmtPlanMoney(plan.monthlyPrice)} por mes). ` +
+              'Para que un asesor lo deje listo, decime tu *nombre y apellido*.',
+          },
+        ],
+      };
     }
 
     this.setState(key, 'COT_LEAD_NOMBRE', {
@@ -6076,12 +6440,18 @@ export class FlowService {
     const planName = state.data.planName as string | undefined;
     const answers =
       (state.data.answers as Record<string, string> | undefined) ?? {};
+    const leadDetails =
+      (state.data.leadDetails as Record<string, string> | undefined) ?? {};
 
     await this.api.createLead(ctx.conversationId, {
       productType,
       contactName: state.data.contactName as string,
       phone,
-      payload: { ...answers, ...(planName ? { plan: planName } : {}) },
+      payload: {
+        ...answers,
+        ...(planName ? { plan: planName } : {}),
+        ...leadDetails,
+      },
       ...(selectedPlanId ? { selectedPlanId } : {}),
     });
 
@@ -7187,6 +7557,9 @@ export class FlowService {
       step === 'COT_LEAD_FIELDS' ||
       step === 'COT_LEAD_NOMBRE' ||
       step === 'COT_LEAD_TELEFONO' ||
+      step === 'COT_SANCOR_CP' ||
+      step === 'COT_SANCOR_DNI' ||
+      step === 'COT_SANCOR_NACIMIENTO' ||
       step === 'SINIESTRO_FOTO_TARJETA' ||
       step === 'SINIESTRO_FOTO_TARJETA_DORSO' ||
       step === 'SINIESTRO_FOTO_CARNET' ||

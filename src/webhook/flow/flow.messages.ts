@@ -47,6 +47,9 @@ export const OPT = {
   cotHogar: 'cot_hogar',
   cotPersonas: 'cot_personas',
   cotPraxis: 'cot_praxis',
+  // personas, when Sancor quotes personal accidents
+  cotAccidentes: 'cot_accidentes',
+  cotPersonasOtra: 'cot_personas_otra',
   // siniestro
   sinNueva: 'sin_nueva',
   sinConsultar: 'sin_consultar',
@@ -190,7 +193,7 @@ function fmtMoney(value: string | number): string {
  * the web cotizador exactly (`maximumFractionDigits: 0`) so a hogar/bolso plan
  * reads identically on WhatsApp and on the site.
  */
-function fmtPlanMoney(value: string | number): string {
+export function fmtPlanMoney(value: string | number): string {
   const n = typeof value === 'string' ? Number(value) : value;
   if (!Number.isFinite(n)) return String(value);
   return n.toLocaleString('es-AR', {
@@ -637,6 +640,34 @@ export function cotizarMenu(): OutgoingMessage {
         description: 'RC profesional',
       },
     ],
+  };
+}
+
+/** Personas, when the bot quotes personal accidents with Sancor: which one. */
+export function personasKindButtons(intro = ''): OutgoingMessage {
+  return {
+    kind: 'buttons',
+    body:
+      `${intro}🧑 *Personas* — ¿qué cobertura buscás?\n` +
+      'Accidentes personales te lo cotizo al instante; vida, sepelio o salud te lo prepara un asesor.',
+    buttons: [
+      { id: OPT.cotAccidentes, title: 'Accidentes (AP)' },
+      { id: OPT.cotPersonasOtra, title: 'Vida, sepelio, salud' },
+    ],
+  };
+}
+
+/** Asks where the risk is, the one thing Sancor needs to price it. */
+export function sancorZipPrompt(
+  productLabel: string,
+  intro = '',
+): OutgoingMessage {
+  return {
+    kind: 'text',
+    body:
+      `${intro}💰 Te cotizo *${productLabel}* al instante. ` +
+      'Decime tu *código postal* y la localidad, por ejemplo *2000 Rosario*.\n' +
+      '_Escribí *menú* para volver._',
   };
 }
 

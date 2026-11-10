@@ -8,6 +8,9 @@ import {
   takeOutDocsState,
   withStaffNotice,
   PHOTO_RECEIVED,
+  readBirthDate,
+  readDni,
+  readZipAndCity,
 } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import type { OrgProfile } from '../org-profile';
@@ -38,6 +41,8 @@ describe('FlowService', () => {
     getPolizas: jest.Mock;
     createSiniestro: jest.Mock;
     getPricing: jest.Mock;
+    getSancorProducts: jest.Mock;
+    quoteSancor: jest.Mock;
     getHours: jest.Mock;
     identifyClient: jest.Mock;
     identifyByPhone: jest.Mock;
@@ -105,6 +110,9 @@ describe('FlowService', () => {
       ]),
       createSiniestro: jest.fn().mockResolvedValue({ id: 99 }),
       getPricing: jest.fn().mockResolvedValue([]),
+      // Sancor off unless a test turns it on.
+      getSancorProducts: jest.fn().mockResolvedValue({ productTypes: [] }),
+      quoteSancor: jest.fn(),
       getHours: jest.fn().mockResolvedValue({
         formatted: 'Lunes a viernes de 8 a 16 hs',
         isOpenNow: true,
@@ -2221,6 +2229,175 @@ describe('FlowService', () => {
       expect(stored?.data).toMatchObject({
         quoteStartedAt: '2026-10-05T11:00:00.000Z',
       });
+    });
+  });
+
+  describe('cotización con Sancor', () => {
+    const HOME_PLANS = [
+      {
+        id: 70,
+        productType: 'hogar',
+        name: 'Plan 1',
+        monthlyPrice: 7630,
+        description: 'Incluye asistencia en viaje a las personas',
+        coverageItems: [{ label: 'Incendio Edificio', amount: 21000000 }],
+        isActive: true,
+        sortOrder: 0,
+      },
+      {
+        id: 71,
+        productType: 'hogar',
+        name: 'Plan 2',
+        monthlyPrice: 9060,
+        description: null,
+        coverageItems: [{ label: 'Incendio Edificio', amount: 25000000 }],
+        isActive: true,
+        sortOrder: 1,
+      },
+    ];
+
+    const axiosError = (status: number) =>
+      Object.assign(new Error(`HTTP ${status}`), {
+        isAxiosError: true,
+        response: { status },
+      });
+
+    beforeEach(() => {
+      api.getSancorProducts.mockResolvedValue({
+        productTypes: ['bolso', 'hogar', 'bici', 'personas'],
+      });
+      api.quoteSancor.mockResolvedValue({
+        insurer: 'Sancor',
+        zipCode: 2000,
+        quotationId: 839576707,
+        plans: HOME_PLANS,
+      });
+    });
+
+    it('asks the postal code, shows Sancor plans and sends the chosen one to the office', async () => {
+      await send({ text: 'hola' });
+      const ask = await send({ text: 'Me gustaria cotizar un hogar' });
+      expect(stored?.step).toBe('COT_SANCOR_CP');
+      expect(JSON.stringify(ask.messages)).toContain('código postal');
+      expect(api.getPricing).not.toHaveBeenCalled();
+
+      const quote = await send({ text: '2000 Rosario' });
+      expect(api.quoteSancor).toHaveBeenCalledWith(1, {
+        productType: 'hogar',
+        zipCode: 2000,
+        cityName: 'Rosario',
+      });
+      expect(stored?.step).toBe('COT_PLAN');
+      expect(JSON.stringify(quote.messages)).toContain('Sancor Seguros');
+      expect(quote.messages.some((m) => m.kind === 'list')).toBe(true);
+
+      const picked = await send({ text: '', selectionId: 'plan_71' });
+      expect(stored?.step).toBe('COT_LEAD_NOMBRE');
+      expect(JSON.stringify(picked.messages)).toContain('Plan 2');
+
+      await send({ text: 'Juan Prueba' });
+      await send({ text: '341 555-0000' });
+      const lead = (api.createLead.mock.calls as unknown[][])[0][1];
+      expect(lead).toEqual({
+        productType: 'hogar',
+        contactName: 'Juan Prueba',
+        phone: '341 555-0000',
+        payload: {
+          plan: 'Plan 2',
+          aseguradora: 'Sancor',
+          precio: expect.stringContaining('9.060') as unknown,
+          codigoPostal: '2000',
+          localidad: 'Rosario',
+          cotizacionSancor: '839576707',
+        },
+      });
+      // A Sancor module is not one of the office's plans.
+      expect(lead).not.toHaveProperty('selectedPlanId');
+    });
+
+    it('asks DNI and birth date before quoting personal accidents', async () => {
+      await send({ text: 'hola' });
+      await send({ text: 'quiero cotizar' });
+      const kind = await send({ text: '', selectionId: OPT.cotPersonas });
+      expect(stored?.step).toBe('COT_PERSONAS_TIPO');
+      expect(kind.messages[0].kind).toBe('buttons');
+
+      await send({ text: '', selectionId: OPT.cotAccidentes });
+      expect(stored?.step).toBe('COT_SANCOR_CP');
+      await send({ text: 'cp 2121' });
+      expect(stored?.step).toBe('COT_SANCOR_DNI');
+      expect(api.quoteSancor).not.toHaveBeenCalled();
+
+      const badDni = await send({ text: 'no sé' });
+      expect(JSON.stringify(badDni.messages)).toContain('No reconocí el DNI');
+      await send({ text: '20.999.001' });
+      expect(stored?.step).toBe('COT_SANCOR_NACIMIENTO');
+
+      await send({ text: '15/4/1985' });
+      expect(api.quoteSancor).toHaveBeenCalledWith(1, {
+        productType: 'personas',
+        zipCode: 2121,
+        documentNumber: 20999001,
+        birthDate: '15/04/1985',
+      });
+      expect(stored?.step).toBe('COT_PLAN');
+    });
+
+    it('sends vida, sepelio or salud to an advisor as before', async () => {
+      await send({ text: 'hola' });
+      await send({ text: 'quiero cotizar' });
+      await send({ text: '', selectionId: OPT.cotPersonas });
+      await send({ text: 'un seguro de vida' });
+      // No catalog in these tests: straight to the contact details.
+      expect(stored?.step).toBe('COT_LEAD_NOMBRE');
+      expect(stored?.data.productType).toBe('personas');
+      expect(api.quoteSancor).not.toHaveBeenCalled();
+    });
+
+    it('asks the postal code again when Sancor does not know it', async () => {
+      api.quoteSancor.mockRejectedValueOnce(axiosError(400));
+      await send({ text: 'hola' });
+      await send({ text: 'Me gustaria cotizar un hogar' });
+      const res = await send({ text: '9998' });
+      expect(JSON.stringify(res.messages)).toContain(
+        'No encontré el código postal',
+      );
+      expect(stored?.step).toBe('COT_SANCOR_CP');
+
+      await send({ text: '2000' });
+      expect(stored?.step).toBe('COT_PLAN');
+    });
+
+    it("falls back to the office's plans when Sancor cannot quote", async () => {
+      api.quoteSancor.mockRejectedValueOnce(axiosError(502));
+      await send({ text: 'hola' });
+      await send({ text: 'Me gustaria cotizar un hogar' });
+      await send({ text: '2000' });
+      expect(api.getPricing).toHaveBeenCalledWith(1, 'hogar');
+      // No office plans either: an advisor takes the request.
+      expect(stored?.step).toBe('COT_LEAD_NOMBRE');
+    });
+
+    it('re-asks a message without a postal code, and switches when another product is named', async () => {
+      await send({ text: 'hola' });
+      await send({ text: 'Me gustaria cotizar un hogar' });
+      const res = await send({ text: 'no sé' });
+      expect(JSON.stringify(res.messages)).toContain(
+        'Necesito el *código postal*',
+      );
+      expect(stored?.step).toBe('COT_SANCOR_CP');
+
+      await send({ text: 'mejor cotizame el bolso' });
+      expect(stored?.step).toBe('COT_SANCOR_CP');
+      expect(stored?.data.productType).toBe('bolso');
+    });
+
+    it('quotes as before when Sancor is off for the organization', async () => {
+      api.getSancorProducts.mockResolvedValue({ productTypes: [] });
+      await send({ text: 'hola' });
+      await send({ text: 'Me gustaria cotizar un hogar' });
+      expect(api.getPricing).toHaveBeenCalledWith(1, 'hogar');
+      expect(stored?.step).toBe('COT_LEAD_NOMBRE');
     });
   });
 
@@ -6188,5 +6365,38 @@ describe('FlowService', () => {
         );
       });
     });
+  });
+});
+
+describe('Sancor quote readers', () => {
+  it('reads the postal code and the city', () => {
+    expect(readZipAndCity('2000 Rosario')).toEqual({
+      zipCode: 2000,
+      cityName: 'Rosario',
+    });
+    expect(readZipAndCity('cp 2121, Pérez')).toEqual({
+      zipCode: 2121,
+      cityName: 'Pérez',
+    });
+    expect(readZipAndCity('S2000ABC')).toEqual({ zipCode: 2000 });
+    expect(readZipAndCity('mi código postal es 2132')).toEqual({
+      zipCode: 2132,
+    });
+    expect(readZipAndCity('Rosario')).toBeNull();
+    expect(readZipAndCity('341 5550000')).toBeNull();
+  });
+
+  it('reads a DNI with or without dots', () => {
+    expect(readDni('20.999.001')).toBe(20999001);
+    expect(readDni('mi dni es 7 123 456')).toBe(7123456);
+    expect(readDni('12345')).toBeNull();
+  });
+
+  it('reads a plausible birth date', () => {
+    const now = new Date(2026, 10, 9);
+    expect(readBirthDate('15/4/1985', now)).toBe('15/04/1985');
+    expect(readBirthDate('nací el 01-02-1950', now)).toBe('01/02/1950');
+    expect(readBirthDate('31/02/1985', now)).toBeNull();
+    expect(readBirthDate('15/04/2020', now)).toBeNull();
   });
 });
