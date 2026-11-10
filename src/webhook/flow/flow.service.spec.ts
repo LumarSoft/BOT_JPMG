@@ -2232,6 +2232,59 @@ describe('FlowService', () => {
     });
   });
 
+  describe('aseguradoras de la organización', () => {
+    const noTriunfo: FlowContext = {
+      ...leadCtx,
+      quoteInsurers: { triunfo: false, sancor: false },
+    };
+
+    it('takes an auto quote as a request for an advisor when Triunfo is off', async () => {
+      await send({ text: 'hola' }, noTriunfo);
+      await send({ text: 'quiero cotizar' }, noTriunfo);
+      const res = await send(
+        { selectionId: OPT.cotAuto, text: '' },
+        noTriunfo,
+      );
+
+      expect(res.handoff).toBeUndefined();
+      expect(stored?.step).toBe('COT_LEAD_NOMBRE');
+      expect(stored?.data.productType).toBe('auto');
+      expect(JSON.stringify(res.messages)).toContain('Un asesor te contacta');
+    });
+
+    it('keeps the vehicle the customer named in the request', async () => {
+      await send({ text: 'hola' }, noTriunfo);
+      await send({ text: 'quiero cotizar mi auto, corsa 2010' }, noTriunfo);
+      await send({ text: 'Juan Prueba' }, noTriunfo);
+      await send({ text: '341 555-0000' }, noTriunfo);
+
+      expect(api.createLead).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          productType: 'auto',
+          payload: { vehiculo: 'quiero cotizar mi auto, corsa 2010' },
+        }),
+      );
+    });
+
+    it('quotes autos online as always when Triunfo is on', async () => {
+      const res = await send(
+        { text: 'quiero cotizar mi auto, corsa 2010' },
+        { ...leadCtx, quoteInsurers: { triunfo: true, sancor: false } },
+      );
+      expect(res.handoff).toBe('cotizacion');
+    });
+
+    it('does not ask the API about Sancor when the organization has it off', async () => {
+      api.getSancorProducts.mockResolvedValue({ productTypes: ['hogar'] });
+      await send({ text: 'hola' }, noTriunfo);
+      await send({ text: 'Me gustaria cotizar un hogar' }, noTriunfo);
+
+      expect(api.getSancorProducts).not.toHaveBeenCalled();
+      expect(api.getPricing).toHaveBeenCalledWith(1, 'hogar');
+    });
+  });
+
   describe('cotización con Sancor', () => {
     const HOME_PLANS = [
       {

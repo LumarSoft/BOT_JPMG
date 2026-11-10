@@ -915,6 +915,7 @@ export class WebhookService {
       // falls back to its menus instead of spending another call.
       llmRateLimited: !this.hasLlmBudget(`${phoneNumberId}:${from}`),
       staffNames: context.staffNames ?? [],
+      quoteInsurers: context.quoteInsurers,
       phoneMatch: conversation.phoneMatch ?? null,
       contactName: contactName ?? null,
       botSpoke: conversation.messages.some(

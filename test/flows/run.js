@@ -11,8 +11,8 @@
 //   npm run test:flows -- --no-build         use the current dist/ of both repos
 //   npm run test:flows -- --keep             leave the test data in the database to inspect
 //   npm run test:flows -- --cleanup          only remove the test data (after --keep)
-//   npm run test:flows -- --sancor           only the Sancor quotes (S01…), with Sancor on for
-//                                            the test number: calls Sancor's preproduction
+//   npm run test:flows -- --sancor           only the Sancor quotes (S01…), with Sancor switched on
+//                                            for the test organization: calls Sancor's preproduction
 //
 // The API repo is ../api_john (FLOWS_API_DIR to change it). Credentials come
 // from each repo's .env and are never printed.
@@ -34,14 +34,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
 const only = args.find((a) => a.startsWith('--only='))?.slice('--only='.length).split(',');
-// Sancor on for the test number (producerId 1) only in its own run: with it the
-// hogar/bolso scenarios get Sancor's plans instead of the office's.
+// Sancor on for the test organization (producerId 1) only in its own run: with it
+// the hogar/bolso scenarios get Sancor's plans instead of the office's.
 const sancor = flag('sancor');
 const concurrency = Number(args.find((a) => a.startsWith('--concurrency='))?.split('=')[1] || 6);
 
 const children = [];
 let query;
 let startedAt;
+// The test organization's Sancor switch before a --sancor run, put back at the end.
+let sancorSwitchBefore = null;
 
 function fail(message) {
   console.error(`\n✗ ${message}`);
@@ -115,6 +117,7 @@ async function cleanup() {
     return;
   }
   try {
+    if (sancorSwitchBefore !== null) query(`UPDATE Producer SET sancorQuotesEnabled=${sancorSwitchBefore} WHERE id=1;`);
     let removed = 0;
     for (const file of uploadedFiles()) if (fs.existsSync(file)) { fs.unlinkSync(file); removed += 1; }
     query(fs.readFileSync(path.join(__dirname, 'data/cleanup.sql'), 'utf8'));
@@ -189,6 +192,10 @@ async function main() {
   startedAt = query('SELECT UTC_TIMESTAMP(3)')[0][0];
   query(fs.readFileSync(path.join(__dirname, 'data/cleanup.sql'), 'utf8') + fs.readFileSync(path.join(__dirname, 'data/seed.sql'), 'utf8'));
   console.log('Datos de prueba cargados (DNI 990000xx, CUIT 30712345671, números 5493419990xxx).');
+  if (sancor) {
+    sancorSwitchBefore = Number(query('SELECT sancorQuotesEnabled FROM Producer WHERE id=1')[0][0]);
+    query('UPDATE Producer SET sancorQuotesEnabled=1 WHERE id=1;');
+  }
 
   const api = start('api', API_DIR, path.join(__dirname, 'triunfo-preload.js'), 'dist/src/main.js', {
     PORT: String(API_PORT),
@@ -196,7 +203,6 @@ async function main() {
     TRIUNFO_CARTERA_SYNC_ENABLED: 'false',
     RESEND_API_KEY: '',
     FLOWS_API_DIR: API_DIR,
-    SANCOR_BOT_PRODUCER_IDS: sancor ? '1' : '',
   });
   await waitReady('api', `http://localhost:${API_PORT}/`, api);
   const bot = start('bot', BOT_DIR, path.join(__dirname, 'meta-intercept.js'), 'dist/main.js', {

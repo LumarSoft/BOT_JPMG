@@ -2,6 +2,7 @@ import type {
   ClientSummary,
   HumanReply,
   PhoneMatch,
+  QuoteInsurers,
 } from '../../api/api.types';
 import type { OrgProfile } from '../org-profile';
 
@@ -176,6 +177,8 @@ export interface FlowContext {
   llmRateLimited?: boolean;
   /** Office people customers write to by name ("Mili"): those messages go to the office. */
   staffNames?: string[];
+  /** Insurers the organization quotes with; absent → Triunfo on, as before. */
+  quoteInsurers?: QuoteInsurers;
   /** The sender's WhatsApp profile name, when Meta sends it. */
   contactName?: string | null;
   /** Unidentified, but this number is one client's phone: "¿hablo con Juan?". */

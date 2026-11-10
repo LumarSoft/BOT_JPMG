@@ -24,6 +24,14 @@ export interface BotContext {
    *  without WhatsApp's mobile `9`): a message from one of them is kept for
    *  the inbox and never answered. Absent on older APIs. */
   internalWaIds?: string[];
+  /** Insurers the organization's bot quotes with (Configuración → Aseguradoras). Absent on older APIs. */
+  quoteInsurers?: QuoteInsurers;
+}
+
+/** Triunfo quotes autos and motos; Sancor bolso, hogar, bici and accidentes personales. */
+export interface QuoteInsurers {
+  triunfo: boolean;
+  sancor: boolean;
 }
 
 /** Per-organization bot profile, as GET /bot/context sends it. */

@@ -5873,6 +5873,7 @@ export class FlowService {
     productType: string,
   ): Promise<boolean> {
     if (!SANCOR_PRODUCT_TYPES.has(productType)) return false;
+    if (ctx.quoteInsurers && !ctx.quoteInsurers.sancor) return false;
     try {
       const { productTypes } = await this.api.getSancorProducts(
         ctx.conversationId,
@@ -6214,6 +6215,7 @@ export class FlowService {
     key: string,
     productType: string,
     productLabel: string,
+    answers: Record<string, string> = {},
   ): Promise<FlowResult> {
     const item = await this.getCatalogItem(productType);
     const messages: OutgoingMessage[] = [];
@@ -6233,13 +6235,13 @@ export class FlowService {
         productLabel,
         fields,
         fieldIndex: 0,
-        answers: {},
+        answers,
       });
       messages.push(this.fieldMessage(fields[0], intro));
       return { messages };
     }
 
-    this.setState(key, 'COT_LEAD_NOMBRE', { productType });
+    this.setState(key, 'COT_LEAD_NOMBRE', { productType, answers });
     messages.push({
       kind: 'text',
       body:
@@ -6474,7 +6476,22 @@ export class FlowService {
     vehiculo: 'auto' | 'moto' | undefined,
     ctx: FlowContext,
     input?: UserInput,
-  ): FlowResult {
+  ): FlowResult | Promise<FlowResult> {
+    // The organization switched Triunfo off (Configuración → Aseguradoras): no
+    // online quote, an advisor takes the request with what was said about the vehicle.
+    if (ctx.quoteInsurers?.triunfo === false) {
+      const type = vehiculo ?? 'auto';
+      const said =
+        input && !input.selectionId && this.carriesVehicleData(input.text)
+          ? { vehiculo: input.text.trim() }
+          : undefined;
+      return this.startLeadCapture(
+        key,
+        type,
+        type === 'moto' ? 'Moto' : 'Auto',
+        said,
+      );
+    }
     // quoteStartedAt bounds the history the quote model sees (webhook.service),
     // so a restarted quote does not pick up the previous one's vehicle data.
     // It is the time of the message that opened the quote, so that message
