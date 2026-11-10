@@ -87,6 +87,7 @@ import {
   returningGreeting,
   ROOT_OPTS,
   siniestroConfirm,
+  siniestroFueraDeVigencia,
   siniestroTypeMenu,
   stuckMenu,
   welcomeMenu,
@@ -4694,15 +4695,23 @@ export class FlowService {
       description: state.data.descripcion as string,
     });
 
+    // The policy is in force today, but the incident may be from before it
+    // started: the customer hears it now, and the office reads it on the claim.
+    const fueraDeVigencia = siniestroFueraDeVigencia(
+      siniestro.coverageCheck,
+      state.data.fechaDisplay as string,
+    );
     // The coverages of a home or shop policy are optional: the office checks
     // whether this one covers the event before filing it.
     const registered = {
       kind: 'text' as const,
       body:
         `✅ Registré tu denuncia (N° interno *${siniestro.id}*).\n` +
-        (state.data.bien === true
-          ? 'La oficina revisa la cobertura de tu póliza, la carga en Triunfo Seguros y te informa el número de siniestro oficial.'
-          : 'La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.'),
+        (fueraDeVigencia
+          ? `\n${fueraDeVigencia}`
+          : state.data.bien === true
+            ? 'La oficina revisa la cobertura de tu póliza, la carga en Triunfo Seguros y te informa el número de siniestro oficial.'
+            : 'La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.'),
     };
     // A home or shop claim has no green card or licence: only photos of the
     // damage, if there are any.
