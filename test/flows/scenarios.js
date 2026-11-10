@@ -16,7 +16,8 @@
 // `expect` checks what the bot answered to that step (`any`/`none` regexes,
 // `silent`, `count`, `reply`); `db` checks the database afterwards ($WA is the
 // scenario's number). `drive` answers a model-led quote until `until` shows up.
-// `docs` counts the PDFs sent in that step. `regression` names the real chat a case comes from; `known` marks a gap not
+// `docs` counts the PDFs sent in that step. `numberProfile` runs the scenario alone, after the rest, with the test
+// number's own botProfile set to it (restored at the end). `regression` names the real chat a case comes from; `known` marks a gap not
 // fixed yet (reported, but it does not fail the run). `stage: 'inactivity'`
 // scenarios are checked again once the local session timeout (2 min) passes:
 // `afterIdle.goodbye` says whether the inactivity goodbye must go out.
@@ -1538,5 +1539,33 @@ module.exports = [
       sql: "SELECT JSON_EXTRACT(flowState, '$.data.quoteVehicle.selected.codia'), JSON_EXTRACT(flowState, '$.data.quoteVehicle.lastRequest.manufactureYear') FROM Conversation WHERE waId='$WA'",
       test: (rows) => rows.some(([codia, year]) => codia === '8810135' && year === '2026'),
     }],
+  },
+  // ─── 10/11: una sucursal que no da alias (Roldán): la oficina pasa los datos ─
+  {
+    id: 'B01', area: 'Sucursal sin alias (10/11)', name: '"¿Me pasás el alias?" sin cuenta: la oficina pasa los datos y queda avisada', wa: wa(), regression: 'Roldán no da alias (10/11)',
+    numberProfile: { transferMode: 'office' },
+    steps: [
+      ...ident('99000001'),
+      { text: '¿Me pasás el alias para transferir la cuota?', expect: { any: [/la oficina te pasa los datos/i], none: [/TRUENO/, /Alias:/, /\b\d{22}\b/] } },
+    ],
+    db: [handoffs('aviso para pasarle los datos', (r) => r.some(([b]) => /Quiere pagar por transferencia/.test(b)))],
+  },
+  {
+    id: 'B02', area: 'Sucursal sin alias (10/11)', name: 'Cupón de una cuota rechazada sin cuenta: pasa el pedido y no ofrece transferir', wa: wa(), regression: 'Roldán no da alias (10/11)',
+    numberProfile: { transferMode: 'office' },
+    steps: [
+      ...ident('99000004'),
+      { text: 'Necesito el cupón para pagar la cuota que me rechazaron', expect: { any: [/cup[oó]n/i], none: [/TRUENO/, /podés transferir/, /Alias:/] } },
+    ],
+    db: [handoffs('pedido del cupón sin datos de transferencia', (r) => r.length > 0 && !r.some(([b]) => /Se le pasaron los datos para transferir/.test(b)))],
+  },
+  {
+    id: 'B03', area: 'Sucursal sin alias (10/11)', name: '"Quiero pagar por transferencia" en texto libre: nunca un alias inventado ni el de Triunfo', wa: wa(), regression: 'Roldán no da alias (10/11)',
+    numberProfile: { transferMode: 'office' },
+    steps: [
+      ...ident('99000006'),
+      { text: 'Hola, quiero pagar el seguro por transferencia, a qué cuenta?', max: 60000, quiet: 5000, expect: { any: [/oficina/i], none: [/TRUENO/, /Alias:/, /\b\d{22}\b/] } },
+    ],
+    db: [handoffs('aviso para pasarle los datos', (r) => r.some(([b]) => /transferencia|transferir/i.test(b)))],
   },
 ];

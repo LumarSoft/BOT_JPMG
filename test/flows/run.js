@@ -161,6 +161,28 @@ function report(results, ms) {
   return failed.length;
 }
 
+/**
+ * Scenarios about a number's own settings (a branch that gives no alias): each
+ * runs alone with the test number's botProfile set to its `numberProfile`, and
+ * the number gets its own profile back at the end. The bot reads the profile
+ * on every message, so nothing needs restarting.
+ */
+async function runWithNumberProfile(scenarios, { botUrl }) {
+  const where = `phoneNumberId='${PNID}' AND deletedAt IS NULL`;
+  const [[saved]] = query(`SELECT COALESCE(botProfile, 'NULL') FROM PhoneNumber WHERE ${where}`);
+  const sqlText = (value) => `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+  const results = [];
+  try {
+    for (const sc of scenarios) {
+      query(`UPDATE PhoneNumber SET botProfile=${sqlText(JSON.stringify(sc.numberProfile))} WHERE ${where}`);
+      results.push(...(await runScenarios([sc], { botUrl, query, concurrency: 1 })));
+    }
+  } finally {
+    query(`UPDATE PhoneNumber SET botProfile=${saved === 'NULL' ? 'NULL' : sqlText(saved)} WHERE ${where}`);
+  }
+  return results;
+}
+
 async function main() {
   fs.rmSync(OUT_DIR, { recursive: true, force: true });
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -202,11 +224,13 @@ async function main() {
 
   const all = require('./scenarios');
   const chosen = only ? all.filter((s) => only.includes(s.id)) : all;
-  const main = chosen.filter((s) => s.stage !== 'inactivity');
+  const main = chosen.filter((s) => s.stage !== 'inactivity' && !s.numberProfile);
+  const byNumber = chosen.filter((s) => s.numberProfile);
   const idle = flag('skip-inactivity') ? [] : chosen.filter((s) => s.stage === 'inactivity');
   const t0 = Date.now();
   const botUrl = `http://localhost:${BOT_PORT}`;
   const results = await runScenarios(main, { botUrl, query, concurrency });
+  if (byNumber.length) results.push(...(await runWithNumberProfile(byNumber, { botUrl })));
   if (idle.length) {
     const idleResults = await runScenarios(idle, { botUrl, query, concurrency });
     await checkInactivity(idle, idleResults);
