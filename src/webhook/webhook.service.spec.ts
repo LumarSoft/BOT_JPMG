@@ -2,8 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import {
   PHOTO_REPLY_DELAY_MS,
+  spelledOutCandidates,
+  spelledVersionWords,
   takeMenuMarker,
   WebhookService,
+  yearsInclude,
 } from './webhook.service';
 import { claimPhotoAddedText } from './flow/flow.messages';
 import { ApiService } from '../api/api.service';
@@ -1458,6 +1461,184 @@ describe('WebhookService', () => {
         expect(gol('1', shown)).toBe(460727);
         expect(gol('la 2', shown)).toBe(460773);
         expect(gol('3', shown)).toBe(460740);
+      });
+
+      describe('a version named in full (Pueblo Esther, 9/11)', () => {
+        const wave = {
+          vehicleType: 'moto',
+          brandName: 'HONDA',
+          candidates: [
+            { codia: 8810065, description: 'WAVE  110', years: '2008-2018' },
+            {
+              codia: 8810143,
+              description: 'WAVE  110S C/D',
+              years: '2018 en adelante',
+            },
+            {
+              codia: 8810135,
+              description: 'WAVE  110S NEW BASE',
+              years: '2017 en adelante',
+            },
+          ],
+        };
+        const pick = (memory: Record<string, unknown>, text: string) =>
+          (
+            (
+              service as unknown as { selectRememberedVehicle: Select }
+            ).selectRememberedVehicle.bind(service) as Select
+          )(memory, text)?.selected?.codia;
+
+        it('reads "Wave 110 s New Base" as the New Base, not the Wave 110 inside it', () => {
+          expect(
+            pick(wave, '2026\nGranadero Baigorria\nWave 110 s New Base'),
+          ).toBe(8810135);
+          expect(pick(wave, 'Wave 110S New Base')).toBe(8810135);
+          expect(pick(wave, 'la wave 110s c/d')).toBe(8810143);
+          expect(pick(wave, 'es una wave 110 del 2012')).toBe(8810065);
+        });
+
+        it('picks nothing when "110s" fits two versions: the client chooses', () => {
+          expect(
+            pick(wave, '2026\nGranadero Baigorria\nWave 110s'),
+          ).toBeUndefined();
+          expect(pick(wave, 'Wave 110s')).toBeUndefined();
+        });
+
+        it('takes the most complete name the client wrote', () => {
+          const gol = {
+            vehicleType: 'auto',
+            candidates: [
+              { codia: 460727, description: 'GOL TREND 1.6 3 P L/13' },
+              {
+                codia: 460773,
+                description: 'GOL TREND 1.6 3 P L/13 HIGHLINE',
+              },
+            ],
+          };
+          expect(pick(gol, 'Gol Trend 1.6 3P L/13 Highline')).toBe(460773);
+          expect(pick(gol, 'gol trend 1.6 3 puertas l/13')).toBe(460727);
+        });
+
+        it('reads number and letter, and "puertas", as InfoAuto writes them', () => {
+          expect(spelledVersionWords('Wave 110 s New Base')).toEqual([
+            'wave',
+            '110s',
+            'new',
+            'base',
+          ]);
+          expect(spelledVersionWords('1.6 4 puertas')).toEqual([
+            '1',
+            '6',
+            '4p',
+          ]);
+          // Names listed apart all count: the bot's own list picks nothing.
+          expect(
+            spelledOutCandidates(
+              wave.candidates,
+              '1. Wave 110\n2. Wave 110S C/D\n3. Wave 110S New Base',
+            ),
+          ).toHaveLength(3);
+        });
+
+        it('knows which model years a version has', () => {
+          expect(yearsInclude('2008-2018', 2026)).toBe(false);
+          expect(yearsInclude('2008-2018', 2012)).toBe(true);
+          expect(yearsInclude('2017 en adelante', 2026)).toBe(true);
+          expect(yearsInclude('0km 2026', 2026)).toBe(true);
+          expect(yearsInclude('0km 2026', 2025)).toBe(false);
+        });
+
+        const yearError = {
+          isAxiosError: true,
+          response: {
+            status: 400,
+            data: {
+              message:
+                'El catálogo no lista esta versión para 2026. Revisá el modelo y el año de la documentación.',
+            },
+          },
+          message: 'Request failed with status code 400',
+        };
+        const motoArgs = JSON.stringify({
+          vehicleType: 'moto',
+          codia: 8810065,
+          manufactureYear: 2026,
+          postalCode: 2152,
+        });
+
+        it('offers the versions that have the year instead of blaming the company', async () => {
+          api.quoteVehicle.mockRejectedValue(yearError);
+          const result = JSON.parse(
+            await (tool() as Tool)('quote_vehicle', motoArgs, 9, {
+              ...wave,
+              selected: wave.candidates[0],
+            }),
+          ) as {
+            yearRejected?: boolean;
+            versionesParaEseAnio?: string[];
+            nextStep?: string;
+          };
+          expect(result.yearRejected).toBe(true);
+          expect(result.versionesParaEseAnio).toEqual([
+            'WAVE 110S C/D',
+            'WAVE 110S NEW BASE',
+          ]);
+          expect(result.nextStep).toContain(
+            'No le digas que la compañía no la tiene',
+          );
+        });
+
+        it('asks to check the model and year when no version has it, without blaming the company', async () => {
+          api.quoteVehicle.mockRejectedValue(yearError);
+          const only = { ...wave, candidates: [wave.candidates[0]] };
+          const result = JSON.parse(
+            await (tool() as Tool)('quote_vehicle', motoArgs, 9, {
+              ...only,
+              selected: wave.candidates[0],
+            }),
+          ) as { yearRejected?: boolean; nextStep?: string };
+          expect(result.yearRejected).toBeUndefined();
+          expect(result.nextStep).toContain(
+            'No digas que la compañía no la tiene',
+          );
+        });
+
+        it('lets the client pick again after a rejected year, and keeps what was asked for the office', () => {
+          type Remember = (
+            memory: Record<string, unknown> | undefined,
+            rawArgs: string,
+            rawResult: string,
+          ) => Record<string, unknown> | undefined;
+          const memoryOf = service as unknown as {
+            rememberQuotedVersion: Remember;
+            rememberQuote: Remember;
+          };
+          const rememberQuotedVersion = memoryOf.rememberQuotedVersion.bind(
+            service,
+          ) as Remember;
+          const rememberQuote = memoryOf.rememberQuote.bind(
+            service,
+          ) as Remember;
+          const rejected = JSON.stringify({
+            error: yearError.response.data.message,
+            status: 400,
+            yearRejected: true,
+          });
+          const afterPick = rememberQuotedVersion(
+            { ...wave, selected: wave.candidates[0] },
+            motoArgs,
+            rejected,
+          );
+          expect(afterPick?.selected).toBeUndefined();
+          expect(afterPick?.versionAsked).toBe(true);
+          const noted = rememberQuote(afterPick, motoArgs, rejected);
+          expect(noted?.lastRequest).toEqual({
+            vehicle: 'HONDA WAVE 110',
+            manufactureYear: 2026,
+            postalCode: 2152,
+            problem: yearError.response.data.message,
+          });
+        });
       });
 
       it('does not read an engine size, a position without a list or the bot list as a pick', () => {

@@ -1516,4 +1516,20 @@ module.exports = [
     id: 'H03', area: 'Revisión 9/11', name: '"Muchísimas gracias" como primer mensaje: de nada, sin "¿Hablo con…?"', wa: wa(), regression: 'conv. 519 (6/11)',
     steps: [{ text: 'muchisimas gracias', expect: { any: [/De nada/], none: [/Hablo con/, /DNI/, /ya sos cliente/] } }],
   },
+  // ─── Revisión 10/11: la versión se elegía por un pedazo de su nombre ────────
+  {
+    id: 'J01', area: 'Revisión 10/11', name: '"Wave 110 s New Base" 2026 cotiza la New Base, no la Wave 110 de 2008-2018', wa: wa(), regression: 'conv. 534 (9/11)',
+    steps: [
+      { text: 'Hola buenas tardes, quería averiguar presupuesto de seguro de moto Honda Wave 110', max: 60000, quiet: 5000, expect: { any: [/año|versi/i] } },
+      { text: '2026\nGranadero Baigorria\nWave 110 s New Base', max: 90000, quiet: 5000, expect: { none: [/no lista/i, /no tiene disponible/i, /documentaci[oó]n/i], any: [/por mes/, /c[oó]digo postal/i] } },
+      {
+        drive: {
+          max: 2,
+          until: /por mes/,
+          answer: () => ({ text: '2152' }),
+          expect: { any: [/por mes/], none: [/no lista/i, /no tiene disponible/i] },
+        },
+      },
+    ],
+  },
 ];

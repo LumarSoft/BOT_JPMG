@@ -64,6 +64,10 @@ import {
 } from './audio-transcriber.service';
 import { fold } from './text';
 import {
+  isQuoteRequestNote,
+  type QuoteRequestNote,
+} from './quote-request-note';
+import {
   legacyOrgProfile,
   resolveOrgProfile,
   type OrgProfile,
@@ -88,6 +92,10 @@ type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 interface QuoteVehicleCandidate {
   codia: number;
   description: string;
+  /** The model years find_vehicle gave for it ("2008-2018", "2017 en
+   * adelante", "0km 2026"): what another version is offered by when the
+   * chosen one has no such year. */
+  years?: string;
 }
 
 /** What the last quote_vehicle call for the selected vehicle asked and got. */
@@ -116,6 +124,7 @@ interface QuoteVehicleMemory {
   /** quote_vehicle already stopped once to have the client pick among the
    * candidates; the next pick from the list is taken as theirs. */
   versionAsked?: boolean;
+  lastRequest?: QuoteRequestNote;
 }
 
 const QUOTE_VEHICLE_MEMORY = 'quoteVehicle';
@@ -207,6 +216,85 @@ export const versionWords = (text: string): string[] =>
     .split(' ')
     .filter(Boolean)
     .map((w) => VERSION_SYNONYMS[w] ?? w);
+
+/**
+ * The words of a version name as people write it, for finding the whole name
+ * in a message: "110 s" and "110S" are one word, "4 puertas" is InfoAuto's
+ * "4P", and "110" is not "110s". Read as loose text, "wave 110" was found
+ * inside "wave 110 s new base" and a 2008-2018 Wave 110 was quoted for a 2026
+ * Wave 110S New Base (Pueblo Esther, 9/11).
+ */
+export function spelledVersionWords(text: string): string[] {
+  const joined: string[] = [];
+  for (const word of fold(text)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => VERSION_SYNONYMS[w] ?? w)) {
+    const last = joined[joined.length - 1];
+    if (last !== undefined && /^\d+$/.test(last) && /^[a-z]$/.test(word))
+      joined[joined.length - 1] = last + word;
+    else joined.push(word);
+  }
+  return joined;
+}
+
+/** Where `name` starts in `words` as whole consecutive words. */
+function wordRunsAt(words: string[], name: string[]): number[] {
+  const starts: number[] = [];
+  if (name.length === 0) return starts;
+  for (let i = 0; i + name.length <= words.length; i++)
+    if (name.every((w, j) => words[i + j] === w)) starts.push(i);
+  return starts;
+}
+
+/**
+ * The versions whose whole name the text spells out. A name found only inside
+ * a longer one that is spelled out too stands for that longer one ("GOL TREND
+ * 1.6 3 P L/13" inside "... L/13 HIGHLINE"): the most complete wins, while
+ * names written apart (the bot's own list of them) all count.
+ */
+export function spelledOutCandidates<T extends { description: string }>(
+  candidates: T[],
+  text: string,
+): T[] {
+  const words = spelledVersionWords(text);
+  const found = candidates
+    .map((candidate) => {
+      const name = spelledVersionWords(candidate.description);
+      return { candidate, size: name.length, starts: wordRunsAt(words, name) };
+    })
+    .filter((f) => f.starts.length > 0);
+  const insideLonger = (f: (typeof found)[number], start: number) =>
+    found.some(
+      (other) =>
+        other.size > f.size &&
+        other.starts.some(
+          (o) => o <= start && start + f.size <= o + other.size,
+        ),
+    );
+  return found
+    .filter((f) => f.starts.some((start) => !insideLonger(f, start)))
+    .map((f) => f.candidate);
+}
+
+/**
+ * Whether a model-years label from find_vehicle ("2008-2018", "2017 en
+ * adelante", "0km 2026") includes `year`.
+ */
+export function yearsInclude(label: string, year: number): boolean {
+  const range = label.match(/^(\d{4})\s*-\s*(\d{4})$/);
+  if (range) return year >= Number(range[1]) && year <= Number(range[2]);
+  const onward = label.match(/^(\d{4}) en adelante$/);
+  if (onward) return year >= Number(onward[1]);
+  const newOnly = label.match(/^0km (\d{4})$/);
+  return !!newOnly && year === Number(newOnly[1]);
+}
+
+/** The API's answer to a version quoted for a year the catalog does not list. */
+const YEAR_REJECTED_RE =
+  /no lista esta versi[oó]n para \d{4}|lista esta versi[oó]n solo como 0km/i;
 
 /** Claim steps before it is filed (on confirmation): its details, not photos. */
 const CLAIM_DRAFT_STEPS = new Set<string>([
@@ -1851,6 +1939,9 @@ export class WebhookService {
       ...(!selected && value.versionAsked === true
         ? { versionAsked: true }
         : {}),
+      ...(isQuoteRequestNote(value.lastRequest)
+        ? { lastRequest: value.lastRequest }
+        : {}),
       ...(selected && typeof value.hasGnc === 'boolean'
         ? { hasGnc: value.hasGnc }
         : {}),
@@ -1919,10 +2010,18 @@ export class WebhookService {
     try {
       const result = JSON.parse(rawResult) as {
         needsVersionChoice?: unknown;
+        yearRejected?: unknown;
         error?: unknown;
       };
       if (result.needsVersionChoice === true)
         return { ...memory, versionAsked: true };
+      if (result.yearRejected === true) {
+        // The version the client was taken to mean has no such year and
+        // another in the list does: the client picks again, and that pick goes.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { selected, quoted, ...rest } = memory;
+        return { ...rest, versionAsked: true };
+      }
       if (result.error !== undefined) return memory;
       const codia = Number((JSON.parse(rawArgs) as { codia?: unknown }).codia);
       const quoted = memory.candidates.find((c) => c.codia === codia);
@@ -1938,7 +2037,7 @@ export class WebhookService {
     rawArgs: string,
     rawResult: string,
   ): QuoteVehicleMemory | undefined {
-    if (!memory?.selected) return memory;
+    if (!memory) return memory;
     try {
       const args = JSON.parse(rawArgs) as Record<string, unknown>;
       const result = JSON.parse(rawResult) as {
@@ -1957,9 +2056,23 @@ export class WebhookService {
       const postalCode = Number(args.postalCode);
       if (!Number.isInteger(manufactureYear) || !Number.isInteger(postalCode))
         return memory;
+      const noted = this.withLastRequest(memory, {
+        codia: Number(args.codia),
+        manufactureYear,
+        postalCode,
+        problem:
+          typeof result.error === 'string'
+            ? result.error
+            : result.sinCotizacion === true
+              ? 'la compañía no lo cotizó online'
+              : result.cotizacionIncompleta === true
+                ? 'Triunfo solo cotizó Responsabilidad Civil'
+                : undefined,
+      });
+      if (!noted.selected) return noted;
       // A rejected year or model is the client's data to fix, not a quote.
       if (result.error !== undefined && result.officeNotified !== true)
-        return memory;
+        return noted;
       const outcome: QuotedFacts['outcome'] =
         result.error !== undefined || result.sinCotizacion === true
           ? 'sin_respuesta'
@@ -1980,7 +2093,7 @@ export class WebhookService {
         ];
       });
       return {
-        ...memory,
+        ...noted,
         quoted: {
           manufactureYear,
           postalCode,
@@ -1992,6 +2105,46 @@ export class WebhookService {
     } catch {
       return memory;
     }
+  }
+
+  /**
+   * Notes what the client asked to quote, for the office if they ask for a
+   * person; not the bot's own stops (pick a version, answer GNC, a made-up
+   * CODIA), which asked the company nothing.
+   */
+  private withLastRequest(
+    memory: QuoteVehicleMemory,
+    request: {
+      codia: number;
+      manufactureYear: number;
+      postalCode: number;
+      problem?: string;
+    },
+  ): QuoteVehicleMemory {
+    if (
+      request.problem &&
+      /^(No se cotizó|CODIA|El CODIA)/.test(request.problem)
+    )
+      return memory;
+    const version =
+      memory.candidates.find((c) => c.codia === request.codia) ??
+      memory.selected;
+    if (!version) return memory;
+    const vehicle = [memory.brandName, version.description]
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .slice(0, 160);
+    const problem = request.problem?.trim().slice(0, 240);
+    return {
+      ...memory,
+      lastRequest: {
+        vehicle,
+        manufactureYear: request.manufactureYear,
+        postalCode: request.postalCode,
+        ...(problem ? { problem } : {}),
+      },
+    };
   }
 
   /** Fail-closed gate used immediately before automated outbound messages. */
@@ -2035,10 +2188,6 @@ export class WebhookService {
       gncAnswer(text, previousAssistantText) !== undefined
     )
       return memory;
-    const normalized = fold(text)
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim();
-
     const position = fromClient
       ? this.pickedPosition(text, previousAssistantText)
       : null;
@@ -2059,12 +2208,7 @@ export class WebhookService {
       if (closest.length === 1) return this.withSelected(memory, closest[0]);
     }
 
-    const matches = memory.candidates.filter((candidate) => {
-      const description = fold(candidate.description)
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim();
-      return description.length > 0 && normalized.includes(description);
-    });
+    const matches = spelledOutCandidates(memory.candidates, text);
     if (matches.length === 1) return this.withSelected(memory, matches[0]);
     if (fromClient) {
       const byWords = this.candidatesNamedBy(memory.candidates, text, true);
@@ -2177,7 +2321,10 @@ export class WebhookService {
     // Unnumbered: numbered, "la primera" was read against this list, which
     // the client never saw, and the model quoted its first version.
     const list = memory.candidates
-      .map((c) => `- ${brand}${c.description} — CODIA \`${c.codia}\``)
+      .map(
+        (c) =>
+          `- ${brand}${c.description}${c.years ? ` (${c.years})` : ''} — CODIA \`${c.codia}\``,
+      )
       .join('\n');
     return (
       '\n\n## VERSIONES ENCONTRADAS POR EL SISTEMA (todavía sin elegir; la persona no ve esta lista)\n' +
@@ -2224,7 +2371,11 @@ export class WebhookService {
     try {
       const result = JSON.parse(rawResult) as {
         brand?: { id?: unknown; name?: unknown };
-        versions?: Array<{ codia?: unknown; description?: unknown }>;
+        versions?: Array<{
+          codia?: unknown;
+          description?: unknown;
+          years?: unknown;
+        }>;
         /** find_vehicle found it in the other catalog (a moto in the auto flow). */
         vehicleType?: unknown;
       };
@@ -2251,6 +2402,9 @@ export class WebhookService {
             typeof version.description === 'string'
               ? version.description.trim()
               : '',
+          ...(typeof version.years === 'string' && version.years.trim()
+            ? { years: version.years.trim() }
+            : {}),
         }))
         .filter(
           (candidate) =>
@@ -3080,6 +3234,20 @@ export class WebhookService {
                   nextStep:
                     'Ese CODIA no existe en el catálogo. Volvé a llamar find_vehicle con la marca, el modelo, la versión y el año de la charla y cotizá con el CODIA que devuelva. No le pidas a la persona que revise la documentación por esto.',
                 });
+              if (
+                typeof failure.error === 'string' &&
+                YEAR_REJECTED_RE.test(failure.error)
+              )
+                return JSON.stringify(
+                  this.yearRejection(
+                    failure,
+                    rememberedVehicle?.vehicleType === vehicleType
+                      ? rememberedVehicle
+                      : undefined,
+                    codiaNum,
+                    Number(args.manufactureYear),
+                  ),
+                );
               return JSON.stringify(failure);
             }
             const vehicle = this.quotedVehicle(rememberedVehicle, codiaNum);
@@ -3145,6 +3313,41 @@ export class WebhookService {
     } catch (error) {
       return this.toolError(name, error);
     }
+  }
+
+  /**
+   * The catalog has no such year for the quoted version. When another version
+   * of the same search has it, that is most likely the client's: on 9/11 the
+   * bot quoted a 2008-2018 Wave 110 for a 2026 Wave 110S New Base three times
+   * and told the client the company did not have it. Otherwise the client's
+   * model or year is the thing to check, and still not "the company".
+   */
+  private yearRejection(
+    failure: { error?: unknown },
+    memory: QuoteVehicleMemory | undefined,
+    codia: number,
+    year: number,
+  ): Record<string, unknown> {
+    const others = (memory?.candidates ?? []).filter(
+      (c) => c.codia !== codia && !!c.years && yearsInclude(c.years, year),
+    );
+    if (others.length === 0)
+      return {
+        ...failure,
+        nextStep:
+          'Ninguna de las versiones encontradas existe para ese año: pedile que confirme el modelo y el año. No digas que la compañía no la tiene. Si los confirma así, ofrecé que un asesor lo cotice (que escriba *asesor*).',
+      };
+    const names = others.map((c) => c.description.replace(/\s+/g, ' '));
+    return {
+      ...failure,
+      yearRejected: true,
+      versionesParaEseAnio: names,
+      nextStep:
+        (others.length === 1
+          ? `Esa versión no existe para ${year}, pero en la misma búsqueda está ${names[0]}, que sí. Preguntale si su vehículo es esa y cotizala si dice que sí.`
+          : `Esa versión no existe para ${year}, pero en la misma búsqueda hay otras que sí: ${names.join(' / ')}. Mostráselas numeradas y cortas, preguntale cuál es la suya y cotizá la que elija.`) +
+        ' No le digas que la compañía no la tiene ni que revise la documentación.',
+    };
   }
 
   /**

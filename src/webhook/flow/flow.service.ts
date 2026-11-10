@@ -131,6 +131,7 @@ import {
   type SiniestroCampo,
   type SiniestroDatos,
 } from './siniestro-datos';
+import { describeQuoteRequest } from '../quote-request-note';
 
 /**
  * Matches a message that is *only* a greeting ("hola", "buenas", "buen día"),
@@ -2381,6 +2382,7 @@ export class FlowService {
       'Pidió hablar con un asesor.',
       asked ? `Su consulta: "${clip(asked)}".` : 'Todavía no contó el motivo.',
       topic ? `Venía con ${topic}.` : '',
+      describeQuoteRequest(prior?.data.quoteVehicle) ?? '',
     ]
       .filter(Boolean)
       .join(' ');

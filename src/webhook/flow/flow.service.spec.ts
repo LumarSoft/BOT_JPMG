@@ -672,6 +672,30 @@ describe('FlowService', () => {
       expect(JSON.stringify(result.messages)).toContain('Pasame el *DNI');
     });
 
+    it('tells the office which vehicle the quote was for when the client asks for a person (9/11)', async () => {
+      stored = {
+        step: 'LLM_COTIZACION',
+        data: {
+          quoteVehicle: {
+            vehicleType: 'moto',
+            candidates: [{ codia: 8810135, description: 'WAVE 110S NEW BASE' }],
+            lastRequest: {
+              vehicle: 'HONDA WAVE 110S NEW BASE',
+              manufactureYear: 2026,
+              postalCode: 2152,
+              problem: 'El catálogo no lista esta versión para 2026.',
+            },
+          },
+        },
+        audience: 'lead',
+      };
+      await send({ text: 'asesor' });
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'Pidió hablar con un asesor. Todavía no contó el motivo. Venía con la cotización. Lo último que pidió cotizar: HONDA WAVE 110S NEW BASE, año 2026, CP 2152 (no se pudo: El catálogo no lista esta versión para 2026).',
+      );
+    });
+
     it('leaves a quote when the client asks to cancel a policy', async () => {
       stored = { step: 'LLM_COTIZACION', data: {}, audience: 'lead' };
       const result = await send({ text: 'quiero dar de baja mi seguro' });
