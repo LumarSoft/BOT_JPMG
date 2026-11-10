@@ -1,5 +1,6 @@
 import type {
   CatalogField,
+  ClaimCoverageCheck,
   CuotaImpaga,
   EstadoCuentaPoliza,
   PolizaDocumento,
@@ -1097,6 +1098,35 @@ export function siniestroConfirm(
       { id: OPT.cancelar, title: 'Cancelar' },
     ],
   };
+}
+
+/**
+ * What the customer is told when the incident falls outside the dates of the
+ * policy they filed it on; null when it does not. The claim is filed either
+ * way — the day may be a typo, and the office reviews it — but they should not
+ * hear later, from the company, that the day was not covered.
+ */
+export function siniestroFueraDeVigencia(
+  check: ClaimCoverageCheck | undefined,
+  fecha: string,
+): string | null {
+  const issue = check?.issues.find(
+    (i) =>
+      i.level === 'danger' &&
+      (i.code === 'BEFORE_START' || i.code === 'AFTER_END'),
+  );
+  if (!issue) return null;
+  const day = issue.date
+    ? `${issue.date.slice(8, 10)}/${issue.date.slice(5, 7)}/${issue.date.slice(0, 4)}`
+    : null;
+  const term =
+    issue.code === 'BEFORE_START'
+      ? `es anterior al inicio de tu póliza${day ? `, que rige desde el *${day}*` : ''}`
+      : `es posterior al vencimiento de tu póliza${day ? `, que fue el *${day}*` : ''}`;
+  return (
+    `⚠️ La fecha del hecho que me pasaste (*${fecha}*) ${term}. ` +
+    'La denuncia quedó registrada, pero la oficina va a revisar si ese día tenías cobertura antes de presentarla en la compañía.'
+  );
 }
 
 // ─── Data formatting (free text) ────────────────────────────

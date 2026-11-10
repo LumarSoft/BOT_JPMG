@@ -265,6 +265,28 @@ export interface SiniestroSummary {
   insurerClaimNumber: string | null;
   createdAt: string;
   policy: { id: number; certificado: string; riskType: string };
+  /** Only on the claim just filed; absent from an API older than the check. */
+  coverageCheck?: ClaimCoverageCheck;
+}
+
+/**
+ * Whether the claim's policy covered the day of the incident, as the API
+ * worked it out for the office. The customer is told only what the policy's
+ * dates say (`BEFORE_START`, `AFTER_END`): unpaid installments are not
+ * reliable enough to tell a customer their cover is suspended.
+ */
+export interface ClaimCoverageCheck {
+  level: 'ok' | 'warning' | 'danger';
+  issues: ClaimCoverageIssue[];
+}
+
+export interface ClaimCoverageIssue {
+  code: string;
+  level: 'warning' | 'danger';
+  title: string;
+  detail: string;
+  /** The day the issue hinges on ("YYYY-MM-DD"): the start or the end of the policy's term. */
+  date: string | null;
 }
 
 /**

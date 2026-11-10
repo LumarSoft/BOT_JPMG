@@ -19,6 +19,7 @@ import {
   docPicker,
   formatSiniestros,
   polizaTitles,
+  siniestroFueraDeVigencia,
   transferOffer as offerTransfer,
   botIntro,
   openingLine,
@@ -1002,5 +1003,67 @@ describe('transfer offer (John, 20/10)', () => {
     expect(text).toContain(
       'Por Mercado Pago con el cupón, o desde la app de Triunfo',
     );
+  });
+});
+
+describe('siniestroFueraDeVigencia', () => {
+  const issue = (
+    code: string,
+    level: 'warning' | 'danger',
+    date: string | null,
+  ) => ({
+    code,
+    level,
+    title: '',
+    detail: '',
+    date,
+  });
+
+  it('says the incident is from before the policy started, with the start date', () => {
+    expect(
+      siniestroFueraDeVigencia(
+        {
+          level: 'danger',
+          issues: [issue('BEFORE_START', 'danger', '2026-11-05')],
+        },
+        '02/11/2026',
+      ),
+    ).toBe(
+      '⚠️ La fecha del hecho que me pasaste (*02/11/2026*) es anterior al inicio de tu póliza, que rige desde el *05/11/2026*. ' +
+        'La denuncia quedó registrada, pero la oficina va a revisar si ese día tenías cobertura antes de presentarla en la compañía.',
+    );
+  });
+
+  it('says the incident is from after the policy ended', () => {
+    expect(
+      siniestroFueraDeVigencia(
+        {
+          level: 'danger',
+          issues: [issue('AFTER_END', 'danger', '2026-10-01')],
+        },
+        '02/11/2026',
+      ),
+    ).toContain(
+      'es posterior al vencimiento de tu póliza, que fue el *01/10/2026*',
+    );
+  });
+
+  it('is silent about anything else: payments, another policy, a cancellation, no check', () => {
+    for (const [code, level] of [
+      ['UNPAID_INSTALLMENTS', 'warning'],
+      ['OTHER_POLICY', 'warning'],
+      ['CANCELLED', 'danger'],
+      ['CANCELLED_AFTER', 'warning'],
+    ] as const)
+      expect(
+        siniestroFueraDeVigencia(
+          { level, issues: [issue(code, level, '2026-10-01')] },
+          '02/11/2026',
+        ),
+      ).toBeNull();
+    expect(
+      siniestroFueraDeVigencia({ level: 'ok', issues: [] }, '02/11/2026'),
+    ).toBeNull();
+    expect(siniestroFueraDeVigencia(undefined, '02/11/2026')).toBeNull();
   });
 });

@@ -820,6 +820,72 @@ describe('FlowService', () => {
       expect(filed.description).toContain('Personas en el vehículo: 2');
     });
 
+    it('tells the customer when the incident is from before the policy started, and files it anyway', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValue(completo);
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+      api.createSiniestro.mockResolvedValueOnce({
+        id: 99,
+        coverageCheck: {
+          level: 'danger',
+          issues: [
+            {
+              code: 'BEFORE_START',
+              level: 'danger',
+              title: 'El hecho es anterior al inicio de la póliza',
+              detail:
+                'La póliza rige desde el 05/10/2026 y el hecho fue el 03/10/2026.',
+              date: '2026-10-05',
+            },
+          ],
+        },
+      });
+
+      const filed = await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+
+      expect(api.createSiniestro).toHaveBeenCalled();
+      expect(filed.messages[0].body).toContain(
+        '✅ Registré tu denuncia (N° interno *99*).',
+      );
+      expect(filed.messages[0].body).toContain(
+        'es anterior al inicio de tu póliza, que rige desde el *05/10/2026*',
+      );
+      expect(filed.messages[0].body).toContain(
+        'la oficina va a revisar si ese día tenías cobertura',
+      );
+      expect(filed.messages[0].body).not.toContain('La oficina la va a cargar');
+      // The photos are asked for as usual.
+      expect(stored?.step).toBe('SINIESTRO_FOTO_TARJETA');
+    });
+
+    it('says nothing to the customer about installments that read as unpaid', async () => {
+      await openChecklist();
+      extractor.extract.mockResolvedValue(completo);
+      await send({ text: 'el sábado 18:30 en rosario…' }, ctx);
+      api.createSiniestro.mockResolvedValueOnce({
+        id: 99,
+        coverageCheck: {
+          level: 'warning',
+          issues: [
+            {
+              code: 'UNPAID_INSTALLMENTS',
+              level: 'warning',
+              title: '1 cuota impaga a la fecha del hecho',
+              detail: 'La cuota 7 venció el 03/09/2026 y figura sin pagar.',
+              date: '2026-09-03',
+            },
+          ],
+        },
+      });
+
+      const filed = await send({ selectionId: OPT.confirmar, text: '' }, ctx);
+
+      expect(filed.messages[0].body).toBe(
+        '✅ Registré tu denuncia (N° interno *99*).\n' +
+          'La oficina la va a cargar en Triunfo Seguros y te vamos a informar el número de siniestro oficial.',
+      );
+    });
+
     it('adds what is typed at the confirmation card (the other vehicle) and shows it again (#289, #286)', async () => {
       await openChecklist();
       extractor.extract.mockResolvedValueOnce({
