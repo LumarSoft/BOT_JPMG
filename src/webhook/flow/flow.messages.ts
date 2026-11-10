@@ -1309,8 +1309,19 @@ export interface TransferInfo {
   bank?: string;
 }
 
-const hasTransfer = (t?: TransferInfo | null): t is TransferInfo =>
+export const hasTransfer = (t?: TransferInfo | null): t is TransferInfo =>
   !!(t?.alias || t?.cbu);
+
+/** "¿Me pasás el alias?", "quiero transferir", "el CBU para pagar". */
+const TRANSFER_DATA_RE = /\btransfer|\balias\b|\bcbu\b|\bcvu\b/;
+
+/**
+ * What a customer who wants to transfer reads where the office gives no
+ * account (Roldán does not hand out an alias, 10/11): the office passes the
+ * data in the chat, and the flow tells the office in the same step.
+ */
+export const TRANSFER_BY_OFFICE_TEXT =
+  '📌 Para pagar por transferencia, la oficina te pasa los datos de la cuenta por este chat: ya le avisé. Cuando transfieras, mandá el comprobante por acá y lo aplican.';
 
 /** How the organization's customers pay besides the automatic debit (bot profile). */
 export interface PaymentInfo {
@@ -1433,7 +1444,9 @@ export function paymentAnswer(
   }
   if (PAY_DEADLINE_RE.test(t)) return deadlineAnswer(polizas);
   if (CARD_VS_CASH_RE.test(t)) return CARD_VS_CASH_TEXT;
-  if (PAY_METHODS_RE.test(t) || /\btransfer/.test(t))
+  if (!hasTransfer(payment.transfer) && TRANSFER_DATA_RE.test(t))
+    return TRANSFER_BY_OFFICE_TEXT;
+  if (PAY_METHODS_RE.test(t) || TRANSFER_DATA_RE.test(t))
     return payMethodsText(payment);
   return null;
 }

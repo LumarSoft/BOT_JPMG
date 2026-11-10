@@ -5420,6 +5420,50 @@ describe('FlowService', () => {
       );
     });
 
+    it('tells the office the customer wants the transfer data where it gives no account (Roldán, 10/11)', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([onixAlDia]);
+      const byOffice: OrgProfile = {
+        orgName: 'Sucursal de Prueba',
+        orgShortName: null,
+        orgLegalName: null,
+        towTruckPhone: null,
+        claimsPhone: '0810-666-0302',
+        cashPaymentPlaces: 'Rapipago o Pago Fácil',
+        transfer: null,
+        quoteClosingNote: null,
+      };
+
+      const res = await send(
+        { text: '¿Me pasás el alias para transferir la cuota?' },
+        { ...withModel, client, org: byOffice },
+      );
+
+      const body = JSON.stringify(res.messages);
+      expect(body).toContain('la oficina te pasa los datos de la cuenta');
+      expect(body).toContain('ya le avisé');
+      expect(body).not.toMatch(/TRUENO|Alias:/);
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringMatching(
+          /Quiere pagar por transferencia: pasarle los datos de la cuenta por este chat\. Escribió: "¿Me pasás el alias/,
+        ),
+      );
+    });
+
+    it('gives its own account to "¿me pasás el alias?" and tells nobody', async () => {
+      intents.interpret.mockResolvedValue('pagos');
+      api.getEstadoCuenta.mockResolvedValue([onixAlDia]);
+
+      const res = await send(
+        { text: '¿Me pasás el alias para transferir la cuota?' },
+        { ...withModel, client },
+      );
+
+      expect(JSON.stringify(res.messages)).toContain('TRUENO.VUELO.DELTA');
+      expect(api.requestHandoff).not.toHaveBeenCalled();
+    });
+
     it('passes on "no se pudo realizar el pago" with the customer offering to transfer', async () => {
       // #172: the customer got a payment-failed notice and asked to transfer;
       // the bot showed four installments "en proceso de débito" and told nobody.

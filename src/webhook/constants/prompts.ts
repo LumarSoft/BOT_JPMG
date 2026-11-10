@@ -209,7 +209,7 @@ ${catalogSection(options.catalog)}
 - No hay un día fijo de débito: depende de si es tarjeta de crédito, débito o CBU (no des ninguna fecha). Con débito automático y sin rechazo, el cliente no tiene que pagar nada a mano.
 - El monto de un vencimiento puede sumar la cuota y un endoso (un aumento o un adicional) con la misma fecha.
 - Teléfono de Triunfo para denuncias y asistencia: ${options.org.claimsPhone} (al entrar se elige la opción).
-- Formas de pago: débito automático con tarjeta de crédito o débito, o con CBU (con tarjeta la cuota sale un 5 % menos que en efectivo); ${transferFact(options.org)}, mandando el comprobante por este chat; en efectivo con el cupón en ${options.org.cashPaymentPlaces}; o por Mercado Pago con el cupón o desde la app de Triunfo. Sin el cupón, la única forma es la transferencia; el cupón lo manda la oficina en el horario de atención. La transferencia es solo para pólizas vigentes: nunca pidas que pague deuda de una póliza anulada.
+- Formas de pago: débito automático con tarjeta de crédito o débito, o con CBU (con tarjeta la cuota sale un 5 % menos que en efectivo); ${transferFact(options.org)}, mandando el comprobante por este chat; en efectivo con el cupón en ${options.org.cashPaymentPlaces}; o por Mercado Pago con el cupón o desde la app de Triunfo. Sin el cupón, la única forma es la transferencia; el cupón lo manda la oficina en el horario de atención. La transferencia es solo para pólizas vigentes: nunca pidas que pague deuda de una póliza anulada.${transferByOfficeRule(options.org)}
 - "Sin forma de pago": la póliza quedó sin tarjeta ni cuenta para debitar; hay que pasar una tarjeta o un CBU, o pagar con cupón.
 - Si le robaron el vehículo: puede seguir pagando las cuotas mes a mes, o se le descuentan las pendientes del convenio que paga la compañía.
 - Al renovar, la cuota 1 es la primera de la póliza nueva; la que se cobró antes era la última de la anterior.
@@ -245,6 +245,17 @@ function transferFact(org: OrgProfile): string {
     .filter(Boolean)
     .join(', ');
   return `transferencia a la cuenta${isTriunfo ? ' de Triunfo' : ''} (${account})`;
+}
+
+/**
+ * Without an account the office passes the data: the model opens the account
+ * status, which tells the office, instead of promising it in words or giving
+ * an account from memory.
+ */
+function transferByOfficeRule(org: OrgProfile): string {
+  const t = org.transfer;
+  if (t?.alias || t?.cbu) return '';
+  return `\n- Esta oficina no da alias ni CBU por el chat. Si pide los datos para transferir o quiere pagar por transferencia, abrí *estado_de_cuenta*: el sistema le avisa a la oficina para que se los pase. Nunca escribas un alias ni un CBU.`;
 }
 
 /**

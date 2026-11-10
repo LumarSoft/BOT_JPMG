@@ -23,6 +23,7 @@ import {
   botIntro,
   openingLine,
   welcomeMenu,
+  TRANSFER_BY_OFFICE_TEXT,
   type TransferInfo,
 } from './flow.messages';
 
@@ -794,6 +795,25 @@ describe('payment copy per organization', () => {
       'Transferencia: la oficina te pasa los datos',
     );
     expect(offerTransfer([debiting], payment, true)).toBeNull();
+  });
+
+  it('says the office passes the data when asked for the alias without an account', () => {
+    const none = { transfer: null, cashPlaces: 'Rapipago o Pago Fácil' };
+    for (const question of [
+      '¿me pasás el alias?',
+      'quiero pagar por transferencia',
+      'pasame el CBU',
+    ])
+      expect(answerPayment([debiting], question, none)).toBe(
+        TRANSFER_BY_OFFICE_TEXT,
+      );
+    const norte = {
+      transfer: { alias: 'NORTE.PAGOS' },
+      cashPlaces: 'Rapipago o Pago Fácil',
+    };
+    expect(answerPayment([debiting], '¿me pasás el alias?', norte)).toContain(
+      'NORTE.PAGOS',
+    );
   });
 });
 

@@ -108,6 +108,7 @@ describe('buildFaqPrompt', () => {
     expect(buildFaqPrompt(base)).toContain(
       'Sos *el asistente de John Pellegrini Management Group SRL* (JPMG), una productora',
     );
+    expect(prompt).not.toContain('Esta oficina no da alias');
   });
 
   it('asks auto or moto before explaining "contra todo", and never assumes a car (#399)', () => {
@@ -144,6 +145,10 @@ describe('buildFaqPrompt', () => {
     );
     expect(prompt).toContain(
       'transferencia con los datos que le pasa la oficina',
+    );
+    // Without an account the office is told through the account status, never promised in words.
+    expect(prompt).toContain(
+      'Si pide los datos para transferir o quiere pagar por transferencia, abrí *estado_de_cuenta*',
     );
     expect(prompt).toContain(
       'en efectivo con el cupón en Rapipago o Pago Fácil;',

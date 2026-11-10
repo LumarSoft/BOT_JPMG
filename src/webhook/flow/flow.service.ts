@@ -43,6 +43,7 @@ import {
   DOUBLE_CHARGE_RE,
   debitNotDone,
   transferOffer,
+  TRANSFER_BY_OFFICE_TEXT,
   type PaymentInfo,
   CLAIM_COPY_ID,
   CLAIM_COPY_RE,
@@ -3322,6 +3323,16 @@ export class FlowService {
         // the account status alone (#124).
         const doubleCharge =
           !!question && DOUBLE_CHARGE_RE.test(fold(question));
+        // An office that gives no account passes the data itself: it hears
+        // that the customer wants to transfer, as the answer tells them.
+        const transferByOffice = answer === TRANSFER_BY_OFFICE_TEXT;
+        if (transferByOffice)
+          await this.api
+            .requestHandoff(
+              ctx.conversationId,
+              `Quiere pagar por transferencia: pasarle los datos de la cuenta por este chat. Escribió: "${clip(question ?? '')}".`,
+            )
+            .catch(() => undefined);
         if (doubleCharge)
           await this.api
             .requestHandoff(
@@ -3338,7 +3349,10 @@ export class FlowService {
                   ? `Le pasé a la oficina lo del cobro doble para que lo revise con Triunfo y te escriba por este chat (${attentionHoursOf(ctx.attentionHours)}). Mientras tanto, te muestro cómo están tus cuotas:\n\n`
                   : '') +
                 formatEstadoCuenta(estado, { debitFailed }) +
-                (rejected.length || notDone.length || doubleCharge
+                (rejected.length ||
+                notDone.length ||
+                doubleCharge ||
+                transferByOffice
                   ? await this.closedNote(ctx)
                   : '') +
                 (answer ? `\n\n${answer}` : ''),
