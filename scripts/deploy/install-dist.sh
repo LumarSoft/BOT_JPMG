@@ -75,6 +75,7 @@ fi
 
 # Atomic swap: the running process keeps its already-loaded code; pm2 only
 # needs the new dist to exist when it restarts.
+rm -rf dist.new dist.old
 mv "$TMP/dist" dist.new
 if [ -d dist ]; then mv dist dist.old; fi
 mv dist.new dist
