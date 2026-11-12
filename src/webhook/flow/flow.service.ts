@@ -774,7 +774,7 @@ export const PAYMENT_PROOF_RECEIVED = '__payment_proof_received__';
 
 /** Not an answer to "¿de qué dominio es el pago?" but a request. Folded. */
 const NOT_A_PAYMENT_ANSWER_RE =
-  /\b(?:cotiz\w*|siniestro|choque|choc\w*|baja|asesor|grua|auxilio|menu|cupon\w*|cuota que|cuanto)\b/;
+  /\b(?:cotiz\w*|siniestro|choque|choc\w*|baja|asesor|grua|auxilio|menu|cuanto)\b/;
 
 /** Claim photo steps → the `tipo` label stored on each attachment. */
 export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
@@ -7136,6 +7136,9 @@ export class FlowService {
     const text = input.text.trim();
     if (!text) return null;
     const t = fold(text);
+    // "Quiero cotizar un auto" is a request, not "el auto" (it picked the
+    // only car the customer had).
+    if (NOT_A_PAYMENT_ANSWER_RE.test(t)) return null;
     if (
       polizas.length > 1 &&
       /\b(todas|todos|ambas|ambos|las dos|los dos)\b/.test(t)
@@ -7148,9 +7151,14 @@ export class FlowService {
       );
       return own ? { poliza: own } : { plate: read.plate };
     }
-    const poliza = polizas.length
-      ? this.matchPolizaByText(text, polizas)
-      : null;
+    // By its kind ("el del comercio", "la moto") only in a short answer; a
+    // longer text has to name it (plate, number, brand or model).
+    const short = words(text).split(' ').length <= 6;
+    const poliza = !polizas.length
+      ? null
+      : short
+        ? this.matchPolizaByText(text, polizas)
+        : this.matchPolizaNamed(text, polizas);
     if (poliza) return { poliza };
     if (
       free &&
@@ -7158,7 +7166,6 @@ export class FlowService {
       !isCloser(text) &&
       !MENU_TITLES.has(words(text)) &&
       !PAID_RE.test(t) &&
-      !NOT_A_PAYMENT_ANSWER_RE.test(t) &&
       words(text).split(' ').length <= 12
     )
       return { free: text };

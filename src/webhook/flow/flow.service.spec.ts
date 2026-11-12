@@ -4936,6 +4936,41 @@ describe('FlowService', () => {
       expect(stored?.step).toBe('PAGO_POLIZA');
     });
 
+    it('"quiero cotizar un auto" no elige su único auto como la póliza del pago', async () => {
+      const moto = {
+        ...palio,
+        riskType: 'moto',
+        vehicle: { licensePlate: 'Z999ZZZ', brand: 'HONDA', model: 'WAVE' },
+      };
+      api.getPolizas.mockResolvedValue([corsa, moto]);
+      await send({ text: 'hola' }, ctx);
+      await send(receipt, ctx);
+      await send({ text: 'quiero cotizar un auto' }, ctx);
+
+      expect(stored?.step).not.toBe('PAGO_POLIZA');
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('El comprobante de pago es de'),
+      );
+    });
+
+    it('"la moto" alcanza como respuesta corta', async () => {
+      const moto = {
+        ...palio,
+        riskType: 'moto',
+        vehicle: { licensePlate: 'Z999ZZZ', brand: 'HONDA', model: 'WAVE' },
+      };
+      api.getPolizas.mockResolvedValue([corsa, moto]);
+      await send({ text: 'hola' }, ctx);
+      await send(receipt, ctx);
+      await send({ text: 'la moto' }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es de su póliza HONDA WAVE (Póliza 1741716 · Z999ZZZ).',
+      );
+    });
+
     it('otro pedido en lugar de la respuesta sigue como siempre', async () => {
       await send({ text: 'hola' }, ctx);
       await send(receipt, ctx);
