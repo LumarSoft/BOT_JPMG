@@ -14,6 +14,7 @@ import { MetaService } from './meta.service';
 import {
   FlowService,
   LEAD_DOC_TIPO,
+  PAYMENT_PROOF_RECEIVED,
   PHOTO_RECEIVED,
   SINIESTRO_PHOTO_TIPO,
   takeOutDocsIntro,
@@ -1665,6 +1666,26 @@ export class WebhookService {
             `Envió un comprobante de pago para registrar (${files ? `archivo ${file.filename}` : 'foto'}).`,
           )
           .catch(() => undefined);
+        // Then which policy it pays (the office asked to know the plate).
+        const asked = await this.askPaymentPolicy(
+          key,
+          context,
+          conversation,
+          phoneNumberId,
+          flowState,
+        );
+        await this.queuePhotoReply(
+          key,
+          kind,
+          (count, many) => [...PHOTO_REPLIES.proof(count, many), ...asked],
+          {
+            to,
+            phoneNumberId,
+            conversationId: conversation.conversationId,
+            files,
+          },
+        );
+        return false;
       }
       await this.queuePhotoReply(key, kind, PHOTO_REPLIES[kind], {
         to,
@@ -1728,6 +1749,46 @@ export class WebhookService {
       files,
     });
     return false;
+  }
+
+  /**
+   * Runs the flow's question about which policy a receipt pays and keeps its
+   * step, so the answer typed next is read as such. Never throws: the receipt
+   * is already with the office.
+   */
+  private async askPaymentPolicy(
+    key: string,
+    context: BotContext,
+    conversation: BotConversation,
+    phoneNumberId: string,
+    flowState: FlowContext['flowState'],
+  ): Promise<OutgoingMessage[]> {
+    try {
+      const result = await this.flow.handle(
+        key,
+        { text: '', selectionId: PAYMENT_PROOF_RECEIVED },
+        {
+          conversationId: conversation.conversationId,
+          client: conversation.client,
+          newSession: false,
+          botName: context.botName,
+          attentionHours: context.attentionHours,
+          org: this.orgOf(context),
+          phoneNumberId,
+          flowState,
+        },
+      );
+      await this.api.saveFlowState(
+        conversation.conversationId,
+        result.state ? JSON.stringify(result.state) : null,
+      );
+      return result.messages;
+    } catch (error) {
+      this.logger.error(
+        `No se pudo preguntar de qué póliza es el pago: ${(error as Error).message}`,
+      );
+      return [];
+    }
   }
 
   private async processSharedItem(

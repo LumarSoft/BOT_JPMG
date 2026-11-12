@@ -920,6 +920,41 @@ export function bajaMotivoPicker(vehicle: boolean): OutgoingMessage {
 }
 
 /** What to send for "Otra póliza": the office takes it from the description. */
+/** First line of the reply to a payment receipt, before asking whose it is. */
+export function paymentProofThanksText(): OutgoingMessage {
+  return {
+    kind: 'text',
+    body: '¡Gracias! 🙌 Le pasé el comprobante a la oficina para que registre el pago.',
+  };
+}
+
+/**
+ * "¿De qué póliza es el pago?": the client's policies to pick from, or the
+ * plate to write when the bot sees none (not identified).
+ */
+export function paymentPolicyQuestion(
+  polizas: PolizaSummary[],
+): OutgoingMessage {
+  if (polizas.length > 1)
+    return polizaPicker(
+      polizas,
+      '¿De qué póliza es el pago? Elegila así la oficina lo registra donde corresponde.',
+      { allRow: true, otherRow: true },
+    );
+  return {
+    kind: 'text',
+    body: '¿De qué dominio (patente) es el pago? Escribímelo así la oficina lo registra en la póliza que corresponde. Si no es de un vehículo, contame de qué seguro es.',
+  };
+}
+
+/** "Otra póliza" picked for a payment. */
+export function paymentOtherPolicyQuestion(): OutgoingMessage {
+  return {
+    kind: 'text',
+    body: 'Decime el dominio (patente) o de qué póliza es el pago y se lo paso a la oficina.',
+  };
+}
+
 export function otherPolizaPrompt(): OutgoingMessage {
   return {
     kind: 'text',

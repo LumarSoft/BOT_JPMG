@@ -11,7 +11,7 @@ import {
 import { claimPhotoAddedText } from './flow/flow.messages';
 import { ApiService } from '../api/api.service';
 import { MetaService } from './meta.service';
-import { FlowService } from './flow/flow.service';
+import { FlowService, PAYMENT_PROOF_RECEIVED } from './flow/flow.service';
 import { AudioTranscriber } from './audio-transcriber.service';
 
 describe('WebhookService', () => {
@@ -3127,6 +3127,38 @@ describe('WebhookService', () => {
         'Envió un comprobante de pago para registrar (archivo comprobante.pdf).',
       );
       expect(sentTexts()[0]).toContain('se lo pasé a la oficina');
+    });
+
+    it('asks which policy a receipt pays, after the thanks, keeping the step', async () => {
+      meta.downloadMedia.mockResolvedValue({
+        buffer: Buffer.from('%PDF'),
+        mimeType: 'application/pdf',
+      });
+      api.attachAdjunto.mockResolvedValue({ claimId: null, attached: false });
+      const state = { step: 'PAGO_POLIZA', data: { polizas: [] } };
+      flow.handle.mockResolvedValue({
+        messages: [
+          { kind: 'text', body: '¿De qué dominio (patente) es el pago?' },
+        ],
+        state,
+      });
+
+      await service.handleMedia('5491155556666', 'pdf-4', 'P1', 'wp4', 'Ana', {
+        document: { filename: 'comprobante.pdf' },
+      });
+      await settlePhotoReplies();
+
+      expect(flow.handle).toHaveBeenCalledWith(
+        'P1:5491155556666',
+        { text: '', selectionId: PAYMENT_PROOF_RECEIVED },
+        expect.objectContaining({ conversationId: 7 }),
+      );
+      expect(api.saveFlowState).toHaveBeenCalledWith(7, JSON.stringify(state));
+      // One message: the thanks, then the question.
+      expect(sentTexts()).toHaveLength(1);
+      expect(sentTexts()[0]).toMatch(
+        /se lo pasé a la oficina[\s\S]*¿De qué dominio \(patente\) es el pago\?$/,
+      );
     });
 
     it('does not take the coupon book a client forwards for a receipt', async () => {

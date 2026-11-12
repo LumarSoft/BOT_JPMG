@@ -8,10 +8,11 @@ import {
   takeOutDocsState,
   withStaffNotice,
   PHOTO_RECEIVED,
+  PAYMENT_PROOF_RECEIVED,
 } from './flow.service';
 import type { FlowContext, FlowState, UserInput } from './flow.types';
 import type { OrgProfile } from '../org-profile';
-import { OPT } from './flow.messages';
+import { ALL_POLIZAS_ID, OPT, OTHER_POLIZA_ID } from './flow.messages';
 import { IdentificationInterpreter } from './identification-interpreter.service';
 import { IntentInterpreter } from './intent-interpreter.service';
 import { identificationFromText } from './identification';
@@ -4784,6 +4785,167 @@ describe('FlowService', () => {
         'seguimos con la cotización',
       );
       expect(stored?.step).toBe('LLM_COTIZACION');
+    });
+  });
+
+  describe('de qué póliza es el pago (propuesta 12/11)', () => {
+    const ctx: FlowContext = {
+      ...leadCtx,
+      phoneNumberId: 'P1',
+      client: { firstName: 'Ana', lastName: 'Gómez' } as FlowContext['client'],
+    };
+    const corsa = {
+      id: 833,
+      certificateNumber: '1741715',
+      company: 'Triunfo',
+      riskType: 'auto',
+      lastMovement: '',
+      validFrom: null,
+      validTo: null,
+      paymentMethod: null,
+      vehicle: { licensePlate: 'ZZ123ZZ', brand: 'CHEVROLET', model: 'CORSA' },
+    };
+    const palio = {
+      ...corsa,
+      id: 834,
+      certificateNumber: '1741716',
+      vehicle: { licensePlate: 'ZY987XW', brand: 'FIAT', model: 'PALIO' },
+    };
+    const receipt = { text: '', selectionId: PAYMENT_PROOF_RECEIVED };
+    const text = (res: { messages: unknown[] }) => JSON.stringify(res.messages);
+
+    beforeEach(() => api.getPolizas.mockResolvedValue([corsa, palio]));
+
+    it('con varias pólizas pregunta de cuál es y la elegida va al aviso', async () => {
+      await send({ text: 'hola' }, ctx);
+      const asked = await send(receipt, ctx);
+
+      expect(text(asked)).toContain('¿De qué póliza es el pago?');
+      expect(text(asked)).toContain(ALL_POLIZAS_ID);
+      expect(stored?.step).toBe('PAGO_POLIZA');
+
+      const res = await send({ text: '', selectionId: 'pol_834' }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es de su póliza FIAT PALIO (Póliza 1741716 · ZY987XW).',
+      );
+      expect(text(res)).toContain('el pago es de tu *FIAT PALIO* (ZY987XW)');
+      expect(stored?.step).toBe('CLIENT_MENU');
+    });
+
+    it('la patente escrita elige la póliza, con espacios o sin', async () => {
+      await send({ text: 'hola' }, ctx);
+      await send(receipt, ctx);
+      await send({ text: 'es del zz 123 zz' }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es de su póliza CHEVROLET CORSA (Póliza 1741715 · ZZ123ZZ).',
+      );
+    });
+
+    it('una patente que no es suya igual va al aviso (paga el auto de un familiar)', async () => {
+      await send({ text: 'hola' }, ctx);
+      await send(receipt, ctx);
+      const res = await send({ text: 'AB111CD' }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es del dominio AB111CD (no está entre las pólizas que ve el bot).',
+      );
+      expect(text(res)).toContain('la patente *AB111CD*');
+      expect(api.holderOf).not.toHaveBeenCalled();
+    });
+
+    it('"todas" y "Otra póliza" también son respuestas', async () => {
+      await send({ text: 'hola' }, ctx);
+      await send(receipt, ctx);
+      await send({ text: 'de las dos' }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining(
+          'El comprobante de pago es de todas sus pólizas',
+        ),
+      );
+
+      await send(receipt, ctx);
+      const other = await send({ text: '', selectionId: OTHER_POLIZA_ID }, ctx);
+      expect(text(other)).toContain('Decime el dominio');
+      await send({ text: 'la moto de mi hijo' }, ctx);
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es de: "la moto de mi hijo".',
+      );
+    });
+
+    it('con una sola póliza no pregunta: la oficina sabe de cuál es', async () => {
+      api.getPolizas.mockResolvedValue([corsa]);
+      await send({ text: 'hola' }, ctx);
+      const res = await send(receipt, ctx);
+
+      expect(res.messages).toEqual([]);
+      expect(stored?.step).not.toBe('PAGO_POLIZA');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es de su póliza CHEVROLET CORSA (Póliza 1741715 · ZZ123ZZ).',
+      );
+    });
+
+    it('sin identificar pide el dominio por escrito', async () => {
+      const res = await send(receipt);
+
+      expect(text(res)).toContain('¿De qué dominio (patente) es el pago?');
+      expect(api.getPolizas).not.toHaveBeenCalled();
+      await send({ text: 'Patente AB 123 CD' });
+
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es del dominio AB123CD.',
+      );
+    });
+
+    it('el texto del comprobante con la patente no necesita la pregunta', async () => {
+      const afterPhoto: FlowContext = {
+        ...ctx,
+        history: [{ role: 'user', content: '[El cliente envió una foto]' }],
+      };
+      await send({ text: 'hola' }, ctx);
+      const res = await send({ text: 'Pago de octubre del palio' }, afterPhoto);
+
+      expect(text(res)).not.toContain('¿De qué póliza es el pago?');
+      expect(text(res)).toContain('registre el pago de tu *FIAT PALIO*');
+      expect(api.requestHandoff).toHaveBeenCalledWith(
+        1,
+        'El comprobante de pago es de su póliza FIAT PALIO (Póliza 1741716 · ZY987XW).',
+      );
+    });
+
+    it('el texto del comprobante sin la póliza agradece y pregunta', async () => {
+      const afterPhoto: FlowContext = {
+        ...ctx,
+        history: [{ role: 'user', content: '[El cliente envió una foto]' }],
+      };
+      await send({ text: 'hola' }, ctx);
+      const res = await send({ text: 'ya pagué' }, afterPhoto);
+
+      expect(text(res)).toContain('Le pasé el comprobante');
+      expect(text(res)).toContain('¿De qué póliza es el pago?');
+      expect(stored?.step).toBe('PAGO_POLIZA');
+    });
+
+    it('otro pedido en lugar de la respuesta sigue como siempre', async () => {
+      await send({ text: 'hola' }, ctx);
+      await send(receipt, ctx);
+      await send({ text: 'quiero cotizar una moto' }, ctx);
+
+      expect(stored?.step).not.toBe('PAGO_POLIZA');
+      expect(api.requestHandoff).not.toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('El comprobante de pago es de'),
+      );
     });
   });
 

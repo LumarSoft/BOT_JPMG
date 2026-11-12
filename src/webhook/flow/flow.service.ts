@@ -54,6 +54,9 @@ import {
   OTHER_POLIZA_ID,
   anotherHolderMessage,
   otherPolizaPrompt,
+  paymentOtherPolicyQuestion,
+  paymentPolicyQuestion,
+  paymentProofThanksText,
   plateNotInForcePrompt,
   plateNotListedPrompt,
   pagosMenu,
@@ -452,6 +455,13 @@ const OTHER_POLIZA_REQUEST: Partial<Record<FlowStep, string>> = {
   CUPON_POLIZA: 'Pide los cupones de pago de otra póliza',
 };
 
+/** Which policy a payment receipt pays, as the customer said it. */
+type PaymentPolicy =
+  | { poliza: PolizaSummary }
+  | { all: true }
+  | { plate: string }
+  | { free: string };
+
 /** Selection ids of the home / shop claim pickers. */
 const BIEN_TIPO_PREFIX = 'bt_';
 const BIEN_DANIO_PREFIX = 'bd_';
@@ -756,6 +766,15 @@ const OPEN_STEPS = new Set<FlowStep>([
 /** Synthetic selectionId the media handler feeds in when a photo was received,
  * so the deterministic claim-photo steps advance without the user typing. */
 export const PHOTO_RECEIVED = '__photo_received__';
+
+/** Synthetic selectionId the media handler feeds in when a photo or file is a
+ * payment receipt: the flow asks which policy (plate) it pays, so the office
+ * applies it to the right one (proposal from the office, 12/11). */
+export const PAYMENT_PROOF_RECEIVED = '__payment_proof_received__';
+
+/** Not an answer to "¿de qué dominio es el pago?" but a request. Folded. */
+const NOT_A_PAYMENT_ANSWER_RE =
+  /\b(?:cotiz\w*|siniestro|choque|choc\w*|baja|asesor|grua|auxilio|menu|cupon\w*|cuota que|cuanto)\b/;
 
 /** Claim photo steps → the `tipo` label stored on each attachment. */
 export const SINIESTRO_PHOTO_TIPO: Partial<Record<FlowStep, string>> = {
@@ -1262,13 +1281,18 @@ export class FlowService {
   ): Promise<FlowResult> {
     const existing = this.load(key);
     const sel = input.selectionId;
+    if (sel === PAYMENT_PROOF_RECEIVED)
+      return this.askPaymentPolicy(ctx, key, { thanks: false });
+    // The answer to which policy a receipt pays, before anything reads the
+    // plate or the receipt talk as a request of its own.
+    if (existing?.state.step === 'PAGO_POLIZA')
+      return this.handlePagoPoliza(existing.state, input, ctx, key);
     // Payment proofs and missing credits need human review. Policy cancellations
     // keep the dedicated identification, policy selection and confirmation flow.
     // "Es el comprobante de pago" (after a photo) used to open the account
     // status instead: the office has to register the payment.
-    if (!sel && PAYMENT_PROOF_RE.test(fold(input.text))) {
-      return this.handleAsesorMotivo(input, ctx, key);
-    }
+    // Right after a photo or a file, it is the receipt ("ya pagué"): the
+    // office registers it and the bot asks which policy it pays.
     if (
       !sel &&
       PAID_RE.test(fold(input.text)) &&
@@ -1276,6 +1300,9 @@ export class FlowService {
       this.sentFileJustBefore(ctx)
     )
       return this.paymentProof(input.text, ctx, key);
+    if (!sel && PAYMENT_PROOF_RE.test(fold(input.text))) {
+      return this.handleAsesorMotivo(input, ctx, key);
+    }
     // The model read a request only the office can do ("agregar a una persona
     // a la póliza"): it reaches the office with what was asked. It used to
     // answer "tocá *Hablar con un asesor*", one more step for the customer.
@@ -1766,6 +1793,8 @@ export class FlowService {
         return this.handleDocType(state, input, ctx, key);
       case 'CUPON_POLIZA':
         return this.handleCuponPoliza(state, input, ctx, key);
+      case 'PAGO_POLIZA':
+        return this.handlePagoPoliza(state, input, ctx, key);
       case 'ASESOR_MOTIVO':
         return this.handleAsesorMotivo(input, ctx, key);
       case 'LEAD_CONTACT':
@@ -6967,6 +6996,7 @@ export class FlowService {
   /**
    * A payment receipt: the office has to apply it, so it hears about it with
    * what the customer wrote, and the customer hears that it was passed on.
+   * Then the bot asks which policy it pays, unless the text already said.
    */
   private async paymentProof(
     text: string,
@@ -6979,16 +7009,201 @@ export class FlowService {
         `Envió un comprobante de pago para registrar: "${clip(text.trim())}".`,
       )
       .catch(() => undefined);
+    return this.askPaymentPolicy(ctx, key, { thanks: true, text });
+  }
+
+  /**
+   * Which policy a receipt pays. The office had to work it out for a client
+   * with several cars ("PREGUNTAR DOMINIO", 12/11). With one policy there is
+   * nothing to ask: the office hears which one. `thanks` is false for a photo,
+   * whose thanks the media handler sends.
+   */
+  private async askPaymentPolicy(
+    ctx: FlowContext,
+    key: string,
+    opts: { thanks: boolean; text?: string },
+  ): Promise<FlowResult> {
+    const polizas = ctx.client
+      ? await this.api
+          .getPolizas(ctx.conversationId)
+          .catch(() => [] as PolizaSummary[])
+      : [];
+    const told = opts.text
+      ? this.paymentPolicyIn({ text: opts.text }, polizas, false)
+      : null;
+    if (told)
+      return this.notePaymentPolicy(told, polizas, ctx, key, opts.thanks);
+    if (polizas.length === 1) {
+      await this.api
+        .requestHandoff(
+          ctx.conversationId,
+          `El comprobante de pago es de su póliza ${polizaMention(polizas[0])}.`,
+        )
+        .catch(() => undefined);
+      if (!opts.thanks) return { messages: [] };
+      return this.paymentProofThanks(ctx, key);
+    }
+    this.setState(key, 'PAGO_POLIZA', {
+      polizas,
+      ...(polizas.length === 0 ? { free: true } : {}),
+    });
+    return {
+      messages: [
+        ...(opts.thanks ? [paymentProofThanksText()] : []),
+        paymentPolicyQuestion(polizas),
+      ],
+    };
+  }
+
+  /** "¡Gracias! Le pasé el comprobante…", then the menu. */
+  private async paymentProofThanks(
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
     const note = {
       kind: 'text' as const,
       body:
         `¡Gracias! 🙌 Le pasé el comprobante a la oficina para que registre el pago. Si falta algo, te escriben por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
         (await this.closedNote(ctx)),
     };
+    return this.withMenuOf(note, ctx, key);
+  }
+
+  /** A note and, below it, the menu of whoever the customer said they are. */
+  private withMenuOf(
+    note: OutgoingMessage,
+    ctx: FlowContext,
+    key: string,
+  ): FlowResult {
     const audience = this.backToMenuState(key, ctx);
     if (audience === 'lead') return { messages: [note, leadMenu()] };
     if (audience === 'client') return { messages: [note, clientMenu()] };
     return { messages: [note] };
+  }
+
+  /** The answer to "¿De qué póliza es el pago?". */
+  private async handlePagoPoliza(
+    state: FlowState,
+    input: UserInput,
+    ctx: FlowContext,
+    key: string,
+  ): Promise<FlowResult> {
+    const polizas = (state.data.polizas as PolizaSummary[] | undefined) ?? [];
+    const free = state.data.free === true;
+    if (input.selectionId === OTHER_POLIZA_ID) {
+      this.setState(key, 'PAGO_POLIZA', { ...state.data, free: true });
+      return { messages: [paymentOtherPolicyQuestion()] };
+    }
+    const told = this.paymentPolicyIn(input, polizas, free);
+    if (told) return this.notePaymentPolicy(told, polizas, ctx, key, false);
+    const t = fold(input.text);
+    // More about the receipt ("es la cuota de octubre"): it joins the alert
+    // and the question stays. A second receipt photo asks again by itself.
+    if (
+      !input.selectionId &&
+      (PAID_RE.test(t) || PAYMENT_PROOF_RE.test(t)) &&
+      !HOW_TO_PAY_RE.test(t)
+    ) {
+      await this.api
+        .requestHandoff(
+          ctx.conversationId,
+          `Sobre el comprobante de pago: "${clip(input.text.trim())}".`,
+        )
+        .catch(() => undefined);
+      return {
+        messages: [paymentProofThanksText(), paymentPolicyQuestion(polizas)],
+      };
+    }
+    // Anything else is not an answer: the turn goes on as usual. The office
+    // already has the receipt.
+    this.backToMenuState(key, ctx);
+    return this.computeTurn(key, input, ctx);
+  }
+
+  /** The policy a receipt pays, as the customer picked or wrote it. */
+  private paymentPolicyIn(
+    input: UserInput,
+    polizas: PolizaSummary[],
+    free: boolean,
+  ): PaymentPolicy | null {
+    const sel = input.selectionId;
+    if (sel) {
+      if (sel === ALL_POLIZAS_ID && polizas.length > 1) return { all: true };
+      const id = this.parsePrefId(sel, POLIZA_PREFIX);
+      const poliza = polizas.find((p) => p.id === id);
+      return poliza ? { poliza } : null;
+    }
+    const text = input.text.trim();
+    if (!text) return null;
+    const t = fold(text);
+    if (
+      polizas.length > 1 &&
+      /\b(todas|todos|ambas|ambos|las dos|los dos)\b/.test(t)
+    )
+      return { all: true };
+    const read = identificationFromText(text);
+    if (read && 'plate' in read) {
+      const own = polizas.find((p) =>
+        samePlate(p.vehicle?.licensePlate, read.plate),
+      );
+      return own ? { poliza: own } : { plate: read.plate };
+    }
+    const poliza = polizas.length
+      ? this.matchPolizaByText(text, polizas)
+      : null;
+    if (poliza) return { poliza };
+    if (
+      free &&
+      !t.includes('?') &&
+      !isCloser(text) &&
+      !MENU_TITLES.has(words(text)) &&
+      !PAID_RE.test(t) &&
+      !NOT_A_PAYMENT_ANSWER_RE.test(t) &&
+      words(text).split(' ').length <= 12
+    )
+      return { free: text };
+    return null;
+  }
+
+  /** The office hears which policy the receipt pays; the customer, that it did. */
+  private async notePaymentPolicy(
+    told: PaymentPolicy,
+    polizas: PolizaSummary[],
+    ctx: FlowContext,
+    key: string,
+    thanks: boolean,
+  ): Promise<FlowResult> {
+    const reason =
+      'poliza' in told
+        ? `El comprobante de pago es de su póliza ${polizaMention(told.poliza)}.`
+        : 'all' in told
+          ? `El comprobante de pago es de todas sus pólizas: ${polizas.map(polizaMention).join('; ')}.`
+          : 'plate' in told
+            ? `El comprobante de pago es del dominio ${told.plate}${polizas.length ? ' (no está entre las pólizas que ve el bot)' : ''}.`
+            : `El comprobante de pago es de: "${clip(told.free)}".`;
+    await this.api
+      .requestHandoff(ctx.conversationId, reason)
+      .catch(() => undefined);
+    const plateOf = (p: PolizaSummary) =>
+      p.vehicle?.licensePlate ? ` (${p.vehicle.licensePlate})` : '';
+    const what =
+      'poliza' in told
+        ? `tu *${polizaLabel(told.poliza)}*${plateOf(told.poliza)}`
+        : 'all' in told
+          ? 'todas tus pólizas'
+          : 'plate' in told
+            ? `la patente *${told.plate}*`
+            : 'la póliza que me dijiste';
+    const note = {
+      kind: 'text' as const,
+      body:
+        (thanks
+          ? `¡Gracias! 🙌 Le pasé el comprobante a la oficina para que registre el pago de ${what}.`
+          : `Listo 🙌 Le avisé a la oficina que el pago es de ${what}.`) +
+        ` Si falta algo, te escriben por este chat (${attentionHoursOf(ctx.attentionHours)}).` +
+        (await this.closedNote(ctx)),
+    };
+    return this.withMenuOf(note, ctx, key);
   }
 
   /** The customer's last messages before this one include a photo or a file. */
