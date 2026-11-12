@@ -537,7 +537,7 @@ module.exports = [
     id: 'X02', area: 'Fotos, archivos y audios', name: 'PDF con "este es el comprobante": va a la oficina', wa: wa(), regression: 'revisión 14/10',
     steps: [
       ...ident('99000002'),
-      { pdf: 'transferencia.pdf', caption: 'este es el comprobante de pago', expect: { any: [/tomé nota/i] } },
+      { pdf: 'transferencia.pdf', caption: 'este es el comprobante de pago', expect: { any: [/Le pasé el comprobante/, /De qué póliza es el pago/] } },
     ],
     db: [
       handoffs('aviso del comprobante', (r) => r.some(([b]) => /comprobante/.test(b))),
@@ -1540,6 +1540,134 @@ module.exports = [
       test: (rows) => rows.some(([codia, year]) => codia === '8810135' && year === '2026'),
     }],
   },
+  // ─── 12/11: de qué póliza es el pago (propuesta «PREGUNTAR DOMINIO») ─
+  // Lucas: PALIO ZZ902AA + HONDA STORM Z902AAA. Victoria (1 auto) and Oscar
+  // (hogar + comercio) file no claim in any scenario. The answer joins the receipt's alert (one handoff).
+  ...(() => {
+    const area = 'Comprobantes: de qué póliza es el pago (12/11)';
+    const regression = 'propuesta «PREGUNTAR DOMINIO» (12/11)';
+    const asked = /De qué póliza es el pago/;
+    const one = (name, test) => handoffs(name, (r) => r.length === 1 && test(r[0][0]));
+    // Taps the row of the policy list whose title has `title` (its id is the policy's).
+    const tap = (title, expect) => ({
+      drive: {
+        max: 1, until: /^$/, expect,
+        answer: (prev) => {
+          const m = prev.match(new RegExp(`\\[([^|\\]]*${title}[^|\\]]*)\\|(pol_\\w+)\\]`));
+          return m ? { select: m[2], title: m[1] } : null;
+        },
+      },
+    });
+    return [
+      {
+        id: 'E01', area, regression, name: 'Foto de comprobante con dos pólizas: pregunta y se toca una', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { image: true, receipt: true, max: 60000, expect: { any: [/pasé a la oficina/, asked, /PALIO/, /STORM/, /\|pol_todas\]/, /\|pol_otra\]/], count: 1 } },
+          tap('PALIO', { any: [/el pago es de tu \*FIAT PALIO\* \(ZZ902AA\)/, /m_pagos/] }),
+        ],
+        db: [one('un solo aviso con el comprobante y la póliza', (b) => /comprobante de pago para registrar \(foto\)/.test(b) && /es de su póliza FIAT PALIO \(Póliza 9900002 · ZZ902AA\)/.test(b))],
+      },
+      {
+        id: 'E02', area, regression, name: 'PDF de transferencia: la patente escrita (minúsculas) elige la moto', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked], count: 1 } },
+          { text: 'es de la z902aaa', expect: { any: [/el pago es de tu \*HONDA STORM\* \(Z902AAA\)/] } },
+        ],
+        db: [one('aviso con la moto', (b) => /comprobante de pago para registrar \(archivo transferencia\.pdf\)/.test(b) && /HONDA STORM/.test(b))],
+      },
+      {
+        id: 'E03', area, regression, name: '"Las dos": el pago es de todas sus pólizas', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked] } },
+          { text: 'las dos', expect: { any: [/el pago es de todas tus pólizas/] } },
+        ],
+        db: [one('aviso con las dos pólizas', (b) => /de todas sus pólizas: .*PALIO.*STORM/.test(b))],
+      },
+      {
+        id: 'E04', area, regression, name: '"Otra póliza": pide cuál y la suma tal cual', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked] } },
+          { select: 'pol_otra', title: 'Otra póliza', expect: { any: [/Decime el dominio/] } },
+          { text: 'la camioneta de mi hermano', expect: { any: [/la póliza que me dijiste/] } },
+        ],
+        db: [one('aviso con lo que escribió', (b) => /es de: "la camioneta de mi hermano"/.test(b))],
+      },
+      {
+        id: 'E05', area, regression, name: 'Patente que no es suya: se acepta (paga el auto de un familiar)', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked] } },
+          { text: 'AB 123 CD', expect: { any: [/la patente \*AB123CD\*/], none: [/a nombre de otra persona|no figura/i] } },
+        ],
+        db: [one('aviso con el dominio ajeno', (b) => /del dominio AB123CD \(no está entre las pólizas que ve el bot\)/.test(b))],
+      },
+      {
+        id: 'E06', area, regression, name: 'Una sola póliza: no pregunta y el aviso dice cuál', wa: wa(),
+        steps: [
+          ...ident('99000015'),
+          { image: true, receipt: true, max: 60000, expect: { any: [/pasé a la oficina/], none: [asked, /dominio/], count: 1 } },
+        ],
+        db: [one('aviso con la única póliza', (b) => /es de su póliza FORD KA \(Póliza 9900016 · ZZ916AA\)/.test(b))],
+      },
+      {
+        id: 'E07', area, regression, name: 'Sin identificar: pide el dominio por escrito', wa: wa(),
+        steps: [
+          { text: 'Hola', expect: { any: [/ya sos cliente/i] } },
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [/pasé a la oficina/, /De qué dominio \(patente\) es el pago/] } },
+          { text: 'patente ZZ 902 AA', expect: { any: [/la patente \*ZZ902AA\*/] } },
+        ],
+        db: [one('aviso con el dominio', (b) => /es del dominio ZZ902AA\./.test(b))],
+      },
+      {
+        id: 'E08', area, regression, name: 'PDF con "pago de la cuota del palio": no hace falta preguntar', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', caption: 'pago de la cuota del palio', max: 20000, expect: { any: [/FIAT PALIO/], none: [asked] } },
+        ],
+        db: [one('aviso con el Palio', (b) => /es de su póliza FIAT PALIO/.test(b))],
+      },
+      {
+        id: 'E09', area, regression, name: 'Otro pedido en vez de responder: sigue con eso', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked] } },
+          { text: 'quiero cotizar un auto', max: 60000, quiet: 5000, expect: { reply: true, none: [/el pago es de/, asked] } },
+        ],
+        db: [handoffs('el pedido no quedó como la póliza del pago', (r) => !r.some(([b]) => /El comprobante de pago es de/.test(b)))],
+      },
+      {
+        id: 'E10', area, regression, name: 'Hogar y comercio: "el del comercio" elige la póliza sin vehículo', wa: wa(),
+        steps: [
+          ...ident('99000016'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked] } },
+          { text: 'es el del comercio', expect: { any: [/el pago es de tu \*/] } },
+        ],
+        db: [one('aviso con el comercio', (b) => /es de su póliza .*9900018/.test(b))],
+      },
+      {
+        id: 'E11', area, regression, name: 'Dos fotos de comprobante juntas: una sola respuesta y una pregunta', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { image: true, receipt: true, burst: 2, max: 90000, expect: { any: [/Recibí tus 2 fotos del pago/, asked], count: 1 } },
+          { text: 'del palio', expect: { any: [/FIAT PALIO/] } },
+        ],
+        db: [one('un solo aviso', (b) => /FIAT PALIO/.test(b))],
+      },
+      {
+        id: 'E12', area, regression, name: '"La moto" alcanza como respuesta corta', wa: wa(),
+        steps: [
+          ...ident('99000002'),
+          { pdf: 'transferencia.pdf', max: 20000, expect: { any: [asked] } },
+          { text: 'la moto', expect: { any: [/HONDA STORM/] } },
+        ],
+        db: [one('aviso con la moto', (b) => /HONDA STORM/.test(b))],
+      },
+    ];
+  })(),
   // ─── 10/11: una sucursal que no da alias (Roldán): la oficina pasa los datos ─
   {
     id: 'B01', area: 'Sucursal sin alias (10/11)', name: '"¿Me pasás el alias?" sin cuenta: la oficina pasa los datos y queda avisada', wa: wa(), regression: 'Roldán no da alias (10/11)',

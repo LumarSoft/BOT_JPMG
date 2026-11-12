@@ -134,3 +134,16 @@ SET @cv=LAST_INSERT_ID();
 INSERT INTO Message (role, content, source, createdAt, conversationId) VALUES
  ('user','Me mandás la póliza del auto?','live', UTC_TIMESTAMP(3) - INTERVAL 11 HOUR, @cv),
  ('assistant','Listo, ahí te la mandé','app_echo', UTC_TIMESTAMP(3) - INTERVAL 10 HOUR, @cv);
+-- Comprobantes (12/11): clients no other scenario files a claim for, so a
+-- receipt is never added to a claim of the last 48 h. Victoria: one auto.
+-- Oscar: a home and a shop policy.
+INSERT INTO Client (dni, firstName, lastName, password, phone, producerId, producerCodeId, updatedAt) VALUES
+ ('99000015','VICTORIA','PRUEBA','x',NULL,1,@code,NOW(3)),
+ ('99000016','OSCAR','PRUEBA','x',NULL,1,@code,NOW(3));
+SET @v=(SELECT id FROM Client WHERE dni='99000015'); SET @o=(SELECT id FROM Client WHERE dni='99000016');
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900016','triunfo','auto','RENOVACION','2026-07-01','2027-07-01','Convenio','{"Articulo":458,"Empresa":"T","Sucursal":"CC"}',@v,1,@code,NOW(3));
+SET @p=LAST_INSERT_ID(); INSERT INTO Vehicle (licensePlate, brand, model, policyId) VALUES ('ZZ916AA','FORD','KA',@p);
+INSERT INTO Policy (certificateNumber, company, riskType, lastMovement, validFrom, validTo, paymentMethod, rawData, clientId, producerId, producerCodeId, updatedAt) VALUES
+ ('9900017','triunfo','home','RENOVACION','2026-07-01','2027-07-01','Convenio','{}',@o,1,@code,NOW(3)),
+ ('9900018','triunfo','commercial','POLIZA NUEVA','2026-08-01','2027-08-01','Convenio','{}',@o,1,@code,NOW(3));
