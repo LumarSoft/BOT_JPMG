@@ -1,0 +1,77 @@
+# Compiles dist on GitHub's runners instead of the production VPS (957 MB of RAM,
+# where `nest build` takes 10–20 minutes swapping). Every push to master, and any
+# manual run, publishes dist.tgz as a release tagged build-<sha7>; the server then
+# installs it with scripts/deploy/install-dist.sh.
+name: Build dist
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-dist-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Check the build output
+        run: |
+          test -f dist/main.js || { echo "::error::dist/main.js is missing"; exit 1; }
+          echo "${{ github.sha }}" > dist/BUILD_COMMIT
+          echo "JS files in dist: $(find dist -name '*.js' | wc -l)"
+
+      - name: Package
+        run: tar czf dist.tgz dist
+
+      - name: Publish as release build-<sha7>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short=$(git rev-parse --short=7 HEAD)
+          tag="build-$short"
+          subject=$(git log -1 --format=%s)
+          count=$(find dist -name '*.js' | wc -l)
+          gh release delete "$tag" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$tag" dist.tgz \
+            --target "${{ github.sha }}" \
+            --title "bot dist $short" \
+            --notes "$subject — $count JS files, built by run ${{ github.run_id }}" \
+            --latest=false
+
+      - name: Keep only the 20 newest builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' \
+          | while read -r old; do
+              echo "deleting $old"
+              gh release delete "$old" --cleanup-tag --yes || true
+            done
