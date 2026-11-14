@@ -6,6 +6,7 @@ import {
   staffNamed,
   takeOutDocsIntro,
   takeOutDocsState,
+  saysNoTarjeta,
   withStaffNotice,
   PHOTO_RECEIVED,
   PAYMENT_PROOF_RECEIVED,
@@ -2952,7 +2953,7 @@ describe('FlowService', () => {
 
     it('lists in the first message what this vehicle needs', () => {
       expect(takeOutDocsIntro({ zeroKm: false })).toContain(
-        '*Tarjeta verde o azul*',
+        '*Tarjeta verde o azul* (o el *título*, si no la tenés)',
       );
       expect(takeOutDocsIntro({ zeroKm: false })).toContain(
         '*Fotos del vehículo*',
@@ -2965,6 +2966,138 @@ describe('FlowService', () => {
       );
       expect(takeOutDocsIntro({ zeroKm: true })).not.toContain('Tarjeta verde');
       expect(takeOutDocsIntro({})).toContain('si es 0 km');
+    });
+
+    // Conversation 512 (6/11): "No tengo la tarjeta verde o azul" at the DNI
+    // skipped the DNI, the tarjeta was never sent and the office had to ask
+    // for the título to issue the policy.
+    describe('no tarjeta verde o azul: the título instead', () => {
+      function usedDocs() {
+        stored = takeOutDocsState(
+          { step: 'LLM_COTIZACION', data: {}, audience: 'lead' },
+          42,
+          { zeroKm: false },
+        );
+      }
+
+      it('"no tengo la tarjeta" at the DNI keeps the DNI and asks for the título later', async () => {
+        usedDocs();
+
+        const noted = await send({ text: 'No tengo la tarjeta verde o azul' });
+        expect(stored?.step).toBe('COT_DOC_DNI_FRENTE');
+        expect(stored?.data.noTarjeta).toBe(true);
+        expect(JSON.stringify(noted.messages)).toContain('*título*');
+        expect(JSON.stringify(noted.messages)).toContain('frente de tu DNI');
+
+        await send(photo); // DNI frente
+        const titulo = await send(photo); // DNI dorso
+        expect(stored?.step).toBe('COT_DOC_TITULO');
+        expect(JSON.stringify(titulo.messages)).toContain('*título*');
+        expect(JSON.stringify(titulo.messages)).not.toContain('tarjeta verde');
+
+        const photos = await send(photo); // título
+        expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+        expect(JSON.stringify(photos.messages)).toContain('Por último');
+
+        const done = await send({ text: 'listo' });
+        expect(JSON.stringify(done.messages)).toContain('Ya tenemos todo');
+      });
+
+      it('"no la tengo" at the tarjeta asks for the título', async () => {
+        usedDocs();
+        await send(photo);
+        await send(photo);
+        expect(stored?.step).toBe('COT_DOC_TARJETA_AZUL');
+
+        const titulo = await send({ text: 'no la tengo' });
+        expect(stored?.step).toBe('COT_DOC_TITULO');
+        expect(stored?.data.noTarjeta).toBe(true);
+        expect(JSON.stringify(titulo.messages)).toContain('motor y chasis');
+
+        await send(photo); // título
+        expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+      });
+
+      it('"te mando el título" at the tarjeta switches to it', async () => {
+        usedDocs();
+        await send(photo);
+        await send(photo);
+
+        const ok = await send({ text: 'tengo el titulo, te lo mando' });
+        expect(stored?.step).toBe('COT_DOC_TITULO');
+        expect(JSON.stringify(ok.messages)).toContain('el *título* nos sirve');
+      });
+
+      it('without tarjeta nor título it closes saying the advisor will need one', async () => {
+        usedDocs();
+        await send(photo);
+        await send(photo);
+        await send({ text: 'no la tengo' });
+        await send({ text: 'no lo tengo' });
+        expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+
+        const done = await send({ text: 'listo' });
+        expect(JSON.stringify(done.messages)).toContain(
+          '*tarjeta verde o azul* o el *título*',
+        );
+      });
+
+      it('"no tengo ni tarjeta ni título" skips both at once', async () => {
+        usedDocs();
+        await send(photo);
+        await send(photo);
+
+        const photos = await send({ text: 'no tengo ni tarjeta ni titulo' });
+        expect(stored?.step).toBe('COT_DOC_FOTOS_VEHICULO');
+        expect(JSON.stringify(photos.messages)).toContain('fotos del vehículo');
+      });
+
+      it('"no tengo la tarjeta" before "¿es 0 km?" is noted, the question stays', async () => {
+        startDocs();
+        await send(photo);
+        await send(photo);
+        expect(stored?.step).toBe('COT_DOC_CERO_KM');
+
+        const again = await send({ text: 'no tengo la cedula' });
+        expect(stored?.step).toBe('COT_DOC_CERO_KM');
+        expect(JSON.stringify(again.messages)).toContain('cero_km_si');
+
+        const titulo = await send({
+          text: 'No, es usado',
+          selectionId: 'cero_km_no',
+        });
+        expect(stored?.step).toBe('COT_DOC_TITULO');
+        expect(JSON.stringify(titulo.messages)).toContain('*título*');
+      });
+
+      it('a plain "no la tengo" at the DNI still skips the DNI', async () => {
+        usedDocs();
+        await send({ text: 'no la tengo' });
+        expect(stored?.step).toBe('COT_DOC_DNI_DORSO');
+        expect(stored?.data.noTarjeta).toBeUndefined();
+      });
+    });
+
+    it('reads "no tengo la tarjeta" only when it is about the tarjeta', () => {
+      expect(saysNoTarjeta('No tengo la tarjeta verde o azul')).toBe(true);
+      expect(saysNoTarjeta('no tengo la cédula')).toBe(true);
+      expect(saysNoTarjeta('no tengo ni la verde ni la azul')).toBe(true);
+      expect(saysNoTarjeta('estoy sin tarjeta')).toBe(true);
+      expect(saysNoTarjeta('no la tengo')).toBe(false);
+      expect(saysNoTarjeta('no tengo la tarjeta de gnc')).toBe(false);
+      expect(saysNoTarjeta('tengo la tarjeta verde')).toBe(false);
+    });
+
+    it('"no tengo la tarjeta, te paso el título" at the tarjeta asks for the título', async () => {
+      stored = takeOutDocsState(
+        { step: 'LLM_COTIZACION', data: {}, audience: 'lead' },
+        42,
+        { zeroKm: false },
+      );
+      await send(photo);
+      await send(photo);
+      await send({ text: 'no tengo la tarjeta, te paso el titulo' });
+      expect(stored?.step).toBe('COT_DOC_TITULO');
     });
 
     it('lets the customer skip a document with "no la tengo"', async () => {

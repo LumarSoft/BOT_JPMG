@@ -1668,6 +1668,65 @@ module.exports = [
       },
     ];
   })(),
+  // ─── 14/11: sin tarjeta verde o azul, el título (propuesta de la oficina) ──
+  ...(() => {
+    const area = 'Tarjeta o título (14/11)';
+    const regression = 'conv. 512 (6/11)';
+    const quoteMoto = {
+      drive: {
+        max: 4,
+        until: /por mes/,
+        answer: (prev) => /(^|\n)\s*\*?1[.)]/.test(prev) ? { text: '1' }
+          : /c[oó]digo postal|localidad/i.test(prev) ? { text: '2000' }
+          : { text: 'Honda Wave 110 S 2021, código postal 2000' },
+        expect: { any: [/por mes/] },
+      },
+    };
+    const lead = (cond) => ({
+      name: 'la solicitud tiene ' + cond.name,
+      sql: "SELECT JSON_EXTRACT(l.payload,'$.adjuntos') FROM ContactLead l JOIN Conversation c ON c.id=l.conversationId WHERE c.waId='$WA' ORDER BY l.id DESC",
+      test: (r) => r.length === 1 && cond.test(JSON.stringify(r[0][0] ?? '')),
+    });
+    return [
+      {
+        id: 'Y01', area, regression, name: '"No tengo la tarjeta verde o azul" en el DNI: no saltea el DNI y después pide el título', wa: wa(),
+        steps: [
+          quoteMoto,
+          { text: 'Quiero la A', expect: { any: [/frente de tu DNI/] } },
+          { text: 'No tengo la tarjeta verde o azul', expect: { any: [/título/, /frente de tu DNI/], none: [/dorso del DNI/] } },
+          { image: true, expect: { any: [/dorso del DNI/] } },
+          { image: true, expect: { any: [/\*título\*/], none: [/tarjeta verde o azul/] } },
+          { image: true, expect: { any: [/fotos del vehículo/] } },
+          { text: 'listo', expect: { any: [/Ya tenemos todo/] } },
+        ],
+        db: [lead({ name: 'DNI y título', test: (j) => /titulo/.test(j) && /dni_frente/.test(j) && !/"tarjeta"/.test(j) })],
+      },
+      {
+        id: 'Y02', area, regression, name: '"No la tengo" en la tarjeta pide el título; sin título avisa que lo van a pedir', wa: wa(),
+        steps: [
+          quoteMoto,
+          { text: 'Quiero la A', expect: { any: [/frente de tu DNI/] } },
+          { image: true, expect: { any: [/dorso del DNI/] } },
+          { image: true, expect: { any: [/tarjeta verde o azul/] } },
+          { text: 'no la tengo', expect: { any: [/\*título\*/] } },
+          { text: 'no lo tengo', expect: { any: [/fotos del vehículo/] } },
+          { text: 'listo', expect: { any: [/\*tarjeta verde o azul\* o el \*título\*/] } },
+        ],
+      },
+      {
+        id: 'Y03', area, regression, name: '"Te paso el título" en la tarjeta: la foto queda como título', wa: wa(),
+        steps: [
+          quoteMoto,
+          { text: 'Quiero la A', expect: { any: [/frente de tu DNI/] } },
+          { image: true, expect: { any: [/dorso del DNI/] } },
+          { image: true, expect: { any: [/tarjeta verde o azul/] } },
+          { text: 'no tengo la tarjeta, te paso el titulo', expect: { any: [/el \*título\* nos sirve/] } },
+          { image: true, expect: { any: [/fotos del vehículo/] } },
+        ],
+        db: [lead({ name: 'el título', test: (j) => /titulo/.test(j) })],
+      },
+    ];
+  })(),
   // ─── 10/11: una sucursal que no da alias (Roldán): la oficina pasa los datos ─
   {
     id: 'B01', area: 'Sucursal sin alias (10/11)', name: '"¿Me pasás el alias?" sin cuenta: la oficina pasa los datos y queda avisada', wa: wa(), regression: 'Roldán no da alias (10/11)',

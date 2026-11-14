@@ -548,6 +548,7 @@ const IN_PROGRESS_STEPS = new Set<FlowStep>([
   'COT_DOC_DNI_DORSO',
   'COT_DOC_CERO_KM',
   'COT_DOC_TARJETA_AZUL',
+  'COT_DOC_TITULO',
   'COT_DOC_NO_RODAMIENTO',
   'COT_DOC_FOTOS_VEHICULO',
   'COT_DOC_TARJETA_GNC',
@@ -796,6 +797,7 @@ export const LEAD_DOC_TIPO: Partial<Record<FlowStep, string>> = {
   // A photo sent instead of answering "¿es 0 km?" still belongs to the request.
   COT_DOC_CERO_KM: 'documento',
   COT_DOC_TARJETA_AZUL: 'tarjeta',
+  COT_DOC_TITULO: 'titulo',
   COT_DOC_NO_RODAMIENTO: 'certificado_no_rodamiento',
   COT_DOC_FOTOS_VEHICULO: 'foto_vehiculo',
   COT_DOC_TARJETA_GNC: 'tarjeta_gnc',
@@ -806,10 +808,63 @@ export const LEAD_DOC_TIPO: Partial<Record<FlowStep, string>> = {
  * a used one its tarjeta verde o azul and photos of the vehicle, a 0 km (not
  * registered yet, so no tarjeta) the certificado de no rodamiento; with GNC,
  * the tarjeta de GNC. `zeroKm` undefined = unknown, asked after the DNI.
+ * `noTarjeta`: the customer has no tarjeta, so the título is asked instead:
+ * the insurer needs the motor and chassis numbers to issue the policy (the
+ * office had to ask for it by hand, conv. 512, 6/11).
  */
 export interface TakeOutDocs {
   zeroKm?: boolean;
   gnc?: boolean;
+  noTarjeta?: boolean;
+}
+
+/** What the vehicle needs, as carried in a take-out state. */
+function takeOutDocsOf(data: Record<string, unknown>): TakeOutDocs {
+  return {
+    zeroKm: typeof data.zeroKm === 'boolean' ? data.zeroKm : undefined,
+    gnc: data.gnc === true,
+    noTarjeta: data.noTarjeta === true,
+  };
+}
+
+/** The take-out state for `step`: lead, what the vehicle needs and the coverage. */
+function takeOutData(
+  data: Record<string, unknown>,
+  docs: TakeOutDocs,
+): Record<string, unknown> {
+  return {
+    leadId: data.leadId,
+    ...(docs.zeroKm !== undefined ? { zeroKm: docs.zeroKm } : {}),
+    ...(docs.gnc ? { gnc: true } : {}),
+    ...(docs.noTarjeta ? { noTarjeta: true } : {}),
+    ...(data.noTitulo === true ? { noTitulo: true } : {}),
+    ...takeOutCoverageData(takeOutCoverageOf(data) ?? undefined),
+  };
+}
+
+/**
+ * "No tengo la tarjeta verde o azul" typed at the DNI: it is about the
+ * tarjeta, not the DNI. It used to skip the DNI front, and the two DNI photos
+ * that followed were filed as the back and the tarjeta (conv. 512, 6/11).
+ */
+export function saysNoTarjeta(text: string): boolean {
+  const t = fold(text).toLowerCase();
+  if (/\bgnc\b/.test(t)) return false;
+  return /\b(?:no (?:tengo|tenemos|tiene|la tengo|lo tengo|cuento con)|sin)\b[^.?!]{0,25}\b(?:tarjeta|cedula|tarjetita)\b|\bno (?:tengo|tenemos|tiene) (?:ni )?(?:la )?(?:verde|azul)\b/.test(
+    t,
+  );
+}
+
+/** "No tengo el título", "ni título", "sin título". */
+function negatesTitulo(text: string): boolean {
+  return /\b(?:no|ni|sin)\s+(?:[a-z]+\s+){0,2}titulo\b/.test(
+    fold(text).toLowerCase(),
+  );
+}
+
+/** "Te mando el título": the customer offers the título for the tarjeta. */
+function offersTitulo(text: string): boolean {
+  return /\btitulo\b/.test(fold(text).toLowerCase()) && !negatesTitulo(text);
 }
 
 /** One coverage of the quote the customer chose from, as the bot labels it. */
@@ -907,7 +962,10 @@ export function takeOutSteps(docs: TakeOutDocs): FlowStep[] {
     ...(docs.zeroKm === undefined ? (['COT_DOC_CERO_KM'] as const) : []),
     ...(docs.zeroKm === true ? (['COT_DOC_NO_RODAMIENTO'] as const) : []),
     ...(docs.zeroKm === false
-      ? (['COT_DOC_TARJETA_AZUL', 'COT_DOC_FOTOS_VEHICULO'] as const)
+      ? ([
+          docs.noTarjeta ? 'COT_DOC_TITULO' : 'COT_DOC_TARJETA_AZUL',
+          'COT_DOC_FOTOS_VEHICULO',
+        ] as const)
       : []),
     ...(docs.gnc ? (['COT_DOC_TARJETA_GNC'] as const) : []),
   ];
@@ -919,11 +977,14 @@ export function takeOutDocsIntro(docs: TakeOutDocs): string {
     '• *DNI* (frente y dorso)',
     ...(docs.zeroKm === true ? ['• *Certificado de no rodamiento*'] : []),
     ...(docs.zeroKm === false
-      ? ['• *Tarjeta verde o azul*', '• *Fotos del vehículo* (de los 4 lados)']
+      ? [
+          '• *Tarjeta verde o azul* (o el *título*, si no la tenés)',
+          '• *Fotos del vehículo* (de los 4 lados)',
+        ]
       : []),
     ...(docs.zeroKm === undefined
       ? [
-          '• *Tarjeta verde o azul* y *fotos del vehículo* (si es 0 km, el *certificado de no rodamiento*)',
+          '• *Tarjeta verde o azul* (o el *título*) y *fotos del vehículo* (si es 0 km, el *certificado de no rodamiento*)',
         ]
       : []),
     ...(docs.gnc ? ['• *Tarjeta de GNC*'] : []),
@@ -1017,7 +1078,12 @@ function takeOutPrompt(step: FlowStep, last: boolean): OutgoingMessage {
     case 'COT_DOC_TARJETA_AZUL':
       return {
         kind: 'text',
-        body: `${lead}una foto de la *tarjeta verde o azul* del vehículo. (si no la tenés, escribí *no la tengo*)`,
+        body: `${lead}una foto de la *tarjeta verde o azul* del vehículo. (si no la tenés, escribí *no la tengo* y te pido el título)`,
+      };
+    case 'COT_DOC_TITULO':
+      return {
+        kind: 'text',
+        body: `${lead}una foto del *título* del vehículo: sin la tarjeta, lo necesitamos para emitir la póliza (de ahí salen los números de motor y chasis). (si tampoco lo tenés, escribí *no lo tengo*)`,
       };
     case 'COT_DOC_NO_RODAMIENTO':
       return {
@@ -1814,6 +1880,7 @@ export class FlowService {
       case 'COT_DOC_DNI_FRENTE':
       case 'COT_DOC_DNI_DORSO':
       case 'COT_DOC_TARJETA_AZUL':
+      case 'COT_DOC_TITULO':
       case 'COT_DOC_NO_RODAMIENTO':
       case 'COT_DOC_TARJETA_GNC':
         return this.handleTakeOutDoc(state, input, ctx, key);
@@ -5070,13 +5137,88 @@ export class FlowService {
   ): Promise<FlowResult> {
     const changed = await this.takeOutCoverageChange(state, input, ctx, key);
     if (changed) return changed;
+    const noTarjeta = this.takeOutNoTarjeta(state, input, key);
+    if (noTarjeta) return noTarjeta;
     if (!this.photoAdvances(input)) {
       return (
         this.questionInPhotoStep(input, key) ??
         this.retry(key, state, this.retryPhoto().messages)
       );
     }
+    if (state.step === 'COT_DOC_TARJETA_AZUL' && !input.selectionId) {
+      // "No tengo ni la tarjeta ni el título": both are out, move on.
+      const noTitulo = negatesTitulo(input.text);
+      // No tarjeta: the título is asked instead of moving on without either.
+      return this.nextTakeOutStep(
+        noTitulo ? 'COT_DOC_TITULO' : state.step,
+        { ...state.data, noTarjeta: true, ...(noTitulo ? { noTitulo } : {}) },
+        ctx,
+        key,
+      );
+    }
+    if (state.step === 'COT_DOC_TITULO' && !input.selectionId) {
+      return this.nextTakeOutStep(
+        state.step,
+        { ...state.data, noTitulo: true },
+        ctx,
+        key,
+      );
+    }
     return this.nextTakeOutStep(state.step, state.data, ctx, key);
+  }
+
+  /**
+   * The tarjeta brought up out of turn: "no tengo la tarjeta verde" before it
+   * is asked is noted (the título comes in its place) and the current
+   * document asked again; "te mando el título" at the tarjeta switches to it.
+   */
+  private takeOutNoTarjeta(
+    state: FlowState,
+    input: UserInput,
+    key: string,
+  ): FlowResult | null {
+    if (input.selectionId || !input.text.trim()) return null;
+    const docs = takeOutDocsOf(state.data);
+    if (state.step === 'COT_DOC_TARJETA_AZUL') {
+      if (!offersTitulo(input.text)) return null;
+      const next = { ...docs, noTarjeta: true };
+      this.setState(
+        key,
+        'COT_DOC_TITULO',
+        takeOutData(state.data, next),
+        state.audience,
+      );
+      return {
+        messages: [
+          {
+            kind: 'text',
+            body: 'Dale, el *título* nos sirve 👍 Mandame una foto. (si no lo tenés, escribí *no lo tengo*)',
+          },
+        ],
+      };
+    }
+    const beforeTarjeta =
+      state.step === 'COT_DOC_DNI_FRENTE' ||
+      state.step === 'COT_DOC_DNI_DORSO' ||
+      state.step === 'COT_DOC_CERO_KM';
+    if (!beforeTarjeta || docs.zeroKm === true || !saysNoTarjeta(input.text))
+      return null;
+    const next = { ...docs, noTarjeta: true };
+    this.setState(
+      key,
+      state.step,
+      takeOutData(state.data, next),
+      state.audience,
+    );
+    const steps = takeOutSteps(next);
+    return this.prepend(
+      'Anotado: si no tenés la tarjeta, después te pido el *título* del vehículo, que también nos sirve 👍',
+      {
+        messages: [
+          takeOutPrompt(state.step, state.step === steps[steps.length - 1]),
+        ],
+      },
+    );
   }
 
   /** "¿Es 0 km?": decides between the certificado de no rodamiento and the tarjeta + photos. */
@@ -5088,6 +5230,8 @@ export class FlowService {
   ): Promise<FlowResult> {
     const changed = await this.takeOutCoverageChange(state, input, ctx, key);
     if (changed) return changed;
+    const noTarjeta = this.takeOutNoTarjeta(state, input, key);
+    if (noTarjeta) return noTarjeta;
     const t = fold(input.text).trim();
     const zeroKm =
       input.selectionId === CERO_KM_SI ||
@@ -5137,24 +5281,17 @@ export class FlowService {
     ctx: FlowContext,
     key: string,
   ): Promise<FlowResult> {
-    const docs: TakeOutDocs = {
-      zeroKm: typeof data.zeroKm === 'boolean' ? data.zeroKm : undefined,
-      gnc: data.gnc === true,
-    };
+    const docs = takeOutDocsOf(data);
     const steps = takeOutSteps(docs);
-    // Answering "¿es 0 km?" drops that question from the list: carry on after
-    // the DNI, which is where it always sits.
+    // Answering "¿es 0 km?" (or "no tengo la tarjeta", which puts the título
+    // in its place) drops that step from the list: carry on after the DNI,
+    // which is where it always sits.
     const at = steps.includes(current)
       ? steps.indexOf(current)
       : steps.indexOf('COT_DOC_DNI_DORSO');
     const next = steps[at + 1];
-    if (!next) return this.finishTakeOutDocs(ctx, key);
-    this.setState(key, next, {
-      leadId: data.leadId,
-      ...(docs.zeroKm !== undefined ? { zeroKm: docs.zeroKm } : {}),
-      ...(docs.gnc ? { gnc: true } : {}),
-      ...takeOutCoverageData(takeOutCoverageOf(data) ?? undefined),
-    });
+    if (!next) return this.finishTakeOutDocs(ctx, key, data.noTitulo === true);
+    this.setState(key, next, takeOutData(data, docs));
     const last = next === steps[steps.length - 1];
     return { messages: [takeOutPrompt(next, last)] };
   }
@@ -5177,11 +5314,7 @@ export class FlowService {
     if (!coverage) return null;
     const named = coveragesNamed(input.text, coverage.offered);
     if (!named.length) return null;
-    const steps = takeOutSteps({
-      zeroKm:
-        typeof state.data.zeroKm === 'boolean' ? state.data.zeroKm : undefined,
-      gnc: state.data.gnc === true,
-    });
+    const steps = takeOutSteps(takeOutDocsOf(state.data));
     const again = takeOutPrompt(
       state.step,
       state.step === steps[steps.length - 1],
@@ -5254,11 +5387,17 @@ export class FlowService {
   private async finishTakeOutDocs(
     ctx: FlowContext,
     key: string,
+    noTitulo = false,
   ): Promise<FlowResult> {
+    // Without the tarjeta nor the título the policy cannot be issued: said
+    // now, so the customer is not surprised when the advisor asks for it.
+    const opening = noTitulo
+      ? '¡Listo! 🙌 Ya tenemos tu pedido. Un asesor te contacta para terminar la contratación ' +
+        `(${attentionHoursOf(ctx.attentionHours)}). Para emitir la póliza la aseguradora pide la *tarjeta verde o azul* o el *título*: tené alguno de los dos a mano para cuando te escriba.`
+      : '¡Listo! 🙌 Ya tenemos todo para tu contratación. Un asesor te contacta ' +
+        `para terminarla (${attentionHoursOf(ctx.attentionHours)}).`;
     return this.prepend(
-      '¡Listo! 🙌 Ya tenemos todo para tu contratación. Un asesor te contacta ' +
-        `para terminarla (${attentionHoursOf(ctx.attentionHours)}).` +
-        (await this.closedNote(ctx)),
+      opening + (await this.closedNote(ctx)),
       this.menuAfterRequest(key, ctx),
     );
   }
